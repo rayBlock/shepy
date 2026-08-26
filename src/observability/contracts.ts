@@ -51,6 +51,7 @@ export type AgentHistoryRef = {
     | "claude-jsonl"
     | "codex-jsonl"
     | "gemini-json"
+    | "hermes-sqlite"
     | "opencode-sqlite"
     | "pi-jsonl"
     | "unknown";

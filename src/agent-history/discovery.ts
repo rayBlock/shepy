@@ -41,6 +41,10 @@ export async function discoverAgentHistory(
       const ref = discoverOpenCodeSession({ cwd, homeDir, sessionId: input.agentSession.value });
       if (ref) return { ...ref, kind: "agent_session" };
     }
+    if (source === "hermes-sqlite") {
+      const ref = discoverHermesSession({ homeDir, sessionId: input.agentSession.value });
+      if (ref) return ref;
+    }
   }
 
   const agent = input.agent?.toLowerCase() ?? input.agentSession?.agent.toLowerCase() ?? "";
@@ -80,9 +84,47 @@ export function historySourceFromSessionRef(ref: AgentSessionRef): AgentHistoryR
   if (agent === "pi" || source.includes("pi")) return "pi-jsonl";
   if (agent === "claude" || source.includes("claude")) return "claude-jsonl";
   if (agent === "codex" || source.includes("codex")) return "codex-jsonl";
+  if (agent === "hermes" || source.includes("hermes")) return "hermes-sqlite";
   if (agent === "opencode" || source.includes("opencode")) return "opencode-sqlite";
   if (agent === "gemini" || source.includes("gemini")) return "gemini-json";
   return "unknown";
+}
+
+/**
+ * Resolve a Hermes session id to its store.
+ *
+ * Deliberately has no cwd fallback. Hermes sessions are not unique per
+ * directory — 92 sessions share `/Users/ray/dev/driffs` on this machine — so
+ * "newest session in this cwd" would silently attach an orchestrator to the
+ * wrong worker. Without an exact id reported by the pane, this returns null
+ * and the agent stays history-less, which is the honest outcome.
+ */
+export function discoverHermesSession(input: {
+  homeDir: string;
+  sessionId: string;
+}): AgentHistoryRef | null {
+  if (!input.sessionId) return null;
+  const dbPath = hermesStatePath(input.homeDir);
+  if (!existsSync(dbPath)) return null;
+
+  let sqlite: DatabaseSync | null = null;
+  try {
+    sqlite = new DatabaseSync(dbPath, { readOnly: true });
+    const row = sqlite
+      .prepare("select id from sessions where id = ? limit 1")
+      .get(input.sessionId) as unknown as { id: string } | undefined;
+    if (!row?.id) return null;
+    return { kind: "agent_session", path: dbPath, source: "hermes-sqlite", value: row.id };
+  } catch {
+    return null;
+  } finally {
+    sqlite?.close();
+  }
+}
+
+function hermesStatePath(homeDir: string): string {
+  const override = process.env.HERMES_HOME;
+  return override ? join(override, "state.db") : join(homeDir, ".hermes", "state.db");
 }
 
 async function scanRoot(root: string, source: AgentHistoryRef["source"]): Promise<Candidate[]> {
