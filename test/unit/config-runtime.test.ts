@@ -3,8 +3,8 @@ import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import {
-  getShepherdHome,
-  loadShepherdDotEnv,
+  getShepyHome,
+  loadShepyDotEnv,
   resolveRuntime,
   resolveRuntimePath,
   resolveRuntimePaths,
@@ -19,34 +19,34 @@ afterEach(() => {
   }
 });
 
-describe("Shepherd runtime resolver", () => {
-  test("uses ~/.shepherd when SHEPHERD_HOME is absent", () => {
-    expect(getShepherdHome({})).toBe(resolve(homedir(), ".shepherd"));
+describe("Shepy runtime resolver", () => {
+  test("uses ~/.shepy when SHEPY_HOME is absent", () => {
+    expect(getShepyHome({})).toBe(resolve(homedir(), ".shepy"));
   });
 
-  test("uses explicit SHEPHERD_HOME", () => {
-    expect(getShepherdHome({ SHEPHERD_HOME: "/tmp/shepherd-dev" })).toBe("/tmp/shepherd-dev");
+  test("uses explicit SHEPY_HOME", () => {
+    expect(getShepyHome({ SHEPY_HOME: "/tmp/shepy-dev" })).toBe("/tmp/shepy-dev");
   });
 
-  test("resolves default runtime paths under Shepherd home", () => {
+  test("resolves default runtime paths under Shepy home", () => {
     const homeDir = tempHome();
 
-    const runtime = resolveRuntime({ environment: { SHEPHERD_HOME: homeDir } });
+    const runtime = resolveRuntime({ environment: { SHEPY_HOME: homeDir } });
 
     expect(runtime.paths).toMatchObject({
       configPath: join(homeDir, "config.yaml"),
       dbPath: join(homeDir, "state.db"),
       envPath: join(homeDir, ".env"),
       homeDir,
-      logPath: join(homeDir, "logs/shepherd.log"),
-      pidPath: join(homeDir, "shepherd.pid"),
+      logPath: join(homeDir, "logs/shepy.log"),
+      pidPath: join(homeDir, "shepy.pid"),
       piSessionDir: join(homeDir, "pi-sessions"),
       runtimeRecordPath: join(homeDir, "runtime.json"),
-      socketPath: join(homeDir, "shepherd.sock"),
+      socketPath: join(homeDir, "shepy.sock"),
     });
   });
 
-  test("resolves relative runtime config paths from Shepherd home", () => {
+  test("resolves relative runtime config paths from Shepy home", () => {
     const homeDir = tempHome();
     writeValidConfig(
       homeDir,
@@ -58,7 +58,7 @@ describe("Shepherd runtime resolver", () => {
 `,
     );
 
-    const runtime = resolveRuntime({ environment: { SHEPHERD_HOME: homeDir } });
+    const runtime = resolveRuntime({ environment: { SHEPY_HOME: homeDir } });
 
     expect(runtime.paths.dbPath).toBe(join(homeDir, "data/state.sqlite"));
     expect(runtime.paths.socketPath).toBe(join(homeDir, "sockets/dev.sock"));
@@ -71,38 +71,38 @@ describe("Shepherd runtime resolver", () => {
     writeValidConfig(
       homeDir,
       `runtime:
-  db_path: /var/tmp/shepherd/state.sqlite
-  socket_path: /var/tmp/shepherd/shepherd.sock
-  pid_path: /var/tmp/shepherd/shepherd.pid
-  log_path: /var/tmp/shepherd/shepherd.log
+  db_path: /var/tmp/shepy/state.sqlite
+  socket_path: /var/tmp/shepy/shepy.sock
+  pid_path: /var/tmp/shepy/shepy.pid
+  log_path: /var/tmp/shepy/shepy.log
 `,
     );
 
-    const runtime = resolveRuntime({ environment: { SHEPHERD_HOME: homeDir } });
+    const runtime = resolveRuntime({ environment: { SHEPY_HOME: homeDir } });
 
-    expect(runtime.paths.dbPath).toBe("/var/tmp/shepherd/state.sqlite");
-    expect(runtime.paths.socketPath).toBe("/var/tmp/shepherd/shepherd.sock");
-    expect(runtime.paths.pidPath).toBe("/var/tmp/shepherd/shepherd.pid");
-    expect(runtime.paths.logPath).toBe("/var/tmp/shepherd/shepherd.log");
+    expect(runtime.paths.dbPath).toBe("/var/tmp/shepy/state.sqlite");
+    expect(runtime.paths.socketPath).toBe("/var/tmp/shepy/shepy.sock");
+    expect(runtime.paths.pidPath).toBe("/var/tmp/shepy/shepy.pid");
+    expect(runtime.paths.logPath).toBe("/var/tmp/shepy/shepy.log");
   });
 
-  test("loads .env values over shell values while ignoring SHEPHERD variables", () => {
+  test("loads .env values over shell values while ignoring SHEPY variables", () => {
     const homeDir = tempHome();
     const envPath = join(homeDir, "dotenv-test");
     writeFileSync(
       envPath,
       `EXAMPLE_SERVICE_TOKEN=file-token
 OPENAI_API_KEY="file-key"
-SHEPHERD_HOME=/tmp/ignored
-SHEPHERD_INTERNAL_SOCKET_PATH=/tmp/ignored.sock
+SHEPY_HOME=/tmp/ignored
+SHEPY_INTERNAL_SOCKET_PATH=/tmp/ignored.sock
 `,
     );
 
-    const environment = loadShepherdDotEnv({
+    const environment = loadShepyDotEnv({
       baseEnvironment: {
         EXISTING: "kept",
         OPENAI_API_KEY: "shell-key",
-        SHEPHERD_HOME: homeDir,
+        SHEPY_HOME: homeDir,
       },
       envPath,
     });
@@ -110,21 +110,21 @@ SHEPHERD_INTERNAL_SOCKET_PATH=/tmp/ignored.sock
     expect(environment.EXAMPLE_SERVICE_TOKEN).toBe("file-token");
     expect(environment.OPENAI_API_KEY).toBe("file-key");
     expect(environment.EXISTING).toBe("kept");
-    expect(environment.SHEPHERD_HOME).toBe(homeDir);
-    expect(environment.SHEPHERD_INTERNAL_SOCKET_PATH).toBeUndefined();
+    expect(environment.SHEPY_HOME).toBe(homeDir);
+    expect(environment.SHEPY_INTERNAL_SOCKET_PATH).toBeUndefined();
   });
 
   test("throws on invalid config unless invalid config is allowed", () => {
     const homeDir = tempHome();
     writeFileSync(join(homeDir, "config.yaml"), "runtime: [");
 
-    expect(() => resolveRuntime({ environment: { SHEPHERD_HOME: homeDir } })).toThrow(
-      "Invalid Shepherd config",
+    expect(() => resolveRuntime({ environment: { SHEPY_HOME: homeDir } })).toThrow(
+      "Invalid Shepy config",
     );
 
     const runtime = resolveRuntime({
       allowInvalidConfig: true,
-      environment: { SHEPHERD_HOME: homeDir },
+      environment: { SHEPY_HOME: homeDir },
     });
     expect(runtime.configErrors?.length).toBeGreaterThan(0);
     expect(runtime.paths.dbPath).toBe(join(homeDir, "state.db"));
@@ -149,7 +149,7 @@ SHEPHERD_INTERNAL_SOCKET_PATH=/tmp/ignored.sock
 
     const runtime = resolveRuntime({
       allowInvalidConfig: true,
-      environment: { SHEPHERD_HOME: homeDir },
+      environment: { SHEPY_HOME: homeDir },
     });
     const paths = runtimePathsFromRecordOrDefault({ environment: runtime.environment });
 
@@ -166,20 +166,20 @@ SHEPHERD_INTERNAL_SOCKET_PATH=/tmp/ignored.sock
 
     const runtime = resolveRuntime({
       allowInvalidConfig: true,
-      environment: { SHEPHERD_HOME: homeDir },
+      environment: { SHEPY_HOME: homeDir },
     });
     const paths = runtimePathsFromRecordOrDefault({ environment: runtime.environment });
 
     expect(runtime.configErrors?.length).toBeGreaterThan(0);
     expect(paths.dbPath).toBe(join(homeDir, "state.db"));
-    expect(paths.socketPath).toBe(join(homeDir, "shepherd.sock"));
-    expect(paths.pidPath).toBe(join(homeDir, "shepherd.pid"));
-    expect(paths.logPath).toBe(join(homeDir, "logs/shepherd.log"));
+    expect(paths.socketPath).toBe(join(homeDir, "shepy.sock"));
+    expect(paths.pidPath).toBe(join(homeDir, "shepy.pid"));
+    expect(paths.logPath).toBe(join(homeDir, "logs/shepy.log"));
   });
 
   test("resolves explicit runtime path values", () => {
-    expect(resolveRuntimePath("/home/shepherd", "state.db")).toBe("/home/shepherd/state.db");
-    expect(resolveRuntimePath("/home/shepherd", "/tmp/state.db")).toBe("/tmp/state.db");
+    expect(resolveRuntimePath("/home/shepy", "state.db")).toBe("/home/shepy/state.db");
+    expect(resolveRuntimePath("/home/shepy", "/tmp/state.db")).toBe("/tmp/state.db");
   });
 
   test("resolves paths from an already loaded config", () => {
@@ -187,15 +187,15 @@ SHEPHERD_INTERNAL_SOCKET_PATH=/tmp/ignored.sock
       config: {
         runtime: { db_path: "data/state.db" },
       },
-      environment: { SHEPHERD_HOME: "/tmp/shepherd-home" },
+      environment: { SHEPY_HOME: "/tmp/shepy-home" },
     });
 
-    expect(paths.dbPath).toBe("/tmp/shepherd-home/data/state.db");
+    expect(paths.dbPath).toBe("/tmp/shepy-home/data/state.db");
   });
 });
 
 function tempHome(): string {
-  const dir = mkdtempSync(join(tmpdir(), "shepherd-runtime-"));
+  const dir = mkdtempSync(join(tmpdir(), "shepy-runtime-"));
   tempDirs.push(dir);
   mkdirSync(dir, { recursive: true });
   return dir;

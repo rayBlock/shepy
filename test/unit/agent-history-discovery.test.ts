@@ -46,7 +46,7 @@ describe("agent history discovery", () => {
   });
 
   test("discovers Codex JSONL by session_meta cwd", async () => {
-    const homeDir = await tempHome("shepherd-codex-home-");
+    const homeDir = await tempHome("shepy-codex-home-");
     const dir = join(homeDir, ".codex", "sessions", "2026", "07", "09");
     await mkdir(dir, { recursive: true });
     const older = join(
@@ -83,7 +83,7 @@ describe("agent history discovery", () => {
   });
 
   test("discovers OpenCode DB session by cwd", async () => {
-    const homeDir = await tempHome("shepherd-opencode-home-");
+    const homeDir = await tempHome("shepy-opencode-home-");
     const dbPath = join(homeDir, ".local", "share", "opencode", "opencode.db");
     await mkdir(join(homeDir, ".local", "share", "opencode"), { recursive: true });
     const sqlite = new DatabaseSync(dbPath);
@@ -115,7 +115,7 @@ describe("agent history discovery", () => {
   });
 
   test("discovers Gemini session JSON through .project_root", async () => {
-    const homeDir = await tempHome("shepherd-gemini-home-");
+    const homeDir = await tempHome("shepy-gemini-home-");
     const projectDir = join(homeDir, ".gemini", "tmp", "repo-project");
     const chatsDir = join(projectDir, "chats");
     await mkdir(chatsDir, { recursive: true });

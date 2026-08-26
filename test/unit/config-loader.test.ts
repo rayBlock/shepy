@@ -2,8 +2,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
-import { loadShepherdConfig } from "@/config/load.js";
-import { parseShepherdConfig } from "@/config/schema.js";
+import { loadShepyConfig } from "@/config/load.js";
+import { parseShepyConfig } from "@/config/schema.js";
 
 const tempDirs: string[] = [];
 
@@ -13,31 +13,31 @@ afterEach(() => {
   }
 });
 
-describe("Shepherd config loader", () => {
+describe("Shepy config loader", () => {
   test("loads a valid observability runtime YAML config", () => {
     const path = writeTempConfig(`
 runtime:
   db_path: data/state.db
-  socket_path: shepherd.sock
-  pid_path: shepherd.pid
-  log_path: logs/shepherd.log
+  socket_path: shepy.sock
+  pid_path: shepy.pid
+  log_path: logs/shepy.log
 observability:
   telemetry:
     max_excerpt_bytes: 2048
 `);
 
-    const result = loadShepherdConfig(path);
+    const result = loadShepyConfig(path);
 
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.runtime?.db_path).toBe("data/state.db");
-      expect(result.value.runtime?.socket_path).toBe("shepherd.sock");
+      expect(result.value.runtime?.socket_path).toBe("shepy.sock");
       expect(result.value.observability?.telemetry?.max_excerpt_bytes).toBe(2048);
     }
   });
 
   test("rejects unknown config fields", () => {
-    const result = parseShepherdConfig({
+    const result = parseShepyConfig({
       old_agents: { enabled: true },
       providers: { example: {} },
     });
@@ -50,17 +50,17 @@ observability:
   test("returns YAML parse errors without throwing", () => {
     const path = writeTempConfig("runtime: [");
 
-    const result = loadShepherdConfig(path);
+    const result = loadShepyConfig(path);
 
     expect(result.ok).toBe(false);
   });
 });
 
 function writeTempConfig(contents: string): string {
-  const dir = mkdtempSync(join(tmpdir(), "shepherd-config-"));
+  const dir = mkdtempSync(join(tmpdir(), "shepy-config-"));
   tempDirs.push(dir);
 
-  const path = join(dir, "shepherd.yaml");
+  const path = join(dir, "shepy.yaml");
   writeFileSync(path, contents);
 
   return path;

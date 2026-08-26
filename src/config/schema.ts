@@ -25,7 +25,7 @@ const observabilitySchema = Type.Object(
   { additionalProperties: false },
 );
 
-export const shepherdConfigSchema = Type.Object(
+export const shepyConfigSchema = Type.Object(
   {
     observability: Type.Optional(observabilitySchema),
     runtime: Type.Optional(runtimePathsSchema),
@@ -33,17 +33,17 @@ export const shepherdConfigSchema = Type.Object(
   { additionalProperties: false },
 );
 
-export type ShepherdConfig = Static<typeof shepherdConfigSchema>;
+export type ShepyConfig = Static<typeof shepyConfigSchema>;
 
 export type ValidationResult<T> = { ok: true; value: T } | { errors: ErrorObject[]; ok: false };
 
 const ajv = new Ajv({ allErrors: true, useDefaults: true });
-const validateShepherdConfig = ajv.compile<ShepherdConfig>(shepherdConfigSchema);
+const validateShepyConfig = ajv.compile<ShepyConfig>(shepyConfigSchema);
 
-export function parseShepherdConfig(value: unknown): ValidationResult<ShepherdConfig> {
-  if (validateShepherdConfig(value)) {
-    return { ok: true, value: value as ShepherdConfig };
+export function parseShepyConfig(value: unknown): ValidationResult<ShepyConfig> {
+  if (validateShepyConfig(value)) {
+    return { ok: true, value: value as ShepyConfig };
   }
 
-  return { errors: validateShepherdConfig.errors ?? [], ok: false };
+  return { errors: validateShepyConfig.errors ?? [], ok: false };
 }

@@ -1,14 +1,11 @@
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { beforeAll, describe, expect, test } from "vitest";
+import { agentDisplayName, agentIdentityLabel } from "../../packages/shepy-pi/src/agent-display.js";
 import {
-  agentDisplayName,
-  agentIdentityLabel,
-} from "../../packages/shepherd-pi/src/agent-display.js";
-import {
-  formatShepherdFooterStatus,
+  formatShepyFooterStatus,
   renderAgentUpdateMessage,
-} from "../../packages/shepherd-pi/src/agent-update-ui.js";
-import type { AgentOutcome } from "../../packages/shepherd-pi/src/wake.js";
+} from "../../packages/shepy-pi/src/agent-update-ui.js";
+import type { AgentOutcome } from "../../packages/shepy-pi/src/wake.js";
 
 const theme = {
   bg: (_color: string, text: string) => text,
@@ -49,7 +46,7 @@ function render(
     .join("\n");
 }
 
-describe("Shepherd Pi agent update UI", () => {
+describe("Shepy Pi agent update UI", () => {
   beforeAll(() => initTheme("dark"));
 
   test("formats valid agent identities and rejects malformed tokens", () => {
@@ -69,7 +66,7 @@ describe("Shepherd Pi agent update UI", () => {
     );
   });
 
-  test("colors the Shepherd heading as a custom message label", () => {
+  test("colors the Shepy heading as a custom message label", () => {
     const text = renderAgentUpdateMessage(
       {
         content: "ignored",
@@ -81,7 +78,7 @@ describe("Shepherd Pi agent update UI", () => {
       .render(100)
       .join("\n");
 
-    expect(text).toContain("[customMessageLabel]◆ Shepherd[/customMessageLabel]");
+    expect(text).toContain("[customMessageLabel]◆ Shepy[/customMessageLabel]");
   });
 
   test("renders a themed collapsed summary without event IDs", () => {
@@ -90,7 +87,7 @@ describe("Shepherd Pi agent update UI", () => {
       outcome(42, { agent: "codex", kind: "blocked", name: null, paneId: "wB:p3" }),
     ]);
 
-    expect(text).toContain("◆ Shepherd 2 agent updates");
+    expect(text).toContain("◆ Shepy 2 agent updates");
     expect(text).toContain("✓ reviewer · Claude completed wB:p2");
     expect(text).toContain("! Codex blocked wB:p3");
     expect(text).not.toContain("41");
@@ -106,7 +103,7 @@ describe("Shepherd Pi agent update UI", () => {
       outcome(55, { paneId: "wB:p5" }),
     ]);
 
-    expect(text).toContain("◆ Shepherd 5 agent updates");
+    expect(text).toContain("◆ Shepy 5 agent updates");
     expect(text).toContain("wB:p1");
     expect(text).toContain("wB:p3");
     expect(text).not.toContain("wB:p4");
@@ -147,7 +144,7 @@ describe("Shepherd Pi agent update UI", () => {
       .render(100)
       .join("\n");
 
-    expect(text).toContain("◆ Shepherd 2 agent updates");
+    expect(text).toContain("◆ Shepy 2 agent updates");
     expect(text).not.toContain("legacy raw message");
     expect(text).not.toContain("to expand");
   });
@@ -186,15 +183,15 @@ describe("Shepherd Pi agent update UI", () => {
     expect(text).not.toContain("\u0085");
   });
 
-  test("formats every unified Shepherd footer state as plain text", () => {
-    expect(formatShepherdFooterStatus({ kind: "off" })).toBeUndefined();
-    expect(formatShepherdFooterStatus({ kind: "on", updateCount: 0 })).toBe("◆ Shepherd");
-    expect(formatShepherdFooterStatus({ kind: "on", updateCount: 1 })).toBe(
-      "◆ Shepherd · 1 agent update",
+  test("formats every unified Shepy footer state as plain text", () => {
+    expect(formatShepyFooterStatus({ kind: "off" })).toBeUndefined();
+    expect(formatShepyFooterStatus({ kind: "on", updateCount: 0 })).toBe("◆ Shepy");
+    expect(formatShepyFooterStatus({ kind: "on", updateCount: 1 })).toBe(
+      "◆ Shepy · 1 agent update",
     );
-    expect(formatShepherdFooterStatus({ kind: "on", updateCount: 2 })).toBe(
-      "◆ Shepherd · 2 agent updates",
+    expect(formatShepyFooterStatus({ kind: "on", updateCount: 2 })).toBe(
+      "◆ Shepy · 2 agent updates",
     );
-    expect(formatShepherdFooterStatus({ kind: "reconnecting" })).toBe("◇ Shepherd · reconnecting");
+    expect(formatShepyFooterStatus({ kind: "reconnecting" })).toBe("◇ Shepy · reconnecting");
   });
 });

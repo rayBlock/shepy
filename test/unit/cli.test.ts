@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { helpText, parseCliArgs, runCliCommand, shouldRunCliMain } from "@/cli/shepherd.js";
+import { helpText, parseCliArgs, runCliCommand, shouldRunCliMain } from "@/cli/shepy.js";
 
 type FakeClient = {
   calls: unknown[];
@@ -7,7 +7,7 @@ type FakeClient = {
   request(method: string, params: unknown): Promise<unknown>;
 };
 
-describe("shepherd CLI", () => {
+describe("shepy CLI", () => {
   test("parses agent list with current Herdr workspace", () => {
     expect(parseCliArgs(["agent", "list"], { HERDR_ENV: "1", HERDR_WORKSPACE_ID: "wB" })).toEqual({
       command: "agent-list",
@@ -64,18 +64,18 @@ describe("shepherd CLI", () => {
   });
 
   test("renders help for agent commands", () => {
-    expect(helpText()).toContain("shepherd agent list");
-    expect(helpText()).toContain("shepherd agent get <target>");
-    expect(helpText()).toContain("shepherd agent read <target>");
-    expect(helpText()).toContain("shepherd help");
+    expect(helpText()).toContain("shepy agent list");
+    expect(helpText()).toContain("shepy agent get <target>");
+    expect(helpText()).toContain("shepy agent read <target>");
+    expect(helpText()).toContain("shepy help");
   });
 
   test("runs main when the package bin symlink points at the CLI module", () => {
     expect(
       shouldRunCliMain({
-        argvPath: "/tmp/prefix/bin/shepherd",
-        modulePath: "/tmp/prefix/lib/node_modules/shepherd/dist/src/cli/shepherd.js",
-        realArgvPath: "/tmp/prefix/lib/node_modules/shepherd/dist/src/cli/shepherd.js",
+        argvPath: "/tmp/prefix/bin/shepy",
+        modulePath: "/tmp/prefix/lib/node_modules/shepy/dist/src/cli/shepy.js",
+        realArgvPath: "/tmp/prefix/lib/node_modules/shepy/dist/src/cli/shepy.js",
       }),
     ).toBe(true);
   });

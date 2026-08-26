@@ -108,7 +108,7 @@ const T0 = 1787759000;
 
 describe("HermesHistoryReader", () => {
   test("reads user, assistant, and tool messages from the active window", async () => {
-    const homeDir = await tempHome("shepherd-hermes-reader-");
+    const homeDir = await tempHome("shepy-hermes-reader-");
     const dbPath = await createStateDb(homeDir);
     session(dbPath, "s1", "/Users/ray/dev/driffs");
     insert(dbPath, [
@@ -148,7 +148,7 @@ describe("HermesHistoryReader", () => {
   });
 
   test("converts epoch seconds to a real timestamp", async () => {
-    const homeDir = await tempHome("shepherd-hermes-ts-");
+    const homeDir = await tempHome("shepy-hermes-ts-");
     const dbPath = await createStateDb(homeDir);
     session(dbPath, "s1", "/tmp/x");
     insert(dbPath, [{ content: "hi", role: "user", sessionId: "s1", timestamp: T0 }]);
@@ -161,7 +161,7 @@ describe("HermesHistoryReader", () => {
   });
 
   test("excludes compacted history and never leaks another session", async () => {
-    const homeDir = await tempHome("shepherd-hermes-active-");
+    const homeDir = await tempHome("shepy-hermes-active-");
     const dbPath = await createStateDb(homeDir);
     session(dbPath, "s1", "/Users/ray/dev/driffs");
     session(dbPath, "s2", "/Users/ray/dev/driffs");
@@ -188,7 +188,7 @@ describe("HermesHistoryReader", () => {
   });
 
   test("never surfaces system prompts or reasoning", async () => {
-    const homeDir = await tempHome("shepherd-hermes-privacy-");
+    const homeDir = await tempHome("shepy-hermes-privacy-");
     const dbPath = await createStateDb(homeDir);
     session(dbPath, "s1", "/tmp/x");
     insert(dbPath, [
@@ -216,7 +216,7 @@ describe("HermesHistoryReader", () => {
     ['{"output": "ok", "exit_code": 0, "error": null}', false, "clean success"],
     ["not json at all", false, "unparseable payload"],
   ])("classifies tool failure: %s -> %s (%s)", async (content, expected) => {
-    const homeDir = await tempHome("shepherd-hermes-err-");
+    const homeDir = await tempHome("shepy-hermes-err-");
     const dbPath = await createStateDb(homeDir);
     session(dbPath, "s1", "/tmp/x");
     insert(dbPath, [
@@ -229,7 +229,7 @@ describe("HermesHistoryReader", () => {
   });
 
   test("compact projection reports the last user and assistant turn", async () => {
-    const homeDir = await tempHome("shepherd-hermes-compact-");
+    const homeDir = await tempHome("shepy-hermes-compact-");
     const dbPath = await createStateDb(homeDir);
     session(dbPath, "s1", "/tmp/x");
     insert(dbPath, [
@@ -248,7 +248,7 @@ describe("HermesHistoryReader", () => {
   });
 
   test("fails closed without a session id, and survives a missing database", async () => {
-    const homeDir = await tempHome("shepherd-hermes-closed-");
+    const homeDir = await tempHome("shepy-hermes-closed-");
     const dbPath = await createStateDb(homeDir);
     const reader = new HermesHistoryReader();
 
@@ -258,7 +258,7 @@ describe("HermesHistoryReader", () => {
   });
 
   test("session revision advances only for the session that changed", async () => {
-    const homeDir = await tempHome("shepherd-hermes-rev-");
+    const homeDir = await tempHome("shepy-hermes-rev-");
     const dbPath = await createStateDb(homeDir);
     session(dbPath, "s1", "/tmp/x");
     session(dbPath, "s2", "/tmp/x");
@@ -277,7 +277,7 @@ describe("HermesHistoryReader", () => {
 
 describe("Hermes discovery", () => {
   test("resolves an exact session id to the state store", async () => {
-    const homeDir = await tempHome("shepherd-hermes-disc-");
+    const homeDir = await tempHome("shepy-hermes-disc-");
     const dbPath = await createStateDb(homeDir);
     session(dbPath, "20260822_115251_c80507", "/Users/ray/dev/driffs");
 
@@ -292,7 +292,7 @@ describe("Hermes discovery", () => {
   });
 
   test("refuses to guess between sessions sharing one cwd", async () => {
-    const homeDir = await tempHome("shepherd-hermes-ambig-");
+    const homeDir = await tempHome("shepy-hermes-ambig-");
     const dbPath = await createStateDb(homeDir);
     // The real machine has 92 sessions on this cwd.
     session(dbPath, "s1", "/Users/ray/dev/driffs");
@@ -313,7 +313,7 @@ describe("Hermes discovery", () => {
   });
 
   test("routes a hermes pane session ref to the hermes-sqlite source", async () => {
-    const homeDir = await tempHome("shepherd-hermes-route-");
+    const homeDir = await tempHome("shepy-hermes-route-");
     const dbPath = await createStateDb(homeDir);
     session(dbPath, "s1", "/tmp/x");
 

@@ -21,16 +21,16 @@ async function readManifest(relativePath: string): Promise<PackageManifest> {
 describe("npm publication metadata", () => {
   test("keeps public packages scoped and the Herdr integration private", async () => {
     const root = await readManifest("../../package.json");
-    const pi = await readManifest("../../packages/shepherd-pi/package.json");
-    const herdr = await readManifest("../../packages/shepherd-herdr-plugin/package.json");
+    const pi = await readManifest("../../packages/shepy-pi/package.json");
+    const herdr = await readManifest("../../packages/shepy-herdr-plugin/package.json");
     const pluginToml = await readFile(
-      new URL("../../packages/shepherd-herdr-plugin/herdr-plugin.toml", import.meta.url),
+      new URL("../../packages/shepy-herdr-plugin/herdr-plugin.toml", import.meta.url),
       "utf8",
     );
     const pluginVersion = /^version = "([^"]+)"$/m.exec(pluginToml)?.[1];
 
-    expect(root.name).toBe("@ryonakae/shepherd");
-    expect(root.bin).toEqual({ shepherd: "dist/src/cli/shepherd.js" });
+    expect(root.name).toBe("shepy");
+    expect(root.bin).toEqual({ shepy: "dist/src/cli/shepy.js" });
     expect(root.files).toEqual(["dist", "drizzle"]);
     expect(root.publishConfig?.access).toBe("public");
     expect(root.scripts).toMatchObject({
@@ -43,13 +43,13 @@ describe("npm publication metadata", () => {
     expect(root.scripts?.build).toContain("pnpm clean:dist");
     expect(root.scripts?.check).toContain("pnpm package:check");
 
-    expect(pi.name).toBe("@ryonakae/shepherd-pi");
+    expect(pi.name).toBe("shepy-pi");
     expect(pi.files).toEqual(["src"]);
     expect(pi.publishConfig?.access).toBe("public");
     expect(pi.repository).toEqual({
       type: "git",
       url: "git+https://github.com/ryonakae/shepherd.git",
-      directory: "packages/shepherd-pi",
+      directory: "packages/shepy-pi",
     });
 
     expect(herdr.private).toBe(true);

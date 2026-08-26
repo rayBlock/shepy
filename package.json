@@ -1,5 +1,5 @@
 {
-  "name": "@ryonakae/shepherd",
+  "name": "shepy",
   "version": "0.5.0",
   "description": "Agent history daemon and runtime bridges for Herdr-managed coding agents.",
   "type": "module",
@@ -11,7 +11,7 @@
     "access": "public"
   },
   "bin": {
-    "shepherd": "dist/src/cli/shepherd.js"
+    "shepy": "dist/src/cli/shepy.js"
   },
   "keywords": [
     "herdr",
@@ -42,11 +42,11 @@
     "db:migrate": "tsx src/db/migrate.ts",
     "format": "biome format --write .",
     "format:check": "biome format .",
-    "herdr-plugin:check": "pnpm --dir packages/shepherd-herdr-plugin typecheck && pnpm --dir packages/shepherd-herdr-plugin package:check",
+    "herdr-plugin:check": "pnpm --dir packages/shepy-herdr-plugin typecheck && pnpm --dir packages/shepy-herdr-plugin package:check",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "package:check": "node scripts/check-root-package.mjs",
-    "pi-package:check": "pnpm --dir packages/shepherd-pi typecheck && (cd packages/shepherd-pi && npm pack --dry-run --json > /dev/null)",
+    "pi-package:check": "pnpm --dir packages/shepy-pi typecheck && (cd packages/shepy-pi && npm pack --dry-run --json > /dev/null)",
     "pnpm:devPreinstall": "husky",
     "prepack": "pnpm build",
     "test": "vitest run",

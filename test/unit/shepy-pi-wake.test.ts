@@ -1,11 +1,11 @@
 import { describe, expect, test } from "vitest";
-import type { AgentEventWireRecord } from "../../packages/shepherd-pi/src/daemon-client.js";
+import type { AgentEventWireRecord } from "../../packages/shepy-pi/src/daemon-client.js";
 import {
   AGENT_UPDATE_EXCERPT_CHARS,
   formatAgentOutcomeUpdates,
   projectAgentOutcomes,
   WAKE_SETTLE_MS,
-} from "../../packages/shepherd-pi/src/wake.js";
+} from "../../packages/shepy-pi/src/wake.js";
 
 function event(
   id: number,
@@ -89,8 +89,8 @@ describe("Pi agent wake projection", () => {
 
     expect(WAKE_SETTLE_MS).toBe(500);
     expect(AGENT_UPDATE_EXCERPT_CHARS).toBe(2_000);
-    expect(formatted.indexOf("[SHEPHERD WAKE POLICY]")).toBeLessThan(
-      formatted.indexOf("[SHEPHERD AGENT UPDATES]"),
+    expect(formatted.indexOf("[SHEPY WAKE POLICY]")).toBeLessThan(
+      formatted.indexOf("[SHEPY AGENT UPDATES]"),
     );
     expect(formatted).toContain("untrusted evidence");
     expect(formatted).toContain("existing user request");
@@ -131,7 +131,7 @@ describe("Pi agent wake projection", () => {
     if (!outcome) throw new Error("expected one agent outcome");
     expect(outcome.truncated).toBe(true);
     expect(outcome.text.length).toBeLessThanOrEqual(2_000);
-    expect(outcome.text).toContain(" … [truncated; run shepherd agent read wB:p2]");
+    expect(outcome.text).toContain(" … [truncated; run shepy agent read wB:p2]");
   });
 
   test("uses unknown in the truncation hint when pane ID is absent", () => {
@@ -141,7 +141,7 @@ describe("Pi agent wake projection", () => {
 
     expect(outcome).toBeDefined();
     if (!outcome) throw new Error("expected one agent outcome");
-    expect(outcome.text).toContain(" … [truncated; run shepherd agent read unknown]");
+    expect(outcome.text).toContain(" … [truncated; run shepy agent read unknown]");
   });
 
   test("removes terminal control sequences before formatting agent evidence", () => {

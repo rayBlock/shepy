@@ -7,7 +7,7 @@ import { JsonLineDecoder } from "@/shared/json-lines.js";
 import {
   type DaemonStreamMessage,
   ReconnectingDaemonClient,
-} from "../../packages/shepherd-pi/src/daemon-client.js";
+} from "../../packages/shepy-pi/src/daemon-client.js";
 
 const resources: Array<{ client?: ReconnectingDaemonClient; dir: string; server?: Server }> = [];
 
@@ -160,9 +160,7 @@ describe("ReconnectingDaemonClient", () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
 
     client.close();
-    await expect(client.request("agent.list", {})).rejects.toThrow(
-      "Shepherd daemon client is closed",
-    );
+    await expect(client.request("agent.list", {})).rejects.toThrow("Shepy daemon client is closed");
   });
 });
 
@@ -191,7 +189,7 @@ async function startServer(
 }
 
 function createResource() {
-  const dir = mkdtempSync(join(tmpdir(), "shepherd-pi-client-"));
+  const dir = mkdtempSync(join(tmpdir(), "shepy-pi-client-"));
   const resource: {
     client?: ReconnectingDaemonClient;
     dir: string;

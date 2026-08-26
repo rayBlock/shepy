@@ -2,7 +2,7 @@ import type { CompactToolResult } from "@/observability/contracts.js";
 import { sanitizeText, truncateChars } from "./text.js";
 
 const maxToolResultChars = 1600;
-const passthroughMarker = "[SHEPHERD:TRUNCATED_TOOL_RESULT]";
+const passthroughMarker = "[SHEPY:TRUNCATED_TOOL_RESULT]";
 
 type Mode = CompactToolResult["compaction"]["mode"];
 

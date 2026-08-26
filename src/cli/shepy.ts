@@ -127,11 +127,11 @@ function scopedOrCurrent(scope: AgentScope, environment: NodeJS.ProcessEnv): Age
 
 export function helpText(): string {
   return `Usage:
-  shepherd daemon [start|stop|restart|status]
-  shepherd agent list [--all] [--workspace <id>] [--session <name>] [--json]
-  shepherd agent get <target> [--workspace <id>] [--session <name>] [--json]
-  shepherd agent read <target> [--limit N] [--workspace <id>] [--session <name>] [--json]
-  shepherd help
+  shepy daemon [start|stop|restart|status]
+  shepy agent list [--all] [--workspace <id>] [--session <name>] [--json]
+  shepy agent get <target> [--workspace <id>] [--session <name>] [--json]
+  shepy agent read <target> [--limit N] [--workspace <id>] [--session <name>] [--json]
+  shepy help
 `;
 }
 
@@ -194,7 +194,7 @@ function formatHumanResult(command: CliCommand, result: unknown): string {
 
 function formatAgentList(result: { agents?: AgentListItem[] }): string {
   const agents = result.agents ?? [];
-  if (agents.length === 0) return "No Shepherd agents indexed.";
+  if (agents.length === 0) return "No Shepy agents indexed.";
   const lines = [
     ["status", "name", "agent", "pane", "last user", "last assistant", "updated"].join("\t"),
   ];
@@ -310,7 +310,7 @@ async function runDaemonCommand(
     });
   }
   const result = await startDaemonProcess({
-    entrypointPath: resolve(dirname(fileURLToPath(import.meta.url)), "shepherd-daemon.js"),
+    entrypointPath: resolve(dirname(fileURLToPath(import.meta.url)), "shepy-daemon.js"),
     env: runtime.environment,
     logPath: runtime.paths.logPath,
     nodePath: process.execPath,
@@ -367,10 +367,10 @@ function formatCliError(error: unknown): string {
   if (
     message.includes("ENOENT") ||
     message.includes("ECONNREFUSED") ||
-    message.includes("Shepherd daemon socket closed") ||
+    message.includes("Shepy daemon socket closed") ||
     message.includes("Observability RPC socket closed")
   ) {
-    return `${message}\nRun \`shepherd daemon start\` before using Shepherd commands.`;
+    return `${message}\nRun \`shepy daemon start\` before using Shepy commands.`;
   }
   return message;
 }
