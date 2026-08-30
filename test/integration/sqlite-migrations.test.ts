@@ -30,6 +30,8 @@ describe("SQLite migrations", () => {
       "agents",
       "herdr_sessions",
       "herdr_workspaces",
+      "orchestrator_profiles",
+      "profile_subscriptions",
     ]);
     expect(tables).not.toContain("observed_workspaces");
     const scopeColumns = sqlite

@@ -114,6 +114,48 @@ export const agentOrchestratorScopes = sqliteTable(
   (table) => [primaryKey({ columns: [table.herdrSessionName, table.workspaceId] })],
 );
 
+/**
+ * Phase 2 — profiles and subscriptions (vault §8.1/§8.3).
+ *
+ * A profile is a project-scoped orchestration identity (e.g. "driffs") that
+ * subscribes to explicitly selected agents in specific Herdr sessions.
+ * Isolation invariant (§6.1): a profile sees ONLY its subscribed agents; a
+ * workspace selector never silently expands across Herdr sessions; runtime
+ * kind alone is never a sufficient agent selector when more than one
+ * candidate exists (fail closed).
+ */
+export const orchestratorProfiles = sqliteTable("orchestrator_profiles", {
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  displayName: text("display_name").notNull(),
+  profileId: text("profile_id").primaryKey(),
+  projectRootsJson: text("project_roots_json").notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+export const profileSubscriptions = sqliteTable(
+  "profile_subscriptions",
+  {
+    agentSelectorJson: text("agent_selector_json").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+    herdrSessionName: text("herdr_session_name").notNull(),
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    profileId: text("profile_id")
+      .notNull()
+      .references(() => orchestratorProfiles.profileId, { onDelete: "cascade" }),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+    workspaceSelectorJson: text("workspace_selector_json").notNull(),
+  },
+  (table) => [
+    uniqueIndex("profile_subscriptions_identity_idx").on(
+      table.profileId,
+      table.herdrSessionName,
+      table.workspaceSelectorJson,
+      table.agentSelectorJson,
+    ),
+  ],
+);
+
 export const agentHistoryCache = sqliteTable(
   "agent_history_cache",
   {
