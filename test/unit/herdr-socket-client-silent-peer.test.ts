@@ -41,7 +41,7 @@ describe("HerdrSocketClient silent-peer recovery", () => {
       connections.push(socket);
       handler(socket);
     });
-    return new Promise((resolve) => server!.listen(path, () => resolve(path)));
+    return new Promise((resolve) => server?.listen(path, () => resolve(path)));
   }
 
   function withDeadline<T>(
