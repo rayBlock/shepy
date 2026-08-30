@@ -162,23 +162,15 @@ function parseProfileCommand(args: string[]): CliCommand {
     rejectExtra(rest);
     return { command: "profile-list", json };
   }
-  const [profileId, ...extra] = rest;
-  if (!profileId) throw new Error(`profile ${subcommand} requires <profileId>`);
-  if (subcommand === "show") {
-    rejectExtra(extra);
-    return { command: "profile-show", json, profileId };
-  }
-  if (subcommand === "context") {
-    rejectExtra(extra);
-    return { command: "profile-context", json, profileId };
-  }
   if (subcommand === "ensure") {
-    const displayName = takeOption(rest, "--display-name") ?? profileId;
+    const displayName = takeOption(rest, "--display-name");
     const roots = takeOption(rest, "--roots");
-    rejectExtra(rest.filter((entry) => entry !== displayName && entry !== "--display-name"));
+    const [profileId, ...ensureExtra] = rest;
+    if (!profileId) throw new Error("profile ensure requires <profileId>");
+    rejectExtra(ensureExtra);
     return {
       command: "profile-ensure",
-      displayName,
+      displayName: displayName ?? profileId,
       json,
       profileId,
       projectRoots: roots
@@ -197,9 +189,11 @@ function parseProfileCommand(args: string[]): CliCommand {
     const byTerminal = takeOption(rest, "--terminal");
     const bySessionId = takeOption(rest, "--agent-session");
     const kindPlusCwd = takeOption(rest, "--kind-cwd");
+    const [profileId, ...subscribeExtra] = rest;
     const selectorCount = [byName, byPane, byTerminal, bySessionId, kindPlusCwd].filter(
       Boolean,
     ).length;
+    if (!profileId) throw new Error(`profile ${subcommand} requires <profileId>`);
     if (!workspaceId) throw new Error("profile subscribe requires --workspace <id>");
     if (selectorCount !== 1) {
       throw new Error(
@@ -217,8 +211,7 @@ function parseProfileCommand(args: string[]): CliCommand {
       if (!kind || !cwd) throw new Error("--kind-cwd must be <kind>=<cwd>");
       agentSelector = JSON.stringify({ agent: kind, cwd, kind: "runtimeKindPlusCwd" });
     }
-    const positional = rest.filter((entry) => !entry.startsWith("--") && entry !== profileId);
-    rejectExtra(positional);
+    rejectExtra(subscribeExtra);
     return {
       agentSelector,
       command: "profile-subscribe",
@@ -228,6 +221,16 @@ function parseProfileCommand(args: string[]): CliCommand {
       subscribe: subcommand === "subscribe",
       workspaceId,
     };
+  }
+  const [profileId, ...extra] = rest;
+  if (!profileId) throw new Error(`profile ${subcommand} requires <profileId>`);
+  if (subcommand === "show") {
+    rejectExtra(extra);
+    return { command: "profile-show", json, profileId };
+  }
+  if (subcommand === "context") {
+    rejectExtra(extra);
+    return { command: "profile-context", json, profileId };
   }
   throw new Error(`Unknown profile command: ${subcommand}`);
 }
