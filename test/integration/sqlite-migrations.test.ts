@@ -28,9 +28,11 @@ describe("SQLite migrations", () => {
       "agent_history_cache",
       "agent_orchestrator_scopes",
       "agents",
+      "delivery_obligations",
       "herdr_sessions",
       "herdr_workspaces",
       "orchestrator_profiles",
+      "profile_owners",
       "profile_subscriptions",
     ]);
     expect(tables).not.toContain("observed_workspaces");

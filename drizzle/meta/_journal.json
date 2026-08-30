@@ -43,6 +43,13 @@
       "when": 1788073218336,
       "tag": "0005_natural_fallen_one",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1788080494141,
+      "tag": "0006_graceful_the_fury",
+      "breakpoints": true
     }
   ]
 }

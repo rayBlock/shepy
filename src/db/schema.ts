@@ -1,4 +1,11 @@
-import { integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import {
+  index,
+  integer,
+  primaryKey,
+  sqliteTable,
+  text,
+  uniqueIndex,
+} from "drizzle-orm/sqlite-core";
 
 const agentStatusValues = ["blocked", "done", "idle", "unknown", "working"] as const;
 
@@ -153,6 +160,62 @@ export const profileSubscriptions = sqliteTable(
       table.workspaceSelectorJson,
       table.agentSelectorJson,
     ),
+  ],
+);
+
+/**
+ * Phase 3 — profile owners (vault §8.2). One active logical owner per
+ * profile; a brief reconnect grace preserves the current owner, explicit
+ * claim by a new terminal replaces it and invalidates the old lease token.
+ */
+export const profileOwners = sqliteTable("profile_owners", {
+  claimedAt: integer("claimed_at", { mode: "timestamp_ms" }).notNull(),
+  harnessKind: text("harness_kind").notNull(),
+  harnessSessionRefJson: text("harness_session_ref_json").notNull(),
+  herdrSessionName: text("herdr_session_name").notNull(),
+  lastSeenAt: integer("last_seen_at", { mode: "timestamp_ms" }).notNull(),
+  leaseExpiresAt: integer("lease_expires_at", { mode: "timestamp_ms" }).notNull(),
+  leaseToken: text("lease_token").notNull(),
+  paneId: text("pane_id").notNull(),
+  profileId: text("profile_id").primaryKey(),
+  subscriberId: text("subscriber_id").notNull(),
+  terminalId: text("terminal_id").notNull(),
+  workspaceId: text("workspace_id"),
+});
+
+/**
+ * Phase 3 — delivery obligations (vault §8.4). The heart of reliable wake
+ * delivery: one durable obligation per (profile, agent event), advanced
+ * pending → leased → delivered → acked (or dead_letter after bounded
+ * attempts). Explicit obligations — never a single max cursor — make partial
+ * batch failure, multiple subscriptions, reconnects, and audit behavior
+ * understandable (§6.2.3). Acknowledged rows are retained for audit and may
+ * be pruned by later policy; pending rows may not (§6.2.7).
+ */
+export const deliveryObligations = sqliteTable(
+  "delivery_obligations",
+  {
+    ackedAt: integer("acked_at", { mode: "timestamp_ms" }),
+    agentEventId: integer("agent_event_id").notNull(),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    deliveredAt: integer("delivered_at", { mode: "timestamp_ms" }),
+    deliveredHarnessTurnId: text("delivered_harness_turn_id"),
+    deliveredOwnerSessionRefJson: text("delivered_owner_session_ref_json"),
+    id: text("id").primaryKey(),
+    lastErrorCode: text("last_error_code"),
+    lastErrorSummary: text("last_error_summary"),
+    leaseExpiresAt: integer("lease_expires_at", { mode: "timestamp_ms" }),
+    leaseToken: text("lease_token"),
+    profileId: text("profile_id")
+      .notNull()
+      .references(() => orchestratorProfiles.profileId, { onDelete: "cascade" }),
+    state: text("state").notNull(),
+    subscriptionId: integer("subscription_id").notNull(),
+  },
+  (table) => [
+    uniqueIndex("delivery_obligations_profile_event_idx").on(table.profileId, table.agentEventId),
+    index("delivery_obligations_profile_state_idx").on(table.profileId, table.state),
   ],
 );
 
