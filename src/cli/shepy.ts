@@ -51,6 +51,8 @@ export type CliCommand =
       subscribe: boolean;
       workspaceId: string;
     }
+  | { command: "inbox-list"; json: boolean; profileId: string; state?: string }
+  | { command: "inbox-retry"; id: string; json: boolean }
   | { command: "help" };
 
 type RpcClientLike = Pick<ObservabilityRpcClient, "close" | "request">;
@@ -83,6 +85,10 @@ export function parseCliArgs(
 
   if (command === "profile") {
     return parseProfileCommand(rest);
+  }
+
+  if (command === "inbox") {
+    return parseInboxCommand(rest);
   }
 
   throw new Error(`Unknown command: ${command}`);
@@ -235,6 +241,33 @@ function parseProfileCommand(args: string[]): CliCommand {
   throw new Error(`Unknown profile command: ${subcommand}`);
 }
 
+function parseInboxCommand(args: string[]): CliCommand {
+  const [subcommand, ...rest] = args;
+  if (!subcommand || subcommand === "help" || subcommand === "--help" || subcommand === "-h") {
+    return { command: "help" };
+  }
+  const json = takeFlag(rest, "--json");
+  if (subcommand === "retry") {
+    const [id, ...extra] = rest;
+    if (!id) throw new Error("inbox retry requires <obligationId>");
+    rejectExtra(extra);
+    return { command: "inbox-retry", id, json };
+  }
+  if (subcommand === "list") {
+    const state = takeOption(rest, "--state");
+    const [profileId, ...extra] = rest;
+    if (!profileId) throw new Error("inbox list requires <profileId>");
+    rejectExtra(extra);
+    return {
+      command: "inbox-list",
+      json,
+      profileId,
+      ...(state ? { state } : {}),
+    };
+  }
+  throw new Error(`Unknown inbox command: ${subcommand}`);
+}
+
 export function helpText(): string {
   return `Usage:
   shepy daemon [start|stop|restart|status]
@@ -247,6 +280,8 @@ export function helpText(): string {
   shepy profile context <profileId> [--json]
   shepy profile subscribe <profileId> --workspace <id> [--session <name>] (--name | --pane | --terminal | --agent-session | --kind-cwd <kind>=<cwd>)
   shepy profile unsubscribe <profileId> --workspace <id> [selector as above]
+  shepy inbox list <profileId> [--state pending|leased|delivered|acked|dead_letter] [--json]
+  shepy inbox retry <obligationId>
   shepy help
 `;
 }
@@ -292,6 +327,15 @@ async function dispatchRpcCommand(
   if (command.command === "profile-context") {
     return client.request("profile.context", { profileId: command.profileId });
   }
+  if (command.command === "inbox-list") {
+    return client.request("inbox.list", {
+      profileId: command.profileId,
+      ...(command.state ? { state: command.state } : {}),
+    });
+  }
+  if (command.command === "inbox-retry") {
+    return client.request("inbox.retry", { id: command.id });
+  }
   if (command.command === "profile-subscribe") {
     const params = {
       agentSelector: JSON.parse(command.agentSelector),
@@ -336,7 +380,23 @@ function formatHumanResult(command: CliCommand, result: unknown): string {
     );
   if (command.command === "profile-show" || command.command === "profile-context")
     return JSON.stringify(result, null, 2);
-  if (command.command === "profile-ensure" || command.command === "profile-subscribe")
+  if (command.command === "inbox-list")
+    return formatInboxList(
+      result as {
+        obligations?: Array<{
+          agentEventId: number;
+          attemptCount: number;
+          id: string;
+          lastErrorCode: string | null;
+          state: string;
+        }>;
+      },
+    );
+  if (
+    command.command === "profile-ensure" ||
+    command.command === "profile-subscribe" ||
+    command.command === "inbox-retry"
+  )
     return JSON.stringify(result);
   return JSON.stringify(result);
 }
@@ -565,4 +625,28 @@ function formatProfileList(result: {
   const profiles = result.profiles ?? [];
   if (profiles.length === 0) return "No Shepy profiles.";
   return profiles.map((profile) => `${profile.profileId}\t${profile.displayName}`).join("\n");
+}
+
+function formatInboxList(result: {
+  obligations?: Array<{
+    agentEventId: number;
+    attemptCount: number;
+    id: string;
+    lastErrorCode: string | null;
+    state: string;
+  }>;
+}): string {
+  const obligations = result.obligations ?? [];
+  if (obligations.length === 0) return "Inbox empty.";
+  const header = ["state", "event", "attempts", "last_error", "id"].join("\t");
+  const rows = obligations.map((obligation) =>
+    [
+      obligation.state,
+      String(obligation.agentEventId),
+      String(obligation.attemptCount),
+      obligation.lastErrorCode ?? "-",
+      obligation.id,
+    ].join("\t"),
+  );
+  return [header, ...rows].join("\n");
 }

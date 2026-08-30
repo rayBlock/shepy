@@ -180,7 +180,10 @@ export function resolveAgentSelector(
       detail: `${matches.length} agents in scope match ${describeSelector(selector)} — fail closed; pin by name, paneId, or terminalId`,
     };
   }
-  return { kind: "matched", agent: matches[0]! };
+  const [agent] = matches;
+  if (!agent)
+    return { kind: "unmatched", detail: "matched agent vanished between filter and read" };
+  return { kind: "matched", agent };
 }
 
 export function describeSelector(selector: AgentSelector): string {

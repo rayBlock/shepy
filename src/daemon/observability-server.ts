@@ -23,6 +23,7 @@ import type {
   AgentWorkspaceContextSnapshot,
   PiPresenceRegistration,
 } from "@/observability/contracts.js";
+import type { ProfileDeliveryService } from "@/observability/profile-delivery-service.js";
 import type { ProfileService } from "@/observability/profile-service.js";
 import {
   agentEventsInputSchema,
@@ -33,7 +34,14 @@ import {
   agentOrchestratorRegisterInputSchema,
   agentOrchestratorSetInputSchema,
   agentReadInputSchema,
+  inboxAckInputSchema,
+  inboxDeliveredInputSchema,
+  inboxLeaseInputSchema,
+  inboxListInputSchema,
+  inboxRetryInputSchema,
+  profileClaimInputSchema,
   profileEnsureInputSchema,
+  profileReleaseInputSchema,
   profileShowInputSchema,
   profileSubscribeInputSchema,
 } from "@/observability/schemas.js";
@@ -82,6 +90,7 @@ export class ObservabilityRpcServer {
   readonly #orchestrator: AgentOrchestratorService;
   readonly #piPresenceBySocket = new Map<Socket, PiPresence>();
   readonly #profiles: ProfileService | undefined;
+  readonly #delivery: ProfileDeliveryService | undefined;
   readonly #registerPiSessionRef: (input: {
     herdrSessionName: string;
     sessionRef: PiPresenceRegistration["sessionRef"];
@@ -108,6 +117,7 @@ export class ObservabilityRpcServer {
     history: AgentHistoryService;
     now?: () => number;
     orchestrator: AgentOrchestratorService;
+    delivery?: ProfileDeliveryService;
     profiles?: ProfileService;
     registerPiSessionRef?: (input: {
       herdrSessionName: string;
@@ -129,6 +139,7 @@ export class ObservabilityRpcServer {
     this.#history = options.history;
     this.#now = options.now ?? Date.now;
     this.#orchestrator = options.orchestrator;
+    this.#delivery = options.delivery;
     this.#profiles = options.profiles;
     this.#registerPiSessionRef =
       options.registerPiSessionRef ?? (async () => ({ contextChangedScopes: [] }));
@@ -348,6 +359,85 @@ export class ObservabilityRpcServer {
         };
         const { removed } = this.#requireProfiles().removeSubscription(input);
         return { removed };
+      }
+      case "profile.claim": {
+        assertSchema(profileClaimInputSchema, params);
+        const input = params as {
+          harnessKind: string;
+          harnessSessionRefJson: string;
+          herdrSessionName: string;
+          paneId: string;
+          profileId: string;
+          subscriberId: string;
+          terminalId: string;
+          workspaceId?: string;
+        };
+        return { result: this.#requireDelivery().claim(input) };
+      }
+      case "profile.owner": {
+        assertSchema(profileShowInputSchema, params);
+        const input = params as { profileId: string };
+        return { owner: this.#requireDelivery().owner(input.profileId) ?? null };
+      }
+      case "profile.release": {
+        assertSchema(profileReleaseInputSchema, params);
+        const input = params as { leaseToken: string; profileId: string };
+        return { released: this.#requireDelivery().release(input) };
+      }
+      case "inbox.list": {
+        assertSchema(inboxListInputSchema, params);
+        const input = params as { limit?: number; profileId: string; state?: string };
+        const obligations = this.#requireDelivery().inboxList({
+          ...(input.limit !== undefined ? { limit: input.limit } : {}),
+          profileId: input.profileId,
+          ...(input.state
+            ? { state: input.state as "pending" | "leased" | "delivered" | "acked" | "dead_letter" }
+            : {}),
+        });
+        return { obligations };
+      }
+      case "inbox.lease": {
+        assertSchema(inboxLeaseInputSchema, params);
+        const input = params as { leaseToken: string; maxBatch?: number; profileId: string };
+        return this.#requireDelivery().inboxLease({
+          ...(input.maxBatch !== undefined ? { maxBatch: input.maxBatch } : {}),
+          leaseToken: input.leaseToken,
+          profileId: input.profileId,
+        });
+      }
+      case "inbox.delivered": {
+        assertSchema(inboxDeliveredInputSchema, params);
+        const input = params as {
+          harnessTurnId?: string;
+          ids: string[];
+          leaseToken: string;
+          ownerSessionRefJson: string;
+        };
+        return this.#requireDelivery().inboxDelivered(input);
+      }
+      case "inbox.ack": {
+        assertSchema(inboxAckInputSchema, params);
+        const input = params as { ids: string[]; leaseToken: string; profileId: string };
+        return this.#requireDelivery().inboxAck(input);
+      }
+      case "inbox.nack": {
+        assertSchema(inboxAckInputSchema, params);
+        const input = params as {
+          errorCode?: string;
+          ids: string[];
+          leaseToken: string;
+          profileId: string;
+        };
+        return this.#requireDelivery().inboxNack({
+          errorCode: input.errorCode ?? "harness_failed",
+          ids: input.ids,
+          leaseToken: input.leaseToken,
+        });
+      }
+      case "inbox.retry": {
+        assertSchema(inboxRetryInputSchema, params);
+        const input = params as { id: string };
+        return { retried: this.#requireDelivery().retry(input.id) };
       }
       case "profile.context": {
         assertSchema(profileShowInputSchema, params);
@@ -601,6 +691,11 @@ export class ObservabilityRpcServer {
   #requireProfiles(): ProfileService {
     if (!this.#profiles) throw new Error("Profile service not configured on this daemon");
     return this.#profiles;
+  }
+
+  #requireDelivery(): ProfileDeliveryService {
+    if (!this.#delivery) throw new Error("Delivery service not configured on this daemon");
+    return this.#delivery;
   }
 
   #resolveScope(input: AgentQueryScope): AgentQueryScope {

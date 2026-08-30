@@ -67,7 +67,9 @@ export class OrchestratorProfileStore {
 				 on conflict(profile_id) do update set display_name = excluded.display_name, project_roots_json = excluded.project_roots_json, updated_at = excluded.updated_at`,
       )
       .run(input.profileId, input.displayName, roots, now, now);
-    return this.getProfile(input.profileId)!;
+    const created = this.getProfile(input.profileId);
+    if (!created) throw new Error(`profile upsert failed to persist ${input.profileId}`);
+    return created;
   }
 
   getProfile(profileId: string): ProfileRecord | undefined {

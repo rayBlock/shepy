@@ -134,3 +134,76 @@ export const agentOrchestratorAckInputSchema = Type.Object(
   { eventId: Type.Integer({ minimum: 1 }) },
   { additionalProperties: false },
 );
+
+export const profileClaimInputSchema = Type.Object(
+  {
+    harnessKind: Type.String({ minLength: 1 }),
+    harnessSessionRefJson: Type.String({ minLength: 1 }),
+    herdrSessionName: Type.String({ minLength: 1 }),
+    paneId: Type.String({ minLength: 1 }),
+    profileId: Type.String({ minLength: 1 }),
+    subscriberId: Type.String({ minLength: 1 }),
+    terminalId: Type.String({ minLength: 1 }),
+    workspaceId: Type.Optional(Type.String({ minLength: 1 })),
+  },
+  { additionalProperties: false },
+);
+
+export const profileReleaseInputSchema = Type.Object(
+  {
+    leaseToken: Type.String({ minLength: 1 }),
+    profileId: Type.String({ minLength: 1 }),
+  },
+  { additionalProperties: false },
+);
+
+export const inboxListInputSchema = Type.Object(
+  {
+    limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 500 })),
+    profileId: Type.String({ minLength: 1 }),
+    state: Type.Optional(
+      Type.Union([
+        Type.Literal("pending"),
+        Type.Literal("leased"),
+        Type.Literal("delivered"),
+        Type.Literal("acked"),
+        Type.Literal("dead_letter"),
+      ]),
+    ),
+  },
+  { additionalProperties: false },
+);
+
+export const inboxLeaseInputSchema = Type.Object(
+  {
+    leaseToken: Type.String({ minLength: 1 }),
+    maxBatch: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
+    profileId: Type.String({ minLength: 1 }),
+  },
+  { additionalProperties: false },
+);
+
+export const inboxDeliveredInputSchema = Type.Object(
+  {
+    harnessTurnId: Type.Optional(Type.String({ minLength: 1 })),
+    ids: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
+    leaseToken: Type.String({ minLength: 1 }),
+    ownerSessionRefJson: Type.String({ minLength: 1 }),
+  },
+  { additionalProperties: false },
+);
+
+export const inboxAckInputSchema = Type.Object(
+  {
+    errorCode: Type.Optional(Type.String({ minLength: 1 })),
+    ids: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
+    leaseToken: Type.String({ minLength: 1 }),
+    profileId: Type.String({ minLength: 1 }),
+  },
+  { additionalProperties: false },
+);
+
+export const inboxRetryInputSchema = Type.Object(
+  { id: Type.String({ minLength: 1 }) },
+  { additionalProperties: false },
+);

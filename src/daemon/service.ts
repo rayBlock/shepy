@@ -11,13 +11,16 @@ import { AgentOrchestratorScopeStore } from "@/db/agent-orchestrator-scopes.js";
 import { AgentStore } from "@/db/agents.js";
 import { applyMigrations } from "@/db/apply-migrations.js";
 import { openSqlite } from "@/db/client.js";
+import { DeliveryObligationStore } from "@/db/delivery-obligations.js";
 import { HerdrSessionStore } from "@/db/herdr-sessions.js";
 import { HerdrWorkspaceStore } from "@/db/herdr-workspaces.js";
 import { OrchestratorProfileStore } from "@/db/orchestrator-profiles.js";
+import { ProfileOwnerStore } from "@/db/profile-owners.js";
 import { createHerdrSessionListRunner } from "@/herdr/session-list.js";
 import { AgentContextService } from "@/observability/agent-context-service.js";
 import { AgentIndexService } from "@/observability/agent-index-service.js";
 import { AgentOrchestratorService } from "@/observability/agent-orchestrator-service.js";
+import { ProfileDeliveryService } from "@/observability/profile-delivery-service.js";
 import { ProfileService } from "@/observability/profile-service.js";
 import { HerdrSessionWatchManager } from "./herdr-session-watch-manager.js";
 import { ObservabilityRpcServer } from "./observability-server.js";
@@ -49,6 +52,12 @@ export async function runObservabilityDaemonService(
     history,
     profiles: orchestratorProfiles,
   });
+  const deliveryService = new ProfileDeliveryService({
+    agents,
+    obligations: new DeliveryObligationStore(sqlite),
+    owners: new ProfileOwnerStore({ sqlite }),
+    profiles: orchestratorProfiles,
+  });
   const context = new AgentContextService({
     history,
     stores: { agentContextSnapshots, agents },
@@ -66,6 +75,7 @@ export async function runObservabilityDaemonService(
 
   const server = new ObservabilityRpcServer({
     context: daemonServices.context,
+    delivery: deliveryService,
     profiles: profileService,
     history: daemonServices.history,
     orchestrator,
@@ -78,7 +88,10 @@ export async function runObservabilityDaemonService(
     herdrSessions,
     index,
     onAgentContextChanged: (scope) => server.publishAgentContext(scope),
-    onAgentEvent: (event) => server.publishAgentEvent(event),
+    onAgentEvent: (event) => {
+      server.publishAgentEvent(event);
+      deliveryService.projectAgentEvent(event);
+    },
     onAgentIndexRefreshed: (refreshed) => server.reconcileAgentLocations(refreshed),
     sessionList: createHerdrSessionListRunner({ env: runtime.environment }),
   });
