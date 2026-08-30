@@ -6,6 +6,7 @@ import type { AgentEventStore } from "@/db/agent-events.js";
 import type { AgentStore } from "@/db/agents.js";
 import type { HerdrSessionStore } from "@/db/herdr-sessions.js";
 import type { HerdrWorkspaceStore } from "@/db/herdr-workspaces.js";
+import type { OperationStore } from "@/db/operations.js";
 import {
   type HerdrPaneIdentity,
   resolveHerdrPaneIdentity,
@@ -23,6 +24,7 @@ import type {
   AgentWorkspaceContextSnapshot,
   PiPresenceRegistration,
 } from "@/observability/contracts.js";
+import type { OperationDispatchService } from "@/observability/operation-dispatch-service.js";
 import type { ProfileDeliveryService } from "@/observability/profile-delivery-service.js";
 import type { ProfileService } from "@/observability/profile-service.js";
 import {
@@ -39,6 +41,8 @@ import {
   inboxLeaseInputSchema,
   inboxListInputSchema,
   inboxRetryInputSchema,
+  operationDispatchInputSchema,
+  operationGetInputSchema,
   profileClaimInputSchema,
   profileEnsureInputSchema,
   profileReleaseInputSchema,
@@ -91,6 +95,8 @@ export class ObservabilityRpcServer {
   readonly #piPresenceBySocket = new Map<Socket, PiPresence>();
   readonly #profiles: ProfileService | undefined;
   readonly #delivery: ProfileDeliveryService | undefined;
+  readonly #operationDispatch: OperationDispatchService | undefined;
+  readonly #operationStore: OperationStore | undefined;
   readonly #registerPiSessionRef: (input: {
     herdrSessionName: string;
     sessionRef: PiPresenceRegistration["sessionRef"];
@@ -119,6 +125,8 @@ export class ObservabilityRpcServer {
     orchestrator: AgentOrchestratorService;
     delivery?: ProfileDeliveryService;
     profiles?: ProfileService;
+    operationDispatch?: OperationDispatchService;
+    operationStore?: OperationStore;
     registerPiSessionRef?: (input: {
       herdrSessionName: string;
       sessionRef: PiPresenceRegistration["sessionRef"];
@@ -141,6 +149,8 @@ export class ObservabilityRpcServer {
     this.#orchestrator = options.orchestrator;
     this.#delivery = options.delivery;
     this.#profiles = options.profiles;
+    this.#operationDispatch = options.operationDispatch;
+    this.#operationStore = options.operationStore;
     this.#registerPiSessionRef =
       options.registerPiSessionRef ?? (async () => ({ contextChangedScopes: [] }));
     this.#resolvePaneIdentity = options.resolvePaneIdentity ?? resolveHerdrPaneIdentity;
@@ -359,6 +369,32 @@ export class ObservabilityRpcServer {
         };
         const { removed } = this.#requireProfiles().removeSubscription(input);
         return { removed };
+      }
+      case "operation.dispatch": {
+        assertSchema(operationDispatchInputSchema, params);
+        const input = params as { profileId: string; prompt: string };
+        const dispatch = this.#requireOperationDispatch();
+        const outcome = await dispatch.dispatch({
+          profileId: input.profileId,
+          prompt: input.prompt,
+        });
+        return { outcome };
+      }
+      case "operation.get": {
+        assertSchema(operationGetInputSchema, params);
+        const input = params as { operationId: string; profileId?: string };
+        const store = this.#requireOperationStore();
+        const operation = store.get(
+          input.operationId,
+          input.profileId ? { profileId: input.profileId } : undefined,
+        );
+        if (!operation) throw new Error(`No such operation: ${input.operationId}`);
+        return { operation };
+      }
+      case "operation.list": {
+        assertSchema(profileShowInputSchema, params);
+        const input = params as { profileId: string };
+        return { operations: this.#requireOperationStore().listForProfile(input.profileId) };
       }
       case "profile.claim": {
         assertSchema(profileClaimInputSchema, params);
@@ -691,6 +727,18 @@ export class ObservabilityRpcServer {
   #requireProfiles(): ProfileService {
     if (!this.#profiles) throw new Error("Profile service not configured on this daemon");
     return this.#profiles;
+  }
+
+  #requireOperationDispatch(): OperationDispatchService {
+    if (!this.#operationDispatch) {
+      throw new Error("Operation dispatch not configured on this daemon");
+    }
+    return this.#operationDispatch;
+  }
+
+  #requireOperationStore(): OperationStore {
+    if (!this.#operationStore) throw new Error("Operation store not configured on this daemon");
+    return this.#operationStore;
   }
 
   #requireDelivery(): ProfileDeliveryService {

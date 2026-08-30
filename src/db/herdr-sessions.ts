@@ -61,6 +61,13 @@ export class HerdrSessionStore {
     return row ? mapHerdrSession(row) : undefined;
   }
 
+  findRunningByName(name: string): HerdrSessionRecord | undefined {
+    const row = this.#sqlite
+      .prepare("select * from herdr_sessions where running = 1 and name = ?")
+      .get(name) as HerdrSessionRow | undefined;
+    return row ? mapHerdrSession(row) : undefined;
+  }
+
   listRunning(): HerdrSessionRecord[] {
     const rows = this.#sqlite
       .prepare("select * from herdr_sessions where running = 1 order by name")

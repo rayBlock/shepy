@@ -81,6 +81,24 @@ export const profileSubscribeInputSchema = Type.Object(
 
 export const profileUnsubscribeInputSchema = profileSubscribeInputSchema;
 
+export const operationDispatchInputSchema = Type.Object(
+  {
+    herdrSessionName: Type.Optional(Type.String({ minLength: 1 })),
+    profileId: Type.String({ minLength: 1 }),
+    prompt: Type.String({ minLength: 1 }),
+    workspaceId: Type.Optional(Type.String({ minLength: 1 })),
+  },
+  { additionalProperties: false },
+);
+
+export const operationGetInputSchema = Type.Object(
+  {
+    operationId: Type.String({ minLength: 1 }),
+    profileId: Type.Optional(Type.String({ minLength: 1 })),
+  },
+  { additionalProperties: false },
+);
+
 export const agentReadInputSchema = Type.Object(
   {
     herdrSessionName: Type.Optional(Type.String({ minLength: 1 })),

@@ -14,12 +14,16 @@ import { openSqlite } from "@/db/client.js";
 import { DeliveryObligationStore } from "@/db/delivery-obligations.js";
 import { HerdrSessionStore } from "@/db/herdr-sessions.js";
 import { HerdrWorkspaceStore } from "@/db/herdr-workspaces.js";
+import { OperationStore } from "@/db/operations.js";
 import { OrchestratorProfileStore } from "@/db/orchestrator-profiles.js";
 import { ProfileOwnerStore } from "@/db/profile-owners.js";
+import { SessionAwareOrchestrationTransport } from "@/herdr/session-aware-transport.js";
 import { createHerdrSessionListRunner } from "@/herdr/session-list.js";
 import { AgentContextService } from "@/observability/agent-context-service.js";
 import { AgentIndexService } from "@/observability/agent-index-service.js";
 import { AgentOrchestratorService } from "@/observability/agent-orchestrator-service.js";
+import { OperationDispatchService } from "@/observability/operation-dispatch-service.js";
+import { resolveDispatchTarget } from "@/observability/operation-target-resolver.js";
 import { ProfileDeliveryService } from "@/observability/profile-delivery-service.js";
 import { ProfileService } from "@/observability/profile-service.js";
 import { HerdrSessionWatchManager } from "./herdr-session-watch-manager.js";
@@ -52,6 +56,15 @@ export async function runObservabilityDaemonService(
     history,
     profiles: orchestratorProfiles,
   });
+  const operationStore = new OperationStore(sqlite);
+  const orchestrationTransport = new SessionAwareOrchestrationTransport({
+    sessions: herdrSessions,
+  });
+  const operationDispatch = new OperationDispatchService({
+    operations: operationStore,
+    resolve: (profileId) => resolveDispatchTarget(profileService.resolveSubscriptions(profileId)),
+    transport: orchestrationTransport,
+  });
   const deliveryService = new ProfileDeliveryService({
     agents,
     obligations: new DeliveryObligationStore(sqlite),
@@ -77,6 +90,8 @@ export async function runObservabilityDaemonService(
     context: daemonServices.context,
     delivery: deliveryService,
     profiles: profileService,
+    operationDispatch,
+    operationStore,
     history: daemonServices.history,
     orchestrator,
     registerPiSessionRef: (registration) => index.registerPiSessionRef(registration),
