@@ -30,7 +30,7 @@ shepy help
 Source builds also require pnpm >= 11.9.0.
 
 ```bash
-git clone https://github.com/ryonakae/shepherd.git
+git clone https://github.com/rayBlock/shepy.git
 cd shepy
 pnpm install
 pnpm build
@@ -76,7 +76,7 @@ shepy agent read wB:p2 --workspace wB --limit 20 --json
 Install the Shepy CLI and start its daemon before adding the Agent Skill. Then add the Shepy instructions to supported coding agents:
 
 ```bash
-npx skills add ryonakae/shepy --skill shepy -g
+npx skills add rayBlock/shepy --skill shepy -g
 ```
 
 The Shepy skill reads structured agent status, compact history, and recent tool results. Use it alone for agent inspection.
@@ -108,7 +108,7 @@ Use `/shepy` or `/shepy status` to inspect the current Pi, and `/shepy off` to r
 Install the optional plugin from the GitHub release tag:
 
 ```bash
-herdr plugin install ryonakae/shepy/packages/shepy-herdr-plugin --ref v0.4.0 --yes
+herdr plugin install rayBlock/shepy/packages/shepy-herdr-plugin --ref v0.5.0 --yes
 ```
 
 The plugin connects to the Shepy daemon and shows compact agent rows for the current Herdr workspace, including separate live-name and runtime-kind columns plus cached history excerpts. Herdr installs it from the repository subdirectory; it is not published to npm or required for the CLI and Pi extension.

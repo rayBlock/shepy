@@ -17,7 +17,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ryonakae/shepherd.git",
+    "url": "git+https://github.com/rayBlock/shepy.git",
     "directory": "packages/shepy-pi"
   },
   "scripts": {

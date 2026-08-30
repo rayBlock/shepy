@@ -48,7 +48,7 @@ describe("npm publication metadata", () => {
     expect(pi.publishConfig?.access).toBe("public");
     expect(pi.repository).toEqual({
       type: "git",
-      url: "git+https://github.com/ryonakae/shepherd.git",
+      url: "git+https://github.com/rayBlock/shepy.git",
       directory: "packages/shepy-pi",
     });
 

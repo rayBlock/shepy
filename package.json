@@ -22,12 +22,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ryonakae/shepherd.git"
+    "url": "git+https://github.com/rayBlock/shepy.git"
   },
   "bugs": {
-    "url": "https://github.com/ryonakae/shepherd/issues"
+    "url": "https://github.com/rayBlock/shepy/issues"
   },
-  "homepage": "https://github.com/ryonakae/shepherd#readme",
+  "homepage": "https://github.com/rayBlock/shepy#readme",
   "packageManager": "pnpm@11.9.0",
   "engines": {
     "node": ">=24.18.0",
