@@ -71,6 +71,59 @@ describe("shepy CLI", () => {
     expect(() => parseCliArgs(["legacy-command"])).toThrow("Unknown command");
   });
 
+  test("parses dispatch and wait commands", () => {
+    expect(parseCliArgs(["dispatch", "driffs", "run the tests"])).toEqual({
+      command: "operation-dispatch",
+      json: false,
+      profileId: "driffs",
+      prompt: "run the tests",
+    });
+    expect(parseCliArgs(["dispatch", "driffs", "--prompt-file", "/tmp/p.md", "--json"])).toEqual({
+      command: "operation-dispatch",
+      json: true,
+      profileId: "driffs",
+      prompt: "file:/tmp/p.md",
+    });
+    expect(() => parseCliArgs(["dispatch", "driffs"])).toThrow("requires a prompt");
+    expect(() => parseCliArgs(["dispatch"])).toThrow("requires <profileId>");
+
+    expect(parseCliArgs(["wait", "op_123"])).toEqual({
+      command: "operation-wait",
+      json: false,
+      operationId: "op_123",
+    });
+    expect(parseCliArgs(["wait", "op_123", "--timeout", "30000", "--json"])).toEqual({
+      command: "operation-wait",
+      json: true,
+      operationId: "op_123",
+      timeoutMs: 30000,
+    });
+    expect(() => parseCliArgs(["wait", "op_1", "--timeout", "0"])).toThrow(
+      "--timeout must be between",
+    );
+    expect(() => parseCliArgs(["wait"])).toThrow("requires <operationId>");
+  });
+
+  test("parses contextual help for dispatch and wait", () => {
+    expect(parseCliArgs(["dispatch", "--help"])).toEqual({ command: "help", topic: "dispatch" });
+    expect(parseCliArgs(["wait", "-h"])).toEqual({ command: "help", topic: "wait" });
+  });
+
+  test("operation subcommands: get and list", () => {
+    expect(parseCliArgs(["operation", "get", "op_1", "--json"])).toEqual({
+      command: "operation-get",
+      json: true,
+      operationId: "op_1",
+    });
+    expect(parseCliArgs(["operation", "list", "driffs"])).toEqual({
+      command: "operation-list",
+      json: false,
+      profileId: "driffs",
+    });
+    expect(parseCliArgs(["operation", "--help"])).toEqual({ command: "help", topic: "operation" });
+    expect(() => parseCliArgs(["operation", "frobnicate"])).toThrow("Unknown operation command");
+  });
+
   test("parses root help and version flags", () => {
     expect(parseCliArgs([])).toEqual({ command: "help", topic: "root" });
     expect(parseCliArgs(["--help"])).toEqual({ command: "help", topic: "root" });

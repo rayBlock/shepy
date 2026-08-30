@@ -23,16 +23,21 @@ type HelpTopic =
   | "agent-read"
   | `daemon-${DaemonAction}`
   | "daemon"
+  | "dispatch"
   | "inbox"
   | "inbox-list"
   | "inbox-retry"
+  | "operation"
+  | "operation-get"
+  | "operation-list"
   | "profile"
   | "profile-context"
   | "profile-ensure"
   | "profile-list"
   | "profile-show"
   | "profile-subscribe"
-  | "root";
+  | "root"
+  | "wait";
 
 class CliUsageError extends Error {
   constructor(
@@ -80,6 +85,10 @@ export type CliCommand =
     }
   | { command: "inbox-list"; json: boolean; profileId: string; state?: string }
   | { command: "inbox-retry"; id: string; json: boolean }
+  | { command: "operation-dispatch"; json: boolean; profileId: string; prompt: string }
+  | { command: "operation-wait"; json: boolean; operationId: string; timeoutMs?: number }
+  | { command: "operation-get"; json: boolean; operationId: string }
+  | { command: "operation-list"; json: boolean; profileId: string }
   | { command: "help"; topic: HelpTopic }
   | { command: "version" };
 
@@ -107,8 +116,79 @@ export function parseCliArgs(
   if (command === "agent") return parseAgentCommand(rest, environment);
   if (command === "profile") return parseProfileCommand(rest);
   if (command === "inbox") return parseInboxCommand(rest);
+  if (command === "dispatch") return parseDispatchCommand(rest);
+  if (command === "wait") return parseWaitCommand(rest);
+  if (command === "operation") return parseOperationCommand(rest);
 
   throw new CliUsageError(`Unknown command: ${command}`, "root");
+}
+
+function parseDispatchCommand(args: string[]): CliCommand {
+  if (args.some(isHelpFlag)) return { command: "help", topic: "dispatch" };
+  const promptFile = takeOption(args, "--prompt-file", "dispatch");
+  const json = takeFlag(args, "--json");
+  const [profileId, ...promptParts] = args;
+  if (!profileId) throw new CliUsageError("dispatch requires <profileId>", "dispatch");
+  rejectExtra([], "dispatch");
+  let prompt: string;
+  if (promptFile) {
+    prompt = `file:${promptFile}`;
+  } else {
+    prompt = promptParts.join(" ");
+    if (prompt.trim().length === 0) {
+      throw new CliUsageError(
+        "dispatch requires a prompt (positional text or --prompt-file <path>)",
+        "dispatch",
+      );
+    }
+  }
+  return { command: "operation-dispatch", json, profileId, prompt };
+}
+
+function parseWaitCommand(args: string[]): CliCommand {
+  if (args.some(isHelpFlag)) return { command: "help", topic: "wait" };
+  const timeoutValue = takeOption(args, "--timeout", "wait");
+  const json = takeFlag(args, "--json");
+  const [operationId, ...extra] = args;
+  if (!operationId) throw new CliUsageError("wait requires <operationId>", "wait");
+  rejectExtra(extra, "wait");
+  const timeoutMs = timeoutValue ? Number(timeoutValue) : undefined;
+  if (
+    timeoutMs !== undefined &&
+    (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 3_600_000)
+  ) {
+    throw new CliUsageError("--timeout must be between 1 and 3600000 milliseconds", "wait");
+  }
+  return {
+    command: "operation-wait",
+    json,
+    operationId,
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+  };
+}
+
+function parseOperationCommand(args: string[]): CliCommand {
+  const [subcommand, ...rest] = args;
+  if (!subcommand || isHelpFlag(subcommand)) return { command: "help", topic: "operation" };
+  if (subcommand === "get") {
+    if (rest.some(isHelpFlag)) return { command: "help", topic: "operation-get" };
+    const json = takeFlag(rest, "--json");
+    const [operationId, ...extra] = rest;
+    if (!operationId)
+      throw new CliUsageError("operation get requires <operationId>", "operation-get");
+    rejectExtra(extra, "operation-get");
+    return { command: "operation-get", json, operationId };
+  }
+  if (subcommand === "list") {
+    if (rest.some(isHelpFlag)) return { command: "help", topic: "operation-list" };
+    const json = takeFlag(rest, "--json");
+    const [profileId, ...extra] = rest;
+    if (!profileId)
+      throw new CliUsageError("operation list requires <profileId>", "operation-list");
+    rejectExtra(extra, "operation-list");
+    return { command: "operation-list", json, profileId };
+  }
+  throw new CliUsageError(`Unknown operation command: ${subcommand}`, "operation");
 }
 
 function parseDaemonCommand(args: string[]): CliCommand {
@@ -332,6 +412,9 @@ Commands:
   daemon    Manage the Shepy daemon
   profile   Manage orchestration profiles
   inbox     Inspect delivery obligations
+  dispatch  Send a prompt to a profile's agent
+  wait      Wait for an operation's completion
+  operation Inspect orchestration operations
 
 Options:
   -h, --help       Show help
@@ -531,6 +614,70 @@ Usage:
 Options:
   -h, --help  Show help
 `;
+    case "dispatch":
+      return `Dispatch a prompt to a profile's bound agent.
+
+Usage:
+  shepy dispatch <profileId> <prompt...> [options]
+  shepy dispatch <profileId> --prompt-file <path> [options]
+
+The profile must resolve to exactly one running agent with a stable
+session identity; ambiguous or unmatched profiles fail closed and no
+prompt is sent.
+
+Options:
+  --prompt-file <path>    Read the prompt from a file
+  --json                  Print JSON
+  -h, --help              Show help
+`;
+    case "wait":
+      return `Wait for an operation's correlated completion.
+
+Usage:
+  shepy wait <operationId> [options]
+
+Outcomes: settled, blocked, failed, target_lost, or wait_timeout.
+A timeout ends this wait only — the operation stays live and a later
+correlated result can still settle it.
+
+Options:
+  --timeout <ms>    Bound the wait (1 to 3600000 ms)
+  --json            Print JSON
+  -h, --help        Show help
+`;
+    case "operation":
+      return `Inspect orchestration operations.
+
+Usage:
+  shepy operation <command>
+
+Commands:
+  get <operationId>      Show one operation
+  list <profileId>       List a profile's operations, newest first
+
+Options:
+  -h, --help             Show help
+`;
+    case "operation-get":
+      return `Show one durable operation.
+
+Usage:
+  shepy operation get <operationId> [options]
+
+Options:
+  --json         Print JSON
+  -h, --help     Show help
+`;
+    case "operation-list":
+      return `List a profile's operations, newest first.
+
+Usage:
+  shepy operation list <profileId> [options]
+
+Options:
+  --json         Print JSON
+  -h, --help     Show help
+`;
   }
 }
 
@@ -547,6 +694,33 @@ export async function runCliCommand(command: CliCommand, deps: RunCliDeps): Prom
     deps.output(versionText());
     return;
   }
+  if (command.command === "operation-dispatch") {
+    const client = await deps.connect(deps.socketPath);
+    try {
+      const prompt = await resolvePromptText(command.prompt);
+      const result = await client.request("operation.dispatch", {
+        profileId: command.profileId,
+        prompt,
+      });
+      printResult(command, result, deps.output);
+    } finally {
+      client.close();
+    }
+    return;
+  }
+  if (command.command === "operation-wait") {
+    const client = await deps.connect(deps.socketPath);
+    try {
+      const result = await client.request("operation.wait", {
+        operationId: command.operationId,
+        ...(command.timeoutMs === undefined ? {} : { timeoutMs: command.timeoutMs }),
+      });
+      printResult(command, result, deps.output);
+    } finally {
+      client.close();
+    }
+    return;
+  }
   if (command.command === "daemon") throw new Error("daemon command is handled by main");
   const client = await deps.connect(deps.socketPath);
   try {
@@ -558,7 +732,10 @@ export async function runCliCommand(command: CliCommand, deps: RunCliDeps): Prom
 }
 
 async function dispatchRpcCommand(
-  command: Exclude<CliCommand, { command: "daemon" | "help" | "version" }>,
+  command: Exclude<
+    CliCommand,
+    { command: "daemon" | "help" | "version" | "operation-dispatch" | "operation-wait" }
+  >,
   client: RpcClientLike,
 ) {
   if (command.command === "agent-list") {
@@ -601,11 +778,25 @@ async function dispatchRpcCommand(
     };
     return client.request(command.subscribe ? "profile.subscribe" : "profile.unsubscribe", params);
   }
+  if (command.command === "operation-get") {
+    return client.request("operation.get", { operationId: command.operationId });
+  }
+  if (command.command === "operation-list") {
+    return client.request("operation.list", { profileId: command.profileId });
+  }
   return client.request("agent.read", {
     ...scopeParams(command),
     ...(command.limit !== undefined ? { limit: command.limit } : {}),
     target: command.target,
   });
+}
+
+async function resolvePromptText(prompt: string): Promise<string> {
+  if (!prompt.startsWith("file:")) return prompt;
+  const { readFile } = await import("node:fs/promises");
+  const content = await readFile(prompt.slice(5), "utf8");
+  if (content.trim().length === 0) throw new Error("prompt file is empty");
+  return content;
 }
 
 function scopeParams(scope: AgentScope): AgentScope {
