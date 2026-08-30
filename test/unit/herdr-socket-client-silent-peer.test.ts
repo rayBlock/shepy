@@ -1,7 +1,7 @@
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 import { HerdrSocketClient } from "../../src/herdr/socket-client.js";
 
 /**

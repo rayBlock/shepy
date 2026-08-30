@@ -13,10 +13,12 @@ import { applyMigrations } from "@/db/apply-migrations.js";
 import { openSqlite } from "@/db/client.js";
 import { HerdrSessionStore } from "@/db/herdr-sessions.js";
 import { HerdrWorkspaceStore } from "@/db/herdr-workspaces.js";
+import { OrchestratorProfileStore } from "@/db/orchestrator-profiles.js";
 import { createHerdrSessionListRunner } from "@/herdr/session-list.js";
 import { AgentContextService } from "@/observability/agent-context-service.js";
 import { AgentIndexService } from "@/observability/agent-index-service.js";
 import { AgentOrchestratorService } from "@/observability/agent-orchestrator-service.js";
+import { ProfileService } from "@/observability/profile-service.js";
 import { HerdrSessionWatchManager } from "./herdr-session-watch-manager.js";
 import { ObservabilityRpcServer } from "./observability-server.js";
 
@@ -40,7 +42,13 @@ export async function runObservabilityDaemonService(
   const agentHistoryCache = new AgentHistoryCacheStore(sqlite);
   const agentContextSnapshots = new AgentContextSnapshotStore(sqlite);
   const agentOrchestratorScopes = new AgentOrchestratorScopeStore(sqlite);
+  const orchestratorProfiles = new OrchestratorProfileStore(sqlite);
   const history = createAgentHistoryService({ cache: agentHistoryCache });
+  const profileService = new ProfileService({
+    agents,
+    history,
+    profiles: orchestratorProfiles,
+  });
   const context = new AgentContextService({
     history,
     stores: { agentContextSnapshots, agents },
@@ -58,6 +66,7 @@ export async function runObservabilityDaemonService(
 
   const server = new ObservabilityRpcServer({
     context: daemonServices.context,
+    profiles: profileService,
     history: daemonServices.history,
     orchestrator,
     registerPiSessionRef: (registration) => index.registerPiSessionRef(registration),

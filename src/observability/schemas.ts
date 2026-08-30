@@ -28,6 +28,59 @@ export const agentGetInputSchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const agentSelectorSchema = Type.Union([
+  Type.Object(
+    { kind: Type.Literal("terminalId"), value: Type.String({ minLength: 1 }) },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    { kind: Type.Literal("paneId"), value: Type.String({ minLength: 1 }) },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    { kind: Type.Literal("name"), value: Type.String({ minLength: 1 }) },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    { kind: Type.Literal("agentSession"), value: Type.String({ minLength: 1 }) },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      agent: Type.String({ minLength: 1 }),
+      kind: Type.Literal("runtimeKindPlusCwd"),
+      cwd: Type.String({ minLength: 1 }),
+    },
+    { additionalProperties: false },
+  ),
+]);
+
+export const profileEnsureInputSchema = Type.Object(
+  {
+    displayName: Type.String({ minLength: 1 }),
+    profileId: Type.String({ minLength: 1 }),
+    projectRoots: Type.Array(Type.String({ minLength: 1 })),
+  },
+  { additionalProperties: false },
+);
+
+export const profileShowInputSchema = Type.Object(
+  { profileId: Type.String({ minLength: 1 }) },
+  { additionalProperties: false },
+);
+
+export const profileSubscribeInputSchema = Type.Object(
+  {
+    agentSelector: agentSelectorSchema,
+    herdrSessionName: Type.String({ minLength: 1 }),
+    profileId: Type.String({ minLength: 1 }),
+    workspaceId: Type.String({ minLength: 1 }),
+  },
+  { additionalProperties: false },
+);
+
+export const profileUnsubscribeInputSchema = profileSubscribeInputSchema;
+
 export const agentReadInputSchema = Type.Object(
   {
     herdrSessionName: Type.Optional(Type.String({ minLength: 1 })),

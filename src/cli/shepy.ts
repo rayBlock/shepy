@@ -28,6 +28,29 @@ export type CliCommand =
   | ({ command: "agent-list"; json: boolean } & AgentScope)
   | ({ command: "agent-get"; json: boolean; target: string } & AgentScope)
   | ({ command: "agent-read"; json: boolean; limit?: number; target: string } & AgentScope)
+  | { command: "profile-context"; json: boolean; profileId: string }
+  | {
+      command: "profile-ensure";
+      displayName: string;
+      json: boolean;
+      profileId: string;
+      projectRoots: string[];
+    }
+  | { command: "profile-list"; json: boolean }
+  | {
+      command: "profile-show";
+      json: boolean;
+      profileId: string;
+    }
+  | {
+      command: "profile-subscribe";
+      agentSelector: string;
+      herdrSessionName: string;
+      json: boolean;
+      profileId: string;
+      subscribe: boolean;
+      workspaceId: string;
+    }
   | { command: "help" };
 
 type RpcClientLike = Pick<ObservabilityRpcClient, "close" | "request">;
@@ -56,6 +79,10 @@ export function parseCliArgs(
 
   if (command === "agent") {
     return parseAgentCommand(rest, environment);
+  }
+
+  if (command === "profile") {
+    return parseProfileCommand(rest);
   }
 
   throw new Error(`Unknown command: ${command}`);
@@ -125,12 +152,98 @@ function scopedOrCurrent(scope: AgentScope, environment: NodeJS.ProcessEnv): Age
   throw new Error(CURRENT_HERDR_WORKSPACE_ERROR);
 }
 
+function parseProfileCommand(args: string[]): CliCommand {
+  const [subcommand, ...rest] = args;
+  if (!subcommand || subcommand === "help" || subcommand === "--help" || subcommand === "-h") {
+    return { command: "help" };
+  }
+  const json = takeFlag(rest, "--json");
+  if (subcommand === "list") {
+    rejectExtra(rest);
+    return { command: "profile-list", json };
+  }
+  const [profileId, ...extra] = rest;
+  if (!profileId) throw new Error(`profile ${subcommand} requires <profileId>`);
+  if (subcommand === "show") {
+    rejectExtra(extra);
+    return { command: "profile-show", json, profileId };
+  }
+  if (subcommand === "context") {
+    rejectExtra(extra);
+    return { command: "profile-context", json, profileId };
+  }
+  if (subcommand === "ensure") {
+    const displayName = takeOption(rest, "--display-name") ?? profileId;
+    const roots = takeOption(rest, "--roots");
+    rejectExtra(rest.filter((entry) => entry !== displayName && entry !== "--display-name"));
+    return {
+      command: "profile-ensure",
+      displayName,
+      json,
+      profileId,
+      projectRoots: roots
+        ? roots
+            .split(",")
+            .map((root) => root.trim())
+            .filter(Boolean)
+        : [],
+    };
+  }
+  if (subcommand === "subscribe" || subcommand === "unsubscribe") {
+    const herdrSessionName = takeOption(rest, "--session") ?? "default";
+    const workspaceId = takeOption(rest, "--workspace");
+    const byName = takeOption(rest, "--name");
+    const byPane = takeOption(rest, "--pane");
+    const byTerminal = takeOption(rest, "--terminal");
+    const bySessionId = takeOption(rest, "--agent-session");
+    const kindPlusCwd = takeOption(rest, "--kind-cwd");
+    const selectorCount = [byName, byPane, byTerminal, bySessionId, kindPlusCwd].filter(
+      Boolean,
+    ).length;
+    if (!workspaceId) throw new Error("profile subscribe requires --workspace <id>");
+    if (selectorCount !== 1) {
+      throw new Error(
+        "profile subscribe requires exactly one selector: --name, --pane, --terminal, --agent-session, or --kind-cwd <kind>=<cwd>",
+      );
+    }
+    let agentSelector: string;
+    if (byName) agentSelector = JSON.stringify({ kind: "name", value: byName });
+    else if (byPane) agentSelector = JSON.stringify({ kind: "paneId", value: byPane });
+    else if (byTerminal) agentSelector = JSON.stringify({ kind: "terminalId", value: byTerminal });
+    else if (bySessionId)
+      agentSelector = JSON.stringify({ kind: "agentSession", value: bySessionId });
+    else {
+      const [kind, cwd] = (kindPlusCwd ?? "").split("=");
+      if (!kind || !cwd) throw new Error("--kind-cwd must be <kind>=<cwd>");
+      agentSelector = JSON.stringify({ agent: kind, cwd, kind: "runtimeKindPlusCwd" });
+    }
+    const positional = rest.filter((entry) => !entry.startsWith("--") && entry !== profileId);
+    rejectExtra(positional);
+    return {
+      agentSelector,
+      command: "profile-subscribe",
+      herdrSessionName,
+      json,
+      profileId,
+      subscribe: subcommand === "subscribe",
+      workspaceId,
+    };
+  }
+  throw new Error(`Unknown profile command: ${subcommand}`);
+}
+
 export function helpText(): string {
   return `Usage:
   shepy daemon [start|stop|restart|status]
   shepy agent list [--all] [--workspace <id>] [--session <name>] [--json]
   shepy agent get <target> [--workspace <id>] [--session <name>] [--json]
   shepy agent read <target> [--limit N] [--workspace <id>] [--session <name>] [--json]
+  shepy profile list [--json]
+  shepy profile ensure <profileId> [--display-name <name>] [--roots <path,path>]
+  shepy profile show <profileId> [--json]
+  shepy profile context <profileId> [--json]
+  shepy profile subscribe <profileId> --workspace <id> [--session <name>] (--name | --pane | --terminal | --agent-session | --kind-cwd <kind>=<cwd>)
+  shepy profile unsubscribe <profileId> --workspace <id> [selector as above]
   shepy help
 `;
 }
@@ -159,6 +272,31 @@ async function dispatchRpcCommand(
   }
   if (command.command === "agent-get") {
     return client.request("agent.get", { ...scopeParams(command), target: command.target });
+  }
+  if (command.command === "profile-list") {
+    return client.request("profile.list", {});
+  }
+  if (command.command === "profile-ensure") {
+    return client.request("profile.ensure", {
+      displayName: command.displayName,
+      profileId: command.profileId,
+      projectRoots: command.projectRoots,
+    });
+  }
+  if (command.command === "profile-show") {
+    return client.request("profile.show", { profileId: command.profileId });
+  }
+  if (command.command === "profile-context") {
+    return client.request("profile.context", { profileId: command.profileId });
+  }
+  if (command.command === "profile-subscribe") {
+    const params = {
+      agentSelector: JSON.parse(command.agentSelector),
+      herdrSessionName: command.herdrSessionName,
+      profileId: command.profileId,
+      workspaceId: command.workspaceId,
+    };
+    return client.request(command.subscribe ? "profile.subscribe" : "profile.unsubscribe", params);
   }
   return client.request("agent.read", {
     ...scopeParams(command),
@@ -189,6 +327,14 @@ function formatHumanResult(command: CliCommand, result: unknown): string {
   if (command.command === "agent-get") return formatAgentGet(result as { agent?: AgentGetResult });
   if (command.command === "agent-read")
     return formatAgentRead(result as { agent?: AgentReadResult });
+  if (command.command === "profile-list")
+    return formatProfileList(
+      result as { profiles?: Array<{ displayName: string; profileId: string }> },
+    );
+  if (command.command === "profile-show" || command.command === "profile-context")
+    return JSON.stringify(result, null, 2);
+  if (command.command === "profile-ensure" || command.command === "profile-subscribe")
+    return JSON.stringify(result);
   return JSON.stringify(result);
 }
 
@@ -408,4 +554,12 @@ if (
     console.error(formatCliError(error));
     exit(1);
   });
+}
+
+function formatProfileList(result: {
+  profiles?: Array<{ displayName: string; profileId: string }>;
+}): string {
+  const profiles = result.profiles ?? [];
+  if (profiles.length === 0) return "No Shepy profiles.";
+  return profiles.map((profile) => `${profile.profileId}\t${profile.displayName}`).join("\n");
 }

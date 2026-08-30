@@ -23,6 +23,7 @@ import type {
   AgentWorkspaceContextSnapshot,
   PiPresenceRegistration,
 } from "@/observability/contracts.js";
+import type { ProfileService } from "@/observability/profile-service.js";
 import {
   agentEventsInputSchema,
   agentGetInputSchema,
@@ -32,6 +33,9 @@ import {
   agentOrchestratorRegisterInputSchema,
   agentOrchestratorSetInputSchema,
   agentReadInputSchema,
+  profileEnsureInputSchema,
+  profileShowInputSchema,
+  profileSubscribeInputSchema,
 } from "@/observability/schemas.js";
 import { encodeJsonLine, JsonLineDecoder } from "@/shared/json-lines.js";
 
@@ -77,6 +81,7 @@ export class ObservabilityRpcServer {
   readonly #now: () => number;
   readonly #orchestrator: AgentOrchestratorService;
   readonly #piPresenceBySocket = new Map<Socket, PiPresence>();
+  readonly #profiles: ProfileService | undefined;
   readonly #registerPiSessionRef: (input: {
     herdrSessionName: string;
     sessionRef: PiPresenceRegistration["sessionRef"];
@@ -103,6 +108,7 @@ export class ObservabilityRpcServer {
     history: AgentHistoryService;
     now?: () => number;
     orchestrator: AgentOrchestratorService;
+    profiles?: ProfileService;
     registerPiSessionRef?: (input: {
       herdrSessionName: string;
       sessionRef: PiPresenceRegistration["sessionRef"];
@@ -123,6 +129,7 @@ export class ObservabilityRpcServer {
     this.#history = options.history;
     this.#now = options.now ?? Date.now;
     this.#orchestrator = options.orchestrator;
+    this.#profiles = options.profiles;
     this.#registerPiSessionRef =
       options.registerPiSessionRef ?? (async () => ({ contextChangedScopes: [] }));
     this.#resolvePaneIdentity = options.resolvePaneIdentity ?? resolveHerdrPaneIdentity;
@@ -297,6 +304,57 @@ export class ObservabilityRpcServer {
           preferredRef: preferredRef ?? null,
         });
         return { agent: { ...agent, historyRef: read.historyRef, messages: read.messages } };
+      }
+      case "profile.list": {
+        const profiles = this.#requireProfiles().listProfiles();
+        return { profiles };
+      }
+      case "profile.ensure": {
+        assertSchema(profileEnsureInputSchema, params);
+        const input = params as { displayName: string; profileId: string; projectRoots: string[] };
+        const profile = this.#requireProfiles().ensureProfile(input);
+        return { profile };
+      }
+      case "profile.show": {
+        assertSchema(profileShowInputSchema, params);
+        const input = params as { profileId: string };
+        const profiles = this.#requireProfiles();
+        const profile = profiles.getProfile(input.profileId);
+        if (!profile) throw new Error(`No such profile: ${input.profileId}`);
+        return {
+          profile,
+          resolutions: profiles.resolveSubscriptions(input.profileId),
+          subscriptions: profiles.listSubscriptions(input.profileId),
+        };
+      }
+      case "profile.subscribe": {
+        assertSchema(profileSubscribeInputSchema, params);
+        const input = params as {
+          agentSelector: Parameters<ProfileService["addSubscription"]>[0]["agentSelector"];
+          herdrSessionName: string;
+          profileId: string;
+          workspaceId: string;
+        };
+        const { subscription } = this.#requireProfiles().addSubscription(input);
+        return { subscription };
+      }
+      case "profile.unsubscribe": {
+        assertSchema(profileSubscribeInputSchema, params);
+        const input = params as {
+          agentSelector: Parameters<ProfileService["addSubscription"]>[0]["agentSelector"];
+          herdrSessionName: string;
+          profileId: string;
+          workspaceId: string;
+        };
+        const { removed } = this.#requireProfiles().removeSubscription(input);
+        return { removed };
+      }
+      case "profile.context": {
+        assertSchema(profileShowInputSchema, params);
+        const input = params as { profileId: string };
+        const context = await this.#requireProfiles().profileContext(input.profileId);
+        if (!context) throw new Error(`No such profile: ${input.profileId}`);
+        return context;
       }
       case "agent.events": {
         assertSchema(agentEventsInputSchema, params);
@@ -538,6 +596,11 @@ export class ObservabilityRpcServer {
 
   #write(socket: Socket, message: unknown): void {
     if (!socket.destroyed) socket.write(encodeJsonLine(message));
+  }
+
+  #requireProfiles(): ProfileService {
+    if (!this.#profiles) throw new Error("Profile service not configured on this daemon");
+    return this.#profiles;
   }
 
   #resolveScope(input: AgentQueryScope): AgentQueryScope {
