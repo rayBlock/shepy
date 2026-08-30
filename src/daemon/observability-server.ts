@@ -7,6 +7,7 @@ import type { AgentStore } from "@/db/agents.js";
 import type { HerdrSessionStore } from "@/db/herdr-sessions.js";
 import type { HerdrWorkspaceStore } from "@/db/herdr-workspaces.js";
 import type { OperationStore } from "@/db/operations.js";
+import type { HerdrOrchestrationTransport } from "@/herdr/orchestration-transport.js";
 import {
   type HerdrPaneIdentity,
   resolveHerdrPaneIdentity,
@@ -25,6 +26,7 @@ import type {
   PiPresenceRegistration,
 } from "@/observability/contracts.js";
 import type { OperationDispatchService } from "@/observability/operation-dispatch-service.js";
+import type { OperationWaitService } from "@/observability/operation-wait-service.js";
 import type { ProfileDeliveryService } from "@/observability/profile-delivery-service.js";
 import type { ProfileService } from "@/observability/profile-service.js";
 import {
@@ -43,6 +45,7 @@ import {
   inboxRetryInputSchema,
   operationDispatchInputSchema,
   operationGetInputSchema,
+  operationWaitInputSchema,
   profileClaimInputSchema,
   profileEnsureInputSchema,
   profileReleaseInputSchema,
@@ -97,6 +100,8 @@ export class ObservabilityRpcServer {
   readonly #delivery: ProfileDeliveryService | undefined;
   readonly #operationDispatch: OperationDispatchService | undefined;
   readonly #operationStore: OperationStore | undefined;
+  readonly #operationWait: OperationWaitService | undefined;
+  readonly #orchestrationTransport: HerdrOrchestrationTransport | undefined;
   readonly #registerPiSessionRef: (input: {
     herdrSessionName: string;
     sessionRef: PiPresenceRegistration["sessionRef"];
@@ -127,6 +132,8 @@ export class ObservabilityRpcServer {
     profiles?: ProfileService;
     operationDispatch?: OperationDispatchService;
     operationStore?: OperationStore;
+    operationWait?: OperationWaitService;
+    orchestrationTransport?: HerdrOrchestrationTransport;
     registerPiSessionRef?: (input: {
       herdrSessionName: string;
       sessionRef: PiPresenceRegistration["sessionRef"];
@@ -151,6 +158,8 @@ export class ObservabilityRpcServer {
     this.#profiles = options.profiles;
     this.#operationDispatch = options.operationDispatch;
     this.#operationStore = options.operationStore;
+    this.#operationWait = options.operationWait;
+    this.#orchestrationTransport = options.orchestrationTransport;
     this.#registerPiSessionRef =
       options.registerPiSessionRef ?? (async () => ({ contextChangedScopes: [] }));
     this.#resolvePaneIdentity = options.resolvePaneIdentity ?? resolveHerdrPaneIdentity;
@@ -395,6 +404,44 @@ export class ObservabilityRpcServer {
         assertSchema(profileShowInputSchema, params);
         const input = params as { profileId: string };
         return { operations: this.#requireOperationStore().listForProfile(input.profileId) };
+      }
+      case "operation.wait": {
+        assertSchema(operationWaitInputSchema, params);
+        const input = params as { operationId: string; profileId?: string; timeoutMs?: number };
+        const wait = this.#requireOperationWait();
+        const transport = this.#requireOrchestrationTransport();
+        const store = this.#requireOperationStore();
+        const operation = store.get(
+          input.operationId,
+          input.profileId ? { profileId: input.profileId } : undefined,
+        );
+        if (!operation) throw new Error(`No such operation: ${input.operationId}`);
+
+        if (isTerminalOperationState(operation.state)) {
+          return { outcome: { kind: operation.state, operationId: operation.id } };
+        }
+        if (operation.state !== "submitted") {
+          return { outcome: { kind: "not_submitted" } };
+        }
+
+        try {
+          const event = await transport.waitForLifecycle(operation.id, operation.target, {
+            ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
+          });
+          const outcome = wait.applyLifecycle(operation.id, event);
+          return { outcome };
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          if (reason.includes("timed out")) {
+            return {
+              outcome: wait.applyTimeout({
+                operationId: operation.id,
+                timeoutMs: input.timeoutMs ?? 0,
+              }),
+            };
+          }
+          throw error;
+        }
       }
       case "profile.claim": {
         assertSchema(profileClaimInputSchema, params);
@@ -741,6 +788,18 @@ export class ObservabilityRpcServer {
     return this.#operationStore;
   }
 
+  #requireOperationWait(): OperationWaitService {
+    if (!this.#operationWait) throw new Error("Operation wait not configured on this daemon");
+    return this.#operationWait;
+  }
+
+  #requireOrchestrationTransport(): HerdrOrchestrationTransport {
+    if (!this.#orchestrationTransport) {
+      throw new Error("Orchestration transport not configured on this daemon");
+    }
+    return this.#orchestrationTransport;
+  }
+
   #requireDelivery(): ProfileDeliveryService {
     if (!this.#delivery) throw new Error("Delivery service not configured on this daemon");
     return this.#delivery;
@@ -783,6 +842,17 @@ function historyInput(agent: AgentIndexRecord) {
     cwd: agent.cwd,
     foregroundCwd: agent.foregroundCwd,
   };
+}
+
+function isTerminalOperationState(state: string): boolean {
+  return (
+    state === "settled" ||
+    state === "blocked" ||
+    state === "failed" ||
+    state === "target_lost" ||
+    state === "submission_unknown" ||
+    state === "submission_rejected"
+  );
 }
 
 function assertSchema(schema: Parameters<typeof Value.Check>[0], value: unknown): void {

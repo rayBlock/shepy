@@ -99,6 +99,15 @@ export const operationGetInputSchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const operationWaitInputSchema = Type.Object(
+  {
+    operationId: Type.String({ minLength: 1 }),
+    profileId: Type.Optional(Type.String({ minLength: 1 })),
+    timeoutMs: Type.Optional(Type.Integer({ minimum: 1, maximum: 3_600_000 })),
+  },
+  { additionalProperties: false },
+);
+
 export const agentReadInputSchema = Type.Object(
   {
     herdrSessionName: Type.Optional(Type.String({ minLength: 1 })),

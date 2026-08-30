@@ -24,6 +24,7 @@ import { AgentIndexService } from "@/observability/agent-index-service.js";
 import { AgentOrchestratorService } from "@/observability/agent-orchestrator-service.js";
 import { OperationDispatchService } from "@/observability/operation-dispatch-service.js";
 import { resolveDispatchTarget } from "@/observability/operation-target-resolver.js";
+import { OperationWaitService } from "@/observability/operation-wait-service.js";
 import { ProfileDeliveryService } from "@/observability/profile-delivery-service.js";
 import { ProfileService } from "@/observability/profile-service.js";
 import { HerdrSessionWatchManager } from "./herdr-session-watch-manager.js";
@@ -65,6 +66,7 @@ export async function runObservabilityDaemonService(
     resolve: (profileId) => resolveDispatchTarget(profileService.resolveSubscriptions(profileId)),
     transport: orchestrationTransport,
   });
+  const operationWait = new OperationWaitService({ operations: operationStore });
   const deliveryService = new ProfileDeliveryService({
     agents,
     obligations: new DeliveryObligationStore(sqlite),
@@ -92,6 +94,8 @@ export async function runObservabilityDaemonService(
     profiles: profileService,
     operationDispatch,
     operationStore,
+    operationWait,
+    orchestrationTransport,
     history: daemonServices.history,
     orchestrator,
     registerPiSessionRef: (registration) => index.registerPiSessionRef(registration),
