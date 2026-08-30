@@ -78,30 +78,51 @@ describe("shepy-pi orchestrator bridge", () => {
   });
 
   test("does not connect outside a complete Herdr environment", async () => {
-    const pi = createFakePi();
-    let clients = 0;
-    const { createShepyPiExtension } = (await import(extensionModuleUrl)) as Module;
-    createShepyPiExtension({
-      clientFactory: () => {
-        clients += 1;
-        return createFakeClient();
-      },
-    })(pi);
-    const ctx = fakeCtx();
-
-    await pi.emit("session_start", {}, ctx);
-    expect(clients).toBe(0);
-    expect(ctx.statuses.get("shepy")).toBeUndefined();
-    await pi.command("", ctx);
-    expect(ctx.notifications.at(-1)).toEqual(["Shepy requires a Herdr workspace", "error"]);
-
-    const previous = withHerdrEnv();
-    delete process.env.HERDR_PANE_ID;
+    // The incomplete-environment precondition must hold regardless of where
+    // the suite runs: from inside a Herdr-managed pane (Ray's default) the
+    // full HERDR_* set is injected into process.env, and herdrLaunchIdentity
+    // reads process.env — without scrubbing, this test would connect for
+    // real and fail. Restore exactly what we saved.
+    const herdrKeys = [
+      "HERDR_ENV",
+      "HERDR_SOCKET_PATH",
+      "HERDR_PANE_ID",
+      "HERDR_WORKSPACE_ID",
+      "HERDR_TAB_ID",
+    ] as const;
+    const saved = new Map(herdrKeys.map((key) => [key, process.env[key]]));
+    for (const key of herdrKeys) delete process.env[key];
     try {
+      const pi = createFakePi();
+      let clients = 0;
+      const { createShepyPiExtension } = (await import(extensionModuleUrl)) as Module;
+      createShepyPiExtension({
+        clientFactory: () => {
+          clients += 1;
+          return createFakeClient();
+        },
+      })(pi);
+      const ctx = fakeCtx();
+
       await pi.emit("session_start", {}, ctx);
       expect(clients).toBe(0);
+      expect(ctx.statuses.get("shepy")).toBeUndefined();
+      await pi.command("", ctx);
+      expect(ctx.notifications.at(-1)).toEqual(["Shepy requires a Herdr workspace", "error"]);
+
+      const previous = withHerdrEnv();
+      delete process.env.HERDR_PANE_ID;
+      try {
+        await pi.emit("session_start", {}, ctx);
+        expect(clients).toBe(0);
+      } finally {
+        restoreEnv(previous);
+      }
     } finally {
-      restoreEnv(previous);
+      for (const [key, value] of saved) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
     }
   });
 
