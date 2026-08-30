@@ -1,5 +1,13 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
-import { helpText, parseCliArgs, runCliCommand, shouldRunCliMain } from "@/cli/shepy.js";
+import {
+  formatCliError,
+  helpText,
+  parseCliArgs,
+  runCliCommand,
+  shouldRunCliMain,
+  versionText,
+} from "@/cli/shepy.js";
 
 type FakeClient = {
   calls: unknown[];
@@ -63,11 +71,104 @@ describe("shepy CLI", () => {
     expect(() => parseCliArgs(["legacy-command"])).toThrow("Unknown command");
   });
 
-  test("renders help for agent commands", () => {
-    expect(helpText()).toContain("shepy agent list");
-    expect(helpText()).toContain("shepy agent get <target>");
-    expect(helpText()).toContain("shepy agent read <target>");
-    expect(helpText()).toContain("shepy help");
+  test("parses root help and version flags", () => {
+    expect(parseCliArgs([])).toEqual({ command: "help", topic: "root" });
+    expect(parseCliArgs(["--help"])).toEqual({ command: "help", topic: "root" });
+    expect(parseCliArgs(["-h"])).toEqual({ command: "help", topic: "root" });
+    expect(parseCliArgs(["--version"])).toEqual({ command: "version" });
+    expect(parseCliArgs(["-v"])).toEqual({ command: "version" });
+  });
+
+  test.each([
+    { args: ["agent", "--help"], topic: "agent" },
+    { args: ["agent", "list", "--help"], topic: "agent-list" },
+    { args: ["agent", "get", "-h"], topic: "agent-get" },
+    { args: ["agent", "read", "--help"], topic: "agent-read" },
+    { args: ["daemon", "--help"], topic: "daemon" },
+    { args: ["daemon", "start", "--help"], topic: "daemon-start" },
+    { args: ["daemon", "stop", "-h"], topic: "daemon-stop" },
+    { args: ["daemon", "restart", "--help"], topic: "daemon-restart" },
+    { args: ["daemon", "status", "--help"], topic: "daemon-status" },
+    { args: ["profile", "--help"], topic: "profile" },
+    { args: ["profile", "context", "--help"], topic: "profile-context" },
+    { args: ["profile", "subscribe", "--help"], topic: "profile-subscribe" },
+    { args: ["inbox", "--help"], topic: "inbox" },
+    { args: ["inbox", "list", "--help"], topic: "inbox-list" },
+    { args: ["inbox", "retry", "-h"], topic: "inbox-retry" },
+  ])("parses contextual help for $args", ({ args, topic }) => {
+    expect(parseCliArgs(args)).toEqual({ command: "help", topic });
+  });
+
+  test("help flags take precedence over trailing arguments", () => {
+    expect(parseCliArgs(["--help", "unexpected"])).toEqual({ command: "help", topic: "root" });
+    expect(parseCliArgs(["agent", "list", "--help", "unexpected"])).toEqual({
+      command: "help",
+      topic: "agent-list",
+    });
+    expect(parseCliArgs(["daemon", "start", "--help", "unexpected"])).toEqual({
+      command: "help",
+      topic: "daemon-start",
+    });
+  });
+
+  test("renders root and contextual help", () => {
+    expect(helpText()).toContain("Shepy observes coding agents managed by Herdr.");
+    expect(helpText()).toContain("shepy agent --help");
+    expect(helpText()).toContain("shepy profile --help");
+    expect(helpText()).toContain("-v, --version");
+    expect(helpText("agent")).toContain("list            List indexed agents");
+    expect(helpText("agent-list")).toContain("--all");
+    expect(helpText("agent-get")).toContain("shepy agent get <target>");
+    expect(helpText("agent-read")).toContain("--limit <number>");
+    expect(helpText("daemon")).toContain("start       Start the daemon");
+    expect(helpText("daemon-start")).toContain("shepy daemon start");
+    expect(helpText("profile")).toContain("subscribe <profileId>");
+    expect(helpText("profile-subscribe")).toContain("--kind-cwd <kind>=<cwd>");
+    expect(helpText("inbox")).toContain("retry <obligationId>");
+    expect(helpText("inbox-list")).toContain("--state");
+  });
+
+  test("renders the package version", () => {
+    const manifest = JSON.parse(readFileSync("package.json", "utf8")) as { version: string };
+    expect(versionText()).toBe(`shepy ${manifest.version}`);
+  });
+
+  test("adds contextual help hints only to usage errors", () => {
+    expect(formatCliError(captureError(() => parseCliArgs(["unknown"])))).toBe(
+      "Unknown command: unknown\nRun `shepy --help` for usage.",
+    );
+    expect(formatCliError(captureError(() => parseCliArgs(["agent", "unknown"])))).toBe(
+      "Unknown agent command: unknown\nRun `shepy agent --help` for usage.",
+    );
+    expect(formatCliError(captureError(() => parseCliArgs(["agent", "read"])))).toBe(
+      "agent read requires <target>\nRun `shepy agent read --help` for usage.",
+    );
+    expect(formatCliError(captureError(() => parseCliArgs(["daemon", "unknown"])))).toBe(
+      "Unknown daemon action: unknown\nRun `shepy daemon --help` for usage.",
+    );
+    expect(formatCliError(captureError(() => parseCliArgs(["profile", "unknown"])))).toBe(
+      "Unknown profile command: unknown\nRun `shepy profile --help` for usage.",
+    );
+    expect(formatCliError(captureError(() => parseCliArgs(["inbox", "unknown"])))).toBe(
+      "Unknown inbox command: unknown\nRun `shepy inbox --help` for usage.",
+    );
+    expect(formatCliError(new Error("request failed"))).toBe("request failed");
+  });
+
+  test("prints help and version without connecting to the daemon", async () => {
+    const output: string[] = [];
+    const deps = {
+      connect: async () => {
+        throw new Error("should not connect");
+      },
+      output: (line: string) => output.push(line),
+      socketPath: "/tmp/s.sock",
+    };
+
+    await runCliCommand({ command: "help", topic: "agent" }, deps);
+    await runCliCommand({ command: "version" }, deps);
+
+    expect(output).toEqual([helpText("agent"), versionText()]);
   });
 
   test("runs main when the package bin symlink points at the CLI module", () => {
@@ -153,6 +254,15 @@ describe("shepy CLI", () => {
     expect(unnamedOutput[0]).toContain("name: unnamed\nagent: codex");
   });
 });
+
+function captureError(action: () => unknown): unknown {
+  try {
+    action();
+  } catch (error) {
+    return error;
+  }
+  throw new Error("Expected action to throw");
+}
 
 function createFakeClient(overrides: { name?: string | null } = {}): FakeClient {
   const calls: unknown[] = [];

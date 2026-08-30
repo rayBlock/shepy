@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { realpathSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { readFileSync, realpathSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { argv, exit } from "node:process";
 import { fileURLToPath } from "node:url";
 import { resolveRuntime, runtimePathsFromRecordOrDefault } from "@/config/runtime.js";
@@ -16,6 +16,33 @@ const CURRENT_HERDR_WORKSPACE_ERROR =
   "agent command requires HERDR_ENV=1 with HERDR_WORKSPACE_ID, --workspace <id>, --session <name>, or --all.";
 
 type DaemonAction = "restart" | "start" | "status" | "stop";
+type HelpTopic =
+  | "agent"
+  | "agent-get"
+  | "agent-list"
+  | "agent-read"
+  | `daemon-${DaemonAction}`
+  | "daemon"
+  | "inbox"
+  | "inbox-list"
+  | "inbox-retry"
+  | "profile"
+  | "profile-context"
+  | "profile-ensure"
+  | "profile-list"
+  | "profile-show"
+  | "profile-subscribe"
+  | "root";
+
+class CliUsageError extends Error {
+  constructor(
+    message: string,
+    readonly helpTopic: HelpTopic,
+  ) {
+    super(message);
+    this.name = "CliUsageError";
+  }
+}
 
 type AgentScope = {
   all?: boolean;
@@ -53,7 +80,8 @@ export type CliCommand =
     }
   | { command: "inbox-list"; json: boolean; profileId: string; state?: string }
   | { command: "inbox-retry"; id: string; json: boolean }
-  | { command: "help" };
+  | { command: "help"; topic: HelpTopic }
+  | { command: "version" };
 
 type RpcClientLike = Pick<ObservabilityRpcClient, "close" | "request">;
 
@@ -68,40 +96,44 @@ export function parseCliArgs(
   environment: NodeJS.ProcessEnv = process.env,
 ): CliCommand {
   const [command, ...rest] = args;
-  if (!command || command === "--help" || command === "-h" || command === "help") {
-    return { command: "help" };
+  if (!command) return { command: "help", topic: "root" };
+  if (isHelpFlag(command)) return { command: "help", topic: "root" };
+  if (command === "--version" || command === "-v") {
+    rejectExtra(rest, "root");
+    return { command: "version" };
   }
 
-  if (command === "daemon") {
-    const [action = "status", ...extra] = rest;
-    if (!isDaemonAction(action)) throw new Error(`Unknown daemon action: ${action}`);
-    rejectExtra(extra);
-    return { action, command: "daemon" };
-  }
+  if (command === "daemon") return parseDaemonCommand(rest);
+  if (command === "agent") return parseAgentCommand(rest, environment);
+  if (command === "profile") return parseProfileCommand(rest);
+  if (command === "inbox") return parseInboxCommand(rest);
 
-  if (command === "agent") {
-    return parseAgentCommand(rest, environment);
-  }
+  throw new CliUsageError(`Unknown command: ${command}`, "root");
+}
 
-  if (command === "profile") {
-    return parseProfileCommand(rest);
+function parseDaemonCommand(args: string[]): CliCommand {
+  const [action = "status", ...extra] = args;
+  if (isHelpFlag(action)) return { command: "help", topic: "daemon" };
+  if (!isDaemonAction(action)) {
+    throw new CliUsageError(`Unknown daemon action: ${action}`, "daemon");
   }
-
-  if (command === "inbox") {
-    return parseInboxCommand(rest);
-  }
-
-  throw new Error(`Unknown command: ${command}`);
+  if (extra.some(isHelpFlag)) return { command: "help", topic: `daemon-${action}` };
+  rejectExtra(extra, `daemon-${action}`);
+  return { action, command: "daemon" };
 }
 
 function parseAgentCommand(args: string[], environment: NodeJS.ProcessEnv): CliCommand {
   const [subcommand, ...rest] = args;
-  if (!subcommand || subcommand === "help" || subcommand === "--help" || subcommand === "-h") {
-    return { command: "help" };
+  if (!subcommand || isHelpFlag(subcommand)) return { command: "help", topic: "agent" };
+  const helpTopic = agentHelpTopic(subcommand);
+  if (!helpTopic) {
+    throw new CliUsageError(`Unknown agent command: ${subcommand}`, "agent");
   }
+  if (rest.some(isHelpFlag)) return { command: "help", topic: helpTopic };
+
   const json = takeFlag(rest, "--json");
-  const herdrSessionName = takeOption(rest, "--session");
-  const workspaceId = takeOption(rest, "--workspace");
+  const herdrSessionName = takeOption(rest, "--session", helpTopic);
+  const workspaceId = takeOption(rest, "--workspace", helpTopic);
   const explicitScope: AgentScope = {
     ...(herdrSessionName ? { herdrSessionName } : {}),
     ...(workspaceId ? { workspaceId } : {}),
@@ -109,71 +141,78 @@ function parseAgentCommand(args: string[], environment: NodeJS.ProcessEnv): CliC
 
   if (subcommand === "list") {
     const all = takeFlag(rest, "--all");
-    rejectExtra(rest);
+    rejectExtra(rest, helpTopic);
     return {
       command: "agent-list",
-      ...(all ? { all: true } : scopedOrCurrent(explicitScope, environment)),
+      ...(all ? { all: true } : scopedOrCurrent(explicitScope, environment, helpTopic)),
       json,
     };
   }
 
   if (subcommand === "get") {
     const [target, ...extra] = rest;
-    if (!target) throw new Error("agent get requires <target>");
-    rejectExtra(extra);
+    if (!target) throw new CliUsageError("agent get requires <target>", helpTopic);
+    rejectExtra(extra, helpTopic);
     return {
       command: "agent-get",
-      ...scopedOrCurrent(explicitScope, environment),
+      ...scopedOrCurrent(explicitScope, environment, helpTopic),
       json,
       target,
     };
   }
 
   if (subcommand === "read") {
-    const limitValue = takeOption(rest, "--limit");
+    const limitValue = takeOption(rest, "--limit", helpTopic);
     const [target, ...extra] = rest;
-    if (!target) throw new Error("agent read requires <target>");
-    rejectExtra(extra);
+    if (!target) throw new CliUsageError("agent read requires <target>", helpTopic);
+    rejectExtra(extra, helpTopic);
     const limit = limitValue ? Number(limitValue) : undefined;
     if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 500)) {
-      throw new Error("--limit must be between 1 and 500");
+      throw new CliUsageError("--limit must be between 1 and 500", helpTopic);
     }
     return {
       command: "agent-read",
-      ...scopedOrCurrent(explicitScope, environment),
+      ...scopedOrCurrent(explicitScope, environment, helpTopic),
       json,
       ...(limit !== undefined ? { limit } : {}),
       target,
     };
   }
 
-  throw new Error(`Unknown agent command: ${subcommand}`);
+  throw new CliUsageError(`Unknown agent command: ${subcommand}`, "agent");
 }
 
-function scopedOrCurrent(scope: AgentScope, environment: NodeJS.ProcessEnv): AgentScope {
+function scopedOrCurrent(
+  scope: AgentScope,
+  environment: NodeJS.ProcessEnv,
+  helpTopic: HelpTopic,
+): AgentScope {
   if (scope.herdrSessionName || scope.workspaceId || scope.all) return scope;
   if (environment.HERDR_ENV === "1" && environment.HERDR_WORKSPACE_ID) {
     return { workspaceId: environment.HERDR_WORKSPACE_ID };
   }
-  throw new Error(CURRENT_HERDR_WORKSPACE_ERROR);
+  throw new CliUsageError(CURRENT_HERDR_WORKSPACE_ERROR, helpTopic);
 }
 
 function parseProfileCommand(args: string[]): CliCommand {
   const [subcommand, ...rest] = args;
-  if (!subcommand || subcommand === "help" || subcommand === "--help" || subcommand === "-h") {
-    return { command: "help" };
+  if (!subcommand || isHelpFlag(subcommand)) return { command: "help", topic: "profile" };
+  const helpTopic = profileHelpTopic(subcommand);
+  if (!helpTopic) {
+    throw new CliUsageError(`Unknown profile command: ${subcommand}`, "profile");
   }
+  if (rest.some(isHelpFlag)) return { command: "help", topic: helpTopic };
   const json = takeFlag(rest, "--json");
   if (subcommand === "list") {
-    rejectExtra(rest);
+    rejectExtra(rest, helpTopic);
     return { command: "profile-list", json };
   }
   if (subcommand === "ensure") {
-    const displayName = takeOption(rest, "--display-name");
-    const roots = takeOption(rest, "--roots");
+    const displayName = takeOption(rest, "--display-name", helpTopic);
+    const roots = takeOption(rest, "--roots", helpTopic);
     const [profileId, ...ensureExtra] = rest;
-    if (!profileId) throw new Error("profile ensure requires <profileId>");
-    rejectExtra(ensureExtra);
+    if (!profileId) throw new CliUsageError("profile ensure requires <profileId>", helpTopic);
+    rejectExtra(ensureExtra, helpTopic);
     return {
       command: "profile-ensure",
       displayName: displayName ?? profileId,
@@ -188,22 +227,27 @@ function parseProfileCommand(args: string[]): CliCommand {
     };
   }
   if (subcommand === "subscribe" || subcommand === "unsubscribe") {
-    const herdrSessionName = takeOption(rest, "--session") ?? "default";
-    const workspaceId = takeOption(rest, "--workspace");
-    const byName = takeOption(rest, "--name");
-    const byPane = takeOption(rest, "--pane");
-    const byTerminal = takeOption(rest, "--terminal");
-    const bySessionId = takeOption(rest, "--agent-session");
-    const kindPlusCwd = takeOption(rest, "--kind-cwd");
+    const herdrSessionName = takeOption(rest, "--session", helpTopic) ?? "default";
+    const workspaceId = takeOption(rest, "--workspace", helpTopic);
+    const byName = takeOption(rest, "--name", helpTopic);
+    const byPane = takeOption(rest, "--pane", helpTopic);
+    const byTerminal = takeOption(rest, "--terminal", helpTopic);
+    const bySessionId = takeOption(rest, "--agent-session", helpTopic);
+    const kindPlusCwd = takeOption(rest, "--kind-cwd", helpTopic);
     const [profileId, ...subscribeExtra] = rest;
     const selectorCount = [byName, byPane, byTerminal, bySessionId, kindPlusCwd].filter(
       Boolean,
     ).length;
-    if (!profileId) throw new Error(`profile ${subcommand} requires <profileId>`);
-    if (!workspaceId) throw new Error("profile subscribe requires --workspace <id>");
+    if (!profileId) {
+      throw new CliUsageError(`profile ${subcommand} requires <profileId>`, helpTopic);
+    }
+    if (!workspaceId) {
+      throw new CliUsageError("profile subscribe requires --workspace <id>", helpTopic);
+    }
     if (selectorCount !== 1) {
-      throw new Error(
+      throw new CliUsageError(
         "profile subscribe requires exactly one selector: --name, --pane, --terminal, --agent-session, or --kind-cwd <kind>=<cwd>",
+        helpTopic,
       );
     }
     let agentSelector: string;
@@ -214,10 +258,12 @@ function parseProfileCommand(args: string[]): CliCommand {
       agentSelector = JSON.stringify({ kind: "agentSession", value: bySessionId });
     else {
       const [kind, cwd] = (kindPlusCwd ?? "").split("=");
-      if (!kind || !cwd) throw new Error("--kind-cwd must be <kind>=<cwd>");
+      if (!kind || !cwd) {
+        throw new CliUsageError("--kind-cwd must be <kind>=<cwd>", helpTopic);
+      }
       agentSelector = JSON.stringify({ agent: kind, cwd, kind: "runtimeKindPlusCwd" });
     }
-    rejectExtra(subscribeExtra);
+    rejectExtra(subscribeExtra, helpTopic);
     return {
       agentSelector,
       command: "profile-subscribe",
@@ -229,35 +275,40 @@ function parseProfileCommand(args: string[]): CliCommand {
     };
   }
   const [profileId, ...extra] = rest;
-  if (!profileId) throw new Error(`profile ${subcommand} requires <profileId>`);
+  if (!profileId) {
+    throw new CliUsageError(`profile ${subcommand} requires <profileId>`, helpTopic);
+  }
   if (subcommand === "show") {
-    rejectExtra(extra);
+    rejectExtra(extra, helpTopic);
     return { command: "profile-show", json, profileId };
   }
   if (subcommand === "context") {
-    rejectExtra(extra);
+    rejectExtra(extra, helpTopic);
     return { command: "profile-context", json, profileId };
   }
-  throw new Error(`Unknown profile command: ${subcommand}`);
+  throw new CliUsageError(`Unknown profile command: ${subcommand}`, "profile");
 }
 
 function parseInboxCommand(args: string[]): CliCommand {
   const [subcommand, ...rest] = args;
-  if (!subcommand || subcommand === "help" || subcommand === "--help" || subcommand === "-h") {
-    return { command: "help" };
+  if (!subcommand || isHelpFlag(subcommand)) return { command: "help", topic: "inbox" };
+  const helpTopic = inboxHelpTopic(subcommand);
+  if (!helpTopic) {
+    throw new CliUsageError(`Unknown inbox command: ${subcommand}`, "inbox");
   }
+  if (rest.some(isHelpFlag)) return { command: "help", topic: helpTopic };
   const json = takeFlag(rest, "--json");
   if (subcommand === "retry") {
     const [id, ...extra] = rest;
-    if (!id) throw new Error("inbox retry requires <obligationId>");
-    rejectExtra(extra);
+    if (!id) throw new CliUsageError("inbox retry requires <obligationId>", helpTopic);
+    rejectExtra(extra, helpTopic);
     return { command: "inbox-retry", id, json };
   }
   if (subcommand === "list") {
-    const state = takeOption(rest, "--state");
+    const state = takeOption(rest, "--state", helpTopic);
     const [profileId, ...extra] = rest;
-    if (!profileId) throw new Error("inbox list requires <profileId>");
-    rejectExtra(extra);
+    if (!profileId) throw new CliUsageError("inbox list requires <profileId>", helpTopic);
+    rejectExtra(extra, helpTopic);
     return {
       command: "inbox-list",
       json,
@@ -268,27 +319,232 @@ function parseInboxCommand(args: string[]): CliCommand {
   throw new Error(`Unknown inbox command: ${subcommand}`);
 }
 
-export function helpText(): string {
-  return `Usage:
-  shepy daemon [start|stop|restart|status]
-  shepy agent list [--all] [--workspace <id>] [--session <name>] [--json]
-  shepy agent get <target> [--workspace <id>] [--session <name>] [--json]
-  shepy agent read <target> [--limit N] [--workspace <id>] [--session <name>] [--json]
-  shepy profile list [--json]
-  shepy profile ensure <profileId> [--display-name <name>] [--roots <path,path>]
-  shepy profile show <profileId> [--json]
-  shepy profile context <profileId> [--json]
-  shepy profile subscribe <profileId> --workspace <id> [--session <name>] (--name | --pane | --terminal | --agent-session | --kind-cwd <kind>=<cwd>)
-  shepy profile unsubscribe <profileId> --workspace <id> [selector as above]
-  shepy inbox list <profileId> [--state pending|leased|delivered|acked|dead_letter] [--json]
-  shepy inbox retry <obligationId>
-  shepy help
+export function helpText(topic: HelpTopic = "root"): string {
+  switch (topic) {
+    case "root":
+      return `Shepy observes coding agents managed by Herdr.
+
+Usage:
+  shepy [options] <command>
+
+Commands:
+  agent     Inspect indexed coding agents
+  daemon    Manage the Shepy daemon
+  profile   Manage orchestration profiles
+  inbox     Inspect delivery obligations
+
+Options:
+  -h, --help       Show help
+  -v, --version    Show version
+
+Run \`shepy agent --help\`, \`shepy profile --help\`, or \`shepy daemon --help\` for command-specific help.
 `;
+    case "agent":
+      return `Inspect indexed coding agents.
+
+Usage:
+  shepy agent <command>
+
+Commands:
+  list            List indexed agents
+  get <target>    Show one agent
+  read <target>   Read one agent's recent messages
+
+Options:
+  -h, --help      Show help
+
+Run \`shepy agent <command> --help\` for command-specific help.
+`;
+    case "agent-list":
+      return `List indexed agents.
+
+Usage:
+  shepy agent list [options]
+
+Options:
+  --all                 Select all running Herdr workspaces
+  --workspace <id>      Select a Herdr workspace
+  --session <name>      Select a Herdr session
+  --json                Print JSON
+  -h, --help            Show help
+`;
+    case "agent-get":
+      return `Show one indexed agent.
+
+Usage:
+  shepy agent get <target> [options]
+
+Options:
+  --workspace <id>      Select a Herdr workspace
+  --session <name>      Select a Herdr session
+  --json                Print JSON
+  -h, --help            Show help
+`;
+    case "agent-read":
+      return `Read one agent's recent messages.
+
+Usage:
+  shepy agent read <target> [options]
+
+Options:
+  --limit <number>      Return 1 to 500 messages
+  --workspace <id>      Select a Herdr workspace
+  --session <name>      Select a Herdr session
+  --json                Print JSON
+  -h, --help            Show help
+`;
+    case "daemon":
+      return `Manage the Shepy daemon.
+
+Usage:
+  shepy daemon [command]
+
+Commands:
+  start       Start the daemon
+  stop        Stop the daemon
+  restart     Restart the daemon
+  status      Show daemon status (default)
+
+Options:
+  -h, --help  Show help
+
+Run \`shepy daemon <command> --help\` for command-specific help.
+`;
+    case "daemon-start":
+      return daemonActionHelp("start", "Start the Shepy daemon.");
+    case "daemon-stop":
+      return daemonActionHelp("stop", "Stop the Shepy daemon.");
+    case "daemon-restart":
+      return daemonActionHelp("restart", "Restart the Shepy daemon.");
+    case "daemon-status":
+      return daemonActionHelp("status", "Show Shepy daemon status.");
+    case "profile":
+      return `Manage orchestration profiles.
+
+Usage:
+  shepy profile <command>
+
+Commands:
+  list                     List profiles
+  ensure <profileId>       Create or update a profile
+  show <profileId>         Show one profile with subscriptions
+  context <profileId>      Show cached agent context for a profile
+  subscribe <profileId>    Bind a profile to one Herdr agent
+  unsubscribe <profileId>  Remove a profile subscription
+
+Options:
+  -h, --help               Show help
+
+Run \`shepy profile <command> --help\` for command-specific help.
+`;
+    case "profile-list":
+      return `List profiles.
+
+Usage:
+  shepy profile list [options]
+
+Options:
+  --json         Print JSON
+  -h, --help     Show help
+`;
+    case "profile-ensure":
+      return `Create or update a profile.
+
+Usage:
+  shepy profile ensure <profileId> [options]
+
+Options:
+  --display-name <name>    Human-readable profile name
+  --roots <path,path>      Comma-separated project roots
+  --json                   Print JSON
+  -h, --help               Show help
+`;
+    case "profile-show":
+      return `Show one profile with its subscriptions.
+
+Usage:
+  shepy profile show <profileId> [options]
+
+Options:
+  --json         Print JSON
+  -h, --help     Show help
+`;
+    case "profile-context":
+      return `Show cached agent context for a profile.
+
+Usage:
+  shepy profile context <profileId> [options]
+
+Options:
+  --json         Print JSON
+  -h, --help     Show help
+`;
+    case "profile-subscribe":
+      return `Bind a profile to exactly one Herdr agent.
+
+Usage:
+  shepy profile subscribe <profileId> --workspace <id> [options]
+
+Exactly one selector is required:
+  --name <name>                  Herdr live agent name
+  --pane <paneId>                Herdr pane id
+  --terminal <terminalId>        Herdr terminal id
+  --agent-session <sessionId>    Stable agent session id
+  --kind-cwd <kind>=<cwd>        Runtime kind plus working directory
+
+Options:
+  --session <name>      Select a Herdr session (default: default)
+  -h, --help            Show help
+`;
+    case "inbox":
+      return `Inspect delivery obligations.
+
+Usage:
+  shepy inbox <command>
+
+Commands:
+  list <profileId>          List obligations for a profile
+  retry <obligationId>      Retry a dead-lettered obligation
+
+Options:
+  -h, --help                Show help
+
+Run \`shepy inbox <command> --help\` for command-specific help.
+`;
+    case "inbox-list":
+      return `List delivery obligations for a profile.
+
+Usage:
+  shepy inbox list <profileId> [options]
+
+Options:
+  --state <state>    Filter by pending|leased|delivered|acked|dead_letter
+  --json             Print JSON
+  -h, --help         Show help
+`;
+    case "inbox-retry":
+      return `Retry a dead-lettered delivery obligation.
+
+Usage:
+  shepy inbox retry <obligationId>
+
+Options:
+  -h, --help  Show help
+`;
+  }
+}
+
+export function versionText(): string {
+  return `shepy ${readPackageVersion()}`;
 }
 
 export async function runCliCommand(command: CliCommand, deps: RunCliDeps): Promise<void> {
   if (command.command === "help") {
-    deps.output(helpText());
+    deps.output(helpText(command.topic));
+    return;
+  }
+  if (command.command === "version") {
+    deps.output(versionText());
     return;
   }
   if (command.command === "daemon") throw new Error("daemon command is handled by main");
@@ -302,7 +558,7 @@ export async function runCliCommand(command: CliCommand, deps: RunCliDeps): Prom
 }
 
 async function dispatchRpcCommand(
-  command: Exclude<CliCommand, { command: "daemon" | "help" }>,
+  command: Exclude<CliCommand, { command: "daemon" | "help" | "version" }>,
   client: RpcClientLike,
 ) {
   if (command.command === "agent-list") {
@@ -472,6 +728,14 @@ function oneLine(value: string): string {
 
 async function main(): Promise<void> {
   const command = parseCliArgs(argv.slice(2));
+  if (command.command === "help") {
+    console.log(helpText(command.topic));
+    return;
+  }
+  if (command.command === "version") {
+    console.log(versionText());
+    return;
+  }
   const runtime = resolveRuntimeForCommand();
   if (command.command === "daemon") {
     await runDaemonCommand(command, runtime);
@@ -554,24 +818,24 @@ function takeFlag(args: string[], name: string): boolean {
   return true;
 }
 
-function takeOption(args: string[], name: string): string | undefined {
+function takeOption(args: string[], name: string, helpTopic: HelpTopic): string | undefined {
   const index = args.indexOf(name);
   if (index < 0) return undefined;
   const value = args[index + 1];
-  if (!value) throw new Error(`${name} requires a value`);
+  if (!value) throw new CliUsageError(`${name} requires a value`, helpTopic);
   args.splice(index, 2);
   return value;
 }
 
-function rejectExtra(args: string[]): void {
-  if (args.length > 0) throw new Error(`Invalid argument: ${args[0]}`);
+function rejectExtra(args: string[], helpTopic: HelpTopic): void {
+  if (args.length > 0) throw new CliUsageError(`Invalid argument: ${args[0]}`, helpTopic);
 }
 
 function isDaemonAction(value: string): value is DaemonAction {
   return value === "restart" || value === "start" || value === "status" || value === "stop";
 }
 
-function formatCliError(error: unknown): string {
+export function formatCliError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   if (
     message.includes("ENOENT") ||
@@ -581,7 +845,75 @@ function formatCliError(error: unknown): string {
   ) {
     return `${message}\nRun \`shepy daemon start\` before using Shepy commands.`;
   }
+  if (error instanceof CliUsageError) {
+    return `${message}\nRun \`${helpInvocation(error.helpTopic)}\` for usage.`;
+  }
   return message;
+}
+
+function agentHelpTopic(subcommand: string): HelpTopic | undefined {
+  if (subcommand === "get" || subcommand === "list" || subcommand === "read") {
+    return `agent-${subcommand}`;
+  }
+  return undefined;
+}
+
+function profileHelpTopic(subcommand: string): HelpTopic | undefined {
+  if (
+    subcommand === "context" ||
+    subcommand === "ensure" ||
+    subcommand === "list" ||
+    subcommand === "show" ||
+    subcommand === "subscribe" ||
+    subcommand === "unsubscribe"
+  ) {
+    return subcommand === "unsubscribe" ? "profile-subscribe" : `profile-${subcommand}`;
+  }
+  return undefined;
+}
+
+function inboxHelpTopic(subcommand: string): HelpTopic | undefined {
+  if (subcommand === "list" || subcommand === "retry") {
+    return `inbox-${subcommand}`;
+  }
+  return undefined;
+}
+
+function daemonActionHelp(action: DaemonAction, description: string): string {
+  return `${description}
+
+Usage:
+  shepy daemon ${action}
+
+Options:
+  -h, --help  Show help
+`;
+}
+
+function helpInvocation(topic: HelpTopic): string {
+  if (topic === "root") return "shepy --help";
+  return `shepy ${topic.replaceAll("-", " ")} --help`;
+}
+
+function isHelpFlag(value: string): boolean {
+  return value === "--help" || value === "-h";
+}
+
+function readPackageVersion(): string {
+  let directory = dirname(fileURLToPath(import.meta.url));
+  while (true) {
+    const manifestPath = join(directory, "package.json");
+    try {
+      const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { version?: string };
+      if (typeof manifest.version === "string") return manifest.version;
+    } catch {
+      // keep walking up
+    }
+    const parent = dirname(directory);
+    if (parent === directory) break;
+    directory = parent;
+  }
+  return "unknown";
 }
 
 export function shouldRunCliMain(input: {
