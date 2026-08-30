@@ -7,11 +7,13 @@ const root = new URL("../", import.meta.url);
 const manifest = JSON.parse(await readFile(new URL("package.json", root), "utf8"));
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 const [packed] = JSON.parse(
-  execFileSync(npm, ["pack", "--dry-run", "--json"], {
-    cwd: fileURLToPath(root),
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "inherit"],
-  }),
+  extractJson(
+    execFileSync(npm, ["pack", "--dry-run", "--json"], {
+      cwd: fileURLToPath(root),
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "inherit"],
+    }),
+  ),
 );
 const files = packed?.files?.map(({ path }) => path) ?? [];
 const required = [
@@ -43,3 +45,14 @@ if (errors.length > 0) {
 }
 
 console.log(`${packed.name}@${packed.version}: ${files.length} files`);
+
+/**
+ * npm pack --json can leak script banners (pnpm prepack output, postbuild
+ * logs) into stdout before the JSON document. Find the first character that
+ * starts a JSON value and parse from there.
+ */
+function extractJson(output) {
+  const start = output.search(/[[{]/);
+  if (start < 0) throw new Error("npm pack produced no JSON output");
+  return output.slice(start);
+}
