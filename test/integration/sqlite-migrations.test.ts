@@ -31,6 +31,7 @@ describe("SQLite migrations", () => {
       "delivery_obligations",
       "herdr_sessions",
       "herdr_workspaces",
+      "orchestration_operations",
       "orchestrator_profiles",
       "profile_owners",
       "profile_subscriptions",

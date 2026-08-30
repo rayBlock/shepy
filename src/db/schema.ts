@@ -238,3 +238,42 @@ export const agentHistoryCache = sqliteTable(
     ),
   ],
 );
+
+/**
+ * Orchestration operations — the durable identity of one dispatch through a
+ * profile (orchestration plan Task 2). The state machine is explicit and
+ * monotonic:
+ *
+ *   pending_submission → submitted → settled | blocked | failed | target_lost
+ *   pending_submission → submission_unknown   (timeout after bytes were sent)
+ *   pending_submission → submission_rejected  (Herdr refused before send)
+ *
+ * Terminal rows are immutable: a duplicate identical settle is idempotent,
+ * a conflicting settle fails closed. The prompt is stored only as a
+ * fingerprint plus a bounded excerpt — never a full transcript.
+ */
+export const orchestrationOperations = sqliteTable(
+  "orchestration_operations",
+  {
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    errorSummary: text("error_summary"),
+    herdrSessionName: text("herdr_session_name").notNull(),
+    id: text("id").primaryKey(),
+    lifecycle: text("lifecycle"),
+    profileId: text("profile_id")
+      .notNull()
+      .references(() => orchestratorProfiles.profileId, { onDelete: "cascade" }),
+    promptExcerpt: text("prompt_excerpt").notNull(),
+    promptSha256: text("prompt_sha256").notNull(),
+    settledAt: integer("settled_at", { mode: "timestamp_ms" }),
+    state: text("state").notNull(),
+    targetJson: text("target_json").notNull(),
+    transportRequestId: text("transport_request_id"),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+    workspaceId: text("workspace_id").notNull(),
+  },
+  (table) => [
+    index("orchestration_operations_profile_created_idx").on(table.profileId, table.createdAt),
+    index("orchestration_operations_state_idx").on(table.state),
+  ],
+);
