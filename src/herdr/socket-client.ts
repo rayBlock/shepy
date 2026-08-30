@@ -17,6 +17,11 @@ export type HerdrSocketClientOptions = {
   socketPath: string;
 };
 
+type RequestReceipt = {
+  requestId: string;
+  result: unknown;
+};
+
 type PendingRequest = {
   reject: (error: Error) => void;
   resolve: (value: unknown) => void;
@@ -67,8 +72,8 @@ export class HerdrSocketClient {
   #request(
     method: string,
     params: unknown = {},
-    options: { signal?: AbortSignal } = {},
-  ): Promise<unknown> {
+    options: { includeRequestId?: boolean; signal?: AbortSignal } = {},
+  ): Promise<unknown | RequestReceipt> {
     const id = `shepy-${this.#nextId}`;
     this.#nextId += 1;
 
@@ -79,7 +84,7 @@ export class HerdrSocketClient {
         resolve: (value) => {
           if (timer) clearTimeout(timer);
           if (onAbort) options.signal?.removeEventListener("abort", onAbort);
-          resolve(value);
+          resolve(options.includeRequestId ? { requestId: id, result: value } : value);
         },
         reject: (error) => {
           if (timer) clearTimeout(timer);
@@ -148,6 +153,33 @@ export class HerdrSocketClient {
         workspaces,
       },
     };
+  }
+
+  async promptAgent(
+    params: { target: string; text: string; wait?: { timeout_ms?: number; until?: string[] } },
+    options: { signal?: AbortSignal } = {},
+  ): Promise<{ requestId: string; result: unknown }> {
+    if (params.text.trim().length === 0) {
+      return Promise.reject(new Error("Herdr agent prompt must not be empty"));
+    }
+    const result = await this.#request("agent.prompt", params, {
+      ...options,
+      includeRequestId: true,
+    });
+    if (!isRequestReceipt(result)) throw new Error("Herdr prompt did not return a request receipt");
+    return result;
+  }
+
+  async waitForAgent(
+    params: { target: string; timeout_ms?: number; until?: string[] },
+    options: { signal?: AbortSignal } = {},
+  ): Promise<{ requestId: string; result: unknown }> {
+    const result = await this.#request("agent.wait", params, {
+      ...options,
+      includeRequestId: true,
+    });
+    if (!isRequestReceipt(result)) throw new Error("Herdr wait did not return a request receipt");
+    return result;
   }
 
   async *subscribeEvents(
@@ -315,6 +347,15 @@ function normalizeEventName(value: string): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function isRequestReceipt(value: unknown): value is RequestReceipt {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as RequestReceipt).requestId === "string" &&
+    "result" in value
+  );
 }
 
 function isUnsupportedSessionSnapshotError(error: unknown): boolean {
