@@ -106,11 +106,12 @@ A later event must be accepted only when its scope and target identity match. A 
 ## Distribution contract
 
 - Development mode may use the checkout-linked CLI.
-- Release mode must install a real npm package with an executable `shepy` bin entry.
+- Distribution is source-only via the public GitHub repository; Shepy is NOT published to npm. Users install from git/source if they want it.
+- Install paths that must work: `npm install -g <git-url>` (or `npm install -g .` from a clone), plus Bun global install as a consumer path.
 - Node >=24.18.0 is mandatory and must be checked by the CLI/package smoke test.
-- Bun global installation should be tested as a consumer path, but Shepy's runtime contract remains Node-compatible unless Bun-specific behavior is proven.
 - `pnpm check` must run under Node 24; the current Node 22 warning/JSON pollution failure is an environment/tooling defect to eliminate from the release workflow.
-- The Herdr plugin remains optional and separately distributed; the CLI and Pi extension must work without it.
+- The Herdr plugin remains optional and is distributed from this repository's GitHub path (owner/repo must replace the stale `ryonakae/...` references); the CLI and Pi extension must work without it.
+- Attribution: keep the MIT LICENSE with Ryo Nakae's copyright line, add our own line, and keep a visible "forked from ryonakae/shepherd" note in the README.
 
 ## Explicit non-goals
 

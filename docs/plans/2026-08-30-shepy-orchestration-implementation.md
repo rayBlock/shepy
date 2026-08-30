@@ -247,16 +247,17 @@ Files:
 
 Requirements:
 
+- NO npm publication. Distribution is the public GitHub repo; users install from source or git URL if they want it.
 - generated CLI bin is executable after every build;
 - local development linking is explicitly documented;
-- published npm installation works without the source checkout;
+- `npm install -g <git-url>` and `npm install -g .` from a clone both work without a registry;
 - `shepy daemon start/status` works from a clean global install;
 - Bun global installation is tested as a consumer path;
 - Node >=24.18.0 is checked and reported clearly;
 - package JSON output checks cannot be polluted by engine warnings;
-- root and Pi package names/paths are `shepy` and `shepy-pi`, with no Shepherd release names in active documentation.
-
-Do not silently make Bun the runtime authority unless a complete Bun compatibility gate passes.
+- repository/homepage/bugs URLs point at this repository (owner/repo), never `ryonakae/...`;
+- LICENSE keeps Ryo Nakae's MIT line plus ours, and the README carries a visible fork attribution note;
+- no `@ryonakae/*` scoped names remain in current (non-archived) documentation.
 
 ### Task 10: Rename stale Shepherd surfaces
 
@@ -304,10 +305,10 @@ Record exact commands, IDs, exit statuses, and bounded JSON receipts. Do not sto
 Only after all gates pass:
 
 - verify branch, status, ancestry, and remote;
-- decide whether the GitHub repository should be renamed from `shepherd` to `shepy` before publishing;
-- update package repository/homepage URLs consistently;
-- publish exact npm package versions through the release procedure;
-- verify clean consumer installs;
+- create the public GitHub repository for Shepy (source-only distribution, no npm publication);
+- update package repository/homepage URLs to the new `owner/repo`;
+- keep LICENSE attribution (Ryo Nakae MIT line + ours) and the README fork note;
+- verify `npm install -g <git-url>` and Bun global installs from the public repo;
 - push the reviewed branch and tag only after the user confirms the final release target.
 
 No force push, history rewrite, or deletion of the upstream remote.
