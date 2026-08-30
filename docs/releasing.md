@@ -1,51 +1,44 @@
 # Releasing Shepy
 
-Shepy publishes two npm packages and one GitHub-distributed Herdr integration.
+Shepy is distributed **source-only** from the public GitHub repository
+(`rayBlock/shepy`). Nothing is published to npm. Users install from the git
+URL or a clone; updates are git pulls.
+
+Shepy is a fork of [ryonakae/shepherd](https://github.com/ryonakae/shepherd)
+(MIT). Keep the LICENSE attribution (Ryo Nakae's copyright line plus ours)
+and the README fork note intact in every release.
 
 | Artifact | Distribution |
 | --- | --- |
-| `shepy` | Public npm package and `shepy` CLI |
-| `shepy-pi` | Public npm package installed by Pi |
-| `packages/shepy-herdr-plugin` | GitHub repository subdirectory installed by Herdr |
-
-Do not run `npm publish` from `packages/shepy-herdr-plugin`. Its private package manifest supports local validation only.
+| repository root | `npm install -g rayBlock/shepy` (git URL) or clone + `npm install -g .` |
+| `packages/shepy-pi` | installed by Pi from the repo path (`pi install` pointing here) |
+| `packages/shepy-herdr-plugin` | GitHub repository subdirectory installed by Herdr: `herdr plugin install rayBlock/shepy/packages/shepy-herdr-plugin --ref <tag> --yes` |
 
 ## Preconditions
 
-Run releases from the repository root on `main`. Replace the version below with the version being released.
+Run releases from the repository root on `main`. Replace the version below
+with the version being released.
 
 ```bash
-export VERSION=0.3.1
+export VERSION=0.6.0
 export TAG="v$VERSION"
-export PATH="$HOME/.local/share/mise/installs/node/24.18.0/bin:$HOME/.local/share/mise/installs/pnpm/11.9.0/bin:$PATH"
+export PATH="/opt/homebrew/Cellar/node@24/24.19.0/bin:$PATH"
 
 git fetch origin main
 test "$(git branch --show-current)" = "main"
 test -z "$(git status --porcelain)"
 test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
-test "$(npm whoami)" = "ryonakae"
-npm profile get --json | node -e '
-let input = "";
-process.stdin.on("data", (chunk) => (input += chunk));
-process.stdin.on("end", () => {
-  const profile = JSON.parse(input);
-  if (profile.email_verified !== true || profile.tfa?.mode !== "auth-and-writes") {
-    process.exit(1);
-  }
-});'
 gh auth status
 ```
 
-The npm account must have verified email and write 2FA. Never put an npm token or OTP in the repository, shell history, release notes, or chat.
-
-Confirm the version does not exist:
+Node >= 24.18.0 is mandatory (`engines.node`). The full gate must pass under
+it before anything ships:
 
 ```bash
-npm view "shepy@$VERSION" version
-npm view "shepy-pi@$VERSION" version
+pnpm check
+pnpm build
+pnpm smoke:install   # tarball -> isolated prefix -> bin runs
 ```
-
-Both commands must return `E404`. Stop if either command prints a version.
 
 ## Update versions
 
@@ -56,188 +49,63 @@ Keep these files synchronized:
 - `packages/shepy-herdr-plugin/package.json`
 - `packages/shepy-herdr-plugin/herdr-plugin.toml`
 
-The following command updates all four:
+The README's Herdr plugin install command references the release tag; update
+the `--ref` examples to the new tag.
+
+## Cut the release
 
 ```bash
-node --input-type=module <<'NODE'
-import { readFile, writeFile } from "node:fs/promises";
-
-const version = process.env.VERSION;
-if (!version) throw new Error("VERSION is required");
-
-for (const path of [
-  "package.json",
-  "packages/shepy-pi/package.json",
-  "packages/shepy-herdr-plugin/package.json",
-]) {
-  const manifest = JSON.parse(await readFile(path, "utf8"));
-  manifest.version = version;
-  await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`);
-}
-
-const tomlPath = "packages/shepy-herdr-plugin/herdr-plugin.toml";
-const toml = await readFile(tomlPath, "utf8");
-const updated = toml.replace(/^version = "[^"]+"$/m, `version = "${version}"`);
-if (updated === toml) throw new Error("Herdr plugin version was not updated");
-await writeFile(tomlPath, updated);
-NODE
-```
-
-Review the four-file diff before continuing.
-
-## Validate source and package contents
-
-```bash
-pnpm check
-pnpm build
-git diff --check
-```
-
-`pnpm check` includes root, Pi, and Herdr package checks. The root package checker rebuilds from a clean `dist` directory and rejects source, tests, plans, nested packages, assets, and stale `worker` paths.
-
-Create the two public tarballs outside the repository:
-
-```bash
-export RELEASE_TMP="$(mktemp -d)"
-npm pack --pack-destination "$RELEASE_TMP"
-(
-  cd packages/shepy-pi
-  npm pack --pack-destination "$RELEASE_TMP"
-)
-
-EXPECTED_TARBALLS="$(printf '%s\n' \
-  "ryonakae-shepy-$VERSION.tgz" \
-  "ryonakae-shepy-pi-$VERSION.tgz")"
-ACTUAL_TARBALLS="$(find "$RELEASE_TMP" -maxdepth 1 -type f -name '*.tgz' \
-  -exec basename {} \; | sort)"
-test "$ACTUAL_TARBALLS" = "$EXPECTED_TARBALLS"
-```
-
-Install both tarballs in isolated prefixes:
-
-```bash
-npm install --global --prefix "$RELEASE_TMP/root-prefix" \
-  "$RELEASE_TMP/ryonakae-shepy-$VERSION.tgz"
-"$RELEASE_TMP/root-prefix/bin/shepy" help
-
-npm install --prefix "$RELEASE_TMP/pi-prefix" --ignore-scripts \
-  "$RELEASE_TMP/ryonakae-shepy-pi-$VERSION.tgz"
-test -f "$RELEASE_TMP/pi-prefix/node_modules/shepy-pi/src/index.ts"
-test ! -f "$RELEASE_TMP/pi-prefix/node_modules/shepy-pi/tsconfig.json"
-```
-
-Do not continue unless both installations pass.
-
-## Commit and create a local tag
-
-```bash
-git add \
-  package.json \
-  packages/shepy-pi/package.json \
-  packages/shepy-herdr-plugin/package.json \
-  packages/shepy-herdr-plugin/herdr-plugin.toml
+git add package.json packages/*/package.json packages/shepy-herdr-plugin/herdr-plugin.toml README.md README.ja.md
 git commit -m "chore(release): $VERSION"
-test -z "$(git status --porcelain)"
-git push origin main
-test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
-git tag -a "$TAG" -m "$TAG"
-test "$(git rev-list -n 1 "$TAG")" = "$(git rev-parse HEAD)"
+git tag -a "$TAG" -m "Shepy $VERSION"
+git push origin main "$TAG"
+gh release create "$TAG" --title "Shepy $VERSION" --notes-file <notes.md>
 ```
 
-Keep the tag local until both npm packages have been published and verified.
+Release notes: summary of changes, install/upgrade commands (git URL),
+attribution line for anything ported from upstream shepherd, and the
+matching upstream version the fork tracked at that point.
 
-## Publish to npm
+## Consumer verification (per release)
 
-The repository owner must run each `npm publish` command manually from an interactive terminal and let npm request the second factor. Coding agents and release automation must stop before each publication, ask the user to run the command, and continue only after the user confirms completion. Do not invoke `npm publish` from a non-interactive process or pass an OTP through `--otp`, because command arguments can be visible to other local processes.
+1. **npm from git URL** (the primary install path):
 
-Ask the user to publish the root package from the repository root:
+   ```bash
+   npm install -g "https://github.com/rayBlock/shepy.git#$TAG"
+   shepy --version          # must print shepy $VERSION
+   shepy daemon status      # valid JSON
+   ```
 
-```bash
-npm publish --access public
-```
+2. **npm from a clone** (the documented fallback):
 
-After the user confirms completion, verify the exact version:
+   ```bash
+   git clone https://github.com/rayBlock/shepy && cd shepy
+   npm install -g .
+   shepy --version
+   ```
 
-```bash
-npm view "shepy@$VERSION" \
-  name version dist-tags.latest repository bin --json
-```
+3. **Bun** (manual, operator-run — `bun add --global <tarball>`): verify
+   `shepy --version` and `shepy daemon status`. Bun is a consumer path, not
+   the runtime authority; Node >= 24 remains the supported runtime.
 
-Then ask the user to publish the Pi package in a separate interactive command:
+4. **Herdr plugin**: `herdr plugin install
+   rayBlock/shepy/packages/shepy-herdr-plugin --ref "$TAG" --yes`, then
+   confirm it appears in `herdr plugin list` and renders agent rows.
 
-```bash
-(
-  cd packages/shepy-pi
-  npm publish --access public
-)
-```
+5. **Pi extension**: install from the repo path and confirm `/shepy status`
+   responds in a Pi pane inside Herdr.
 
-After the user confirms completion, verify the exact version:
+## What we deliberately do NOT do
 
-```bash
-npm view "shepy-pi@$VERSION" \
-  name version dist-tags.latest repository peerDependencies --json
-```
+- No `npm publish` — for any package, ever. The npm names `shepy` /
+  `shepy-pi` staying unpublished is intentional; do not squat them.
+- No release automation workflows. CI validates pushes; releases are
+  manual, small, and fully read back through the consumer checks above.
+- No changelog gates. Keep `CHANGELOG.md` (if present) hand-maintained.
 
-After a timeout or network error, query the exact version before retrying. Do not retry when `npm view` shows that version.
+## Rollback
 
-## Verify registry installation
-
-Use a new directory so this check cannot read the local tarballs:
-
-```bash
-export REGISTRY_TMP="$(mktemp -d)"
-npm install --global --prefix "$REGISTRY_TMP/root-prefix" \
-  "shepy@$VERSION"
-"$REGISTRY_TMP/root-prefix/bin/shepy" help
-
-npm install --prefix "$REGISTRY_TMP/pi-prefix" --ignore-scripts \
-  "shepy-pi@$VERSION"
-test -f "$REGISTRY_TMP/pi-prefix/node_modules/shepy-pi/src/index.ts"
-```
-
-## Publish the tag and GitHub Release
-
-Write release notes to `/tmp/shepy-$VERSION-release-notes.md`. Include both npm install commands, package-content changes, validation, and the fact that Herdr still installs its plugin from GitHub.
-
-```bash
-git push origin "$TAG"
-gh release create "$TAG" \
-  --verify-tag \
-  --title "$TAG" \
-  --notes-file "/tmp/shepy-$VERSION-release-notes.md" \
-  --latest
-```
-
-Verify every external artifact:
-
-```bash
-npm view "shepy@$VERSION" version
-npm view "shepy-pi@$VERSION" version
-gh release view "$TAG" --json tagName,name,isDraft,isPrerelease,url,publishedAt
-gh api repos/ryonakae/shepy/releases/latest --jq .tag_name
-git ls-remote --tags origin "refs/tags/$TAG" "refs/tags/$TAG^{}"
-test -z "$(git status --porcelain)"
-```
-
-## Recover from a partial publication
-
-Two npm publishes cannot be atomic. Use these rules when the root version exists but the Pi package needs a content change:
-
-1. Confirm the Pi version is absent with `npm view`.
-2. Delete only the local, unpushed tag: `git tag -d "$TAG"`.
-3. Export the next unused patch version: `export VERSION=0.3.2 TAG=v0.3.2`.
-4. Update all four version files and replace the Herdr tag in `README.md`, `README.ja.md`, and `packages/shepy-herdr-plugin/README.md`.
-5. Rebuild and reinstall both tarballs.
-6. Commit the replacement version and documentation, confirm the tree is clean, push `main`, and verify `HEAD` equals `origin/main`.
-7. Create a new local tag from the pushed replacement commit.
-8. Publish and verify both packages at the replacement version.
-9. Push only the replacement tag and create only its GitHub Release.
-10. After the complete replacement exists, deprecate the orphaned root version:
-
-```bash
-npm deprecate shepy@0.3.1 \
-  "Incomplete paired release; use 0.3.2"
-```
-
-Do not move a remote tag, overwrite a GitHub Release, reuse an npm version, or unpublish a package to repair a release.
+A git tag is the release. To withdraw a broken release: delete the GitHub
+Release and tag (`git push origin :refs/tags/"$TAG"`), fix forward on main,
+cut `$VERSION+1`. Installed consumers pin what they installed; the git URL
+default tracks main.
