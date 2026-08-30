@@ -672,6 +672,7 @@ describe("shepy-pi orchestrator bridge", () => {
         { label: "on", value: "on" },
         { label: "off", value: "off" },
         { label: "status", value: "status" },
+        { label: "on <profileId>", value: "on <profileId>" },
       ]);
 
       await pi.command("", ctx);
@@ -1934,3 +1935,151 @@ function restoreEnv(previous: Record<string, string | undefined>) {
 async function tick(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
+
+describe("shepy-pi profile-owner bridge (Phase 4)", () => {
+  test("/shepy on <profile> claims the profile and starts the pump", async () => {
+    const { pi, ctx, client } = await profileHarness();
+    client.response = (method, params) => {
+      if (method === "profile.claim") {
+        expect(params).toMatchObject({ harnessKind: "pi", profileId: "driffs" });
+        return { result: { kind: "claimed", leaseToken: "lease-1" } };
+      }
+      if (method === "inbox.lease") return { obligations: [] };
+      return connectionResponse();
+    };
+    await pi.command("on driffs", ctx);
+    expect(client.calls).toContainEqual([
+      "profile.claim",
+      expect.objectContaining({ profileId: "driffs" }),
+    ]);
+    expect(ctx.notifications.at(-1)?.[1]).toBe("info");
+    await pi.command("off", ctx);
+    expect(client.calls).toContainEqual([
+      "profile.release",
+      { leaseToken: "lease-1", profileId: "driffs" },
+    ]);
+  });
+
+  test("pump leases obligations, delivers ONE wake, acks after successful settle", async () => {
+    const { pi, ctx, client } = await profileHarness();
+    const obligations = [
+      { agentEventId: 1, id: "ob-1" },
+      { agentEventId: 2, id: "ob-2" },
+    ];
+    client.response = (method) => {
+      if (method === "profile.claim") return { result: { kind: "claimed", leaseToken: "lease-1" } };
+      if (method === "inbox.lease") return { obligations };
+      if (method === "profile.context")
+        return { agents: [{ agent: "hermes", name: "driffs-worker", paneId: "wS:p1" }] };
+      return { delivered: 2 };
+    };
+    await pi.command("on driffs", ctx);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(client.calls).toContainEqual([
+      "inbox.lease",
+      expect.objectContaining({ leaseToken: "lease-1" }),
+    ]);
+    expect(client.calls).toContainEqual([
+      "inbox.delivered",
+      expect.objectContaining({ ids: ["ob-1", "ob-2"], leaseToken: "lease-1" }),
+    ]);
+    // ONE visible wake with triggerTurn + hidden context
+    const wake = pi.customMessages.find(
+      ([message]) =>
+        message.customType === "shepy-wake" &&
+        (message.details as { profileId?: string } | undefined)?.profileId === "driffs",
+    );
+    expect(wake?.[0].content).toContain("2 agent update(s)");
+    const hidden = pi.hiddenMessages.find(
+      ([message]) =>
+        message.customType === "shepy-wake-context" &&
+        (message.details as { profileId?: string } | undefined)?.profileId === "driffs",
+    );
+    expect(hidden?.[0].content).toContain("driffs-worker");
+    expect(
+      pi.customMessages.filter(([message]) => message.customType === "shepy-wake"),
+    ).toHaveLength(1);
+
+    // Successful assistant final, then settle → ack
+    await pi.emit("message_end", { message: { role: "assistant", stopReason: "stop" } }, ctx);
+    client.response = (method) => {
+      if (method === "inbox.ack") return { acked: 2, rejected: [] };
+      if (method === "inbox.lease") return { obligations: [] };
+      return connectionResponse();
+    };
+    await pi.emit("agent_settled", {}, ctx);
+    expect(client.calls).toContainEqual([
+      "inbox.ack",
+      { ids: ["ob-1", "ob-2"], leaseToken: "lease-1", profileId: "driffs" },
+    ]);
+  });
+
+  test("failed settle nacks — the obligations remain pending server-side", async () => {
+    const { pi, ctx, client } = await profileHarness();
+    client.response = (method) => {
+      if (method === "profile.claim") return { result: { kind: "claimed", leaseToken: "lease-1" } };
+      if (method === "inbox.lease") return { obligations: [{ agentEventId: 7, id: "ob-7" }] };
+      if (method === "profile.context") return { agents: [] };
+      return { delivered: 1 };
+    };
+    await pi.command("on driffs", ctx);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    // assistant failed (error stop) → settle nacks
+    await pi.emit("message_end", { message: { role: "assistant", stopReason: "error" } }, ctx);
+    client.response = (method) => {
+      if (method === "inbox.nack") return { nacked: 1 };
+      if (method === "inbox.lease") return { obligations: [] };
+      return connectionResponse();
+    };
+    await pi.emit("agent_settled", {}, ctx);
+    expect(client.calls).toContainEqual([
+      "inbox.nack",
+      expect.objectContaining({ errorCode: "wake_failed", ids: ["ob-7"], leaseToken: "lease-1" }),
+    ]);
+  });
+
+  test("a rejected claim (active lease elsewhere) never enters profile mode", async () => {
+    const { pi, ctx, client } = await profileHarness();
+    client.response = (method) => {
+      if (method === "profile.claim")
+        return { result: { kind: "rejected", reason: "lease_active" } };
+      return connectionResponse();
+    };
+    await pi.command("on driffs", ctx);
+    expect(ctx.notifications.at(-1)?.[1]).toBe("error");
+    expect(client.calls.some(([method]) => method === "inbox.lease")).toBe(false);
+  });
+
+  test("session_shutdown releases the profile lease", async () => {
+    const { pi, ctx, client } = await profileHarness();
+    client.response = (method) => {
+      if (method === "profile.claim") return { result: { kind: "claimed", leaseToken: "lease-1" } };
+      if (method === "inbox.lease") return { obligations: [] };
+      return connectionResponse();
+    };
+    await pi.command("on driffs", ctx);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await pi.emit("session_shutdown", {}, ctx);
+    expect(client.calls).toContainEqual([
+      "profile.release",
+      { leaseToken: "lease-1", profileId: "driffs" },
+    ]);
+  });
+
+  async function profileHarness() {
+    const client = createFakeClient();
+    const pi = createFakePi();
+    const { createShepyPiExtension } = (await import(extensionModuleUrl)) as Module;
+    createShepyPiExtension({ clientFactory: () => client })(pi);
+    const ctx = fakeCtx({ idle: true });
+    const previous = withHerdrEnv({ paneId: "w12:p1", workspaceId: "w12" });
+    try {
+      await pi.emit("session_start", {}, ctx);
+      await client.connect();
+    } finally {
+      restoreEnv(previous);
+    }
+    return { client, ctx, pi };
+  }
+});

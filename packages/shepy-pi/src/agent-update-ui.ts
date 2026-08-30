@@ -13,6 +13,7 @@ export type AgentUpdateMessageDetails = {
 export type ShepyFooterState =
   | { kind: "off" }
   | { kind: "on"; updateCount: number }
+  | { kind: "profile"; pendingCount: number; profileId: string }
   | { kind: "reconnecting" };
 
 type MessageLike = {
@@ -76,6 +77,10 @@ export function formatShepyFooterStatus(
 ): string | undefined {
   if (state.kind === "off") return undefined;
   if (state.kind === "reconnecting") return "◇ Shepy · reconnecting";
+  if (state.kind === "profile") {
+    const pending = state.pendingCount === 0 ? "" : ` · ${state.pendingCount} pending`;
+    return `◆ Shepy · ${state.profileId}${pending}`;
+  }
 
   const label = "◆ Shepy";
   if (state.updateCount === 0) return label;
