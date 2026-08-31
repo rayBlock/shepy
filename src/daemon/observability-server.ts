@@ -42,6 +42,7 @@ import {
   inboxDeliveredInputSchema,
   inboxLeaseInputSchema,
   inboxListInputSchema,
+  inboxRetireInputSchema,
   inboxRetryInputSchema,
   operationDispatchInputSchema,
   operationGetInputSchema,
@@ -521,6 +522,14 @@ export class ObservabilityRpcServer {
         assertSchema(inboxRetryInputSchema, params);
         const input = params as { id: string };
         return { retried: this.#requireDelivery().retry(input.id) };
+      }
+      case "inbox.retire": {
+        assertSchema(inboxRetireInputSchema, params);
+        const input = params as { olderThan?: number; profileId: string };
+        return this.#requireDelivery().retire({
+          ...(input.olderThan !== undefined ? { olderThan: input.olderThan } : {}),
+          profileId: input.profileId,
+        });
       }
       case "profile.context": {
         assertSchema(profileShowInputSchema, params);

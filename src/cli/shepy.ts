@@ -26,6 +26,7 @@ type HelpTopic =
   | "dispatch"
   | "inbox"
   | "inbox-list"
+  | "inbox-retire"
   | "inbox-retry"
   | "operation"
   | "operation-get"
@@ -84,6 +85,7 @@ export type CliCommand =
       workspaceId: string;
     }
   | { command: "inbox-list"; json: boolean; profileId: string; state?: string }
+  | { command: "inbox-retire"; json: boolean; olderThanDays?: number; profileId: string }
   | { command: "inbox-retry"; id: string; json: boolean }
   | { command: "operation-dispatch"; json: boolean; profileId: string; prompt: string }
   | { command: "operation-wait"; json: boolean; operationId: string; timeoutMs?: number }
@@ -384,6 +386,25 @@ function parseInboxCommand(args: string[]): CliCommand {
     rejectExtra(extra, helpTopic);
     return { command: "inbox-retry", id, json };
   }
+  if (subcommand === "retire") {
+    const olderThan = takeOption(rest, "--older-than-days", helpTopic);
+    const [profileId, ...extra] = rest;
+    if (!profileId) throw new CliUsageError("inbox retire requires <profileId>", helpTopic);
+    rejectExtra(extra, helpTopic);
+    let olderThanDays: number | undefined;
+    if (olderThan !== undefined) {
+      olderThanDays = Number(olderThan);
+      if (!Number.isFinite(olderThanDays) || olderThanDays < 0) {
+        throw new CliUsageError("--older-than-days must be a non-negative number", helpTopic);
+      }
+    }
+    return {
+      command: "inbox-retire",
+      json,
+      profileId,
+      ...(olderThanDays !== undefined ? { olderThanDays } : {}),
+    };
+  }
   if (subcommand === "list") {
     const state = takeOption(rest, "--state", helpTopic);
     const [profileId, ...extra] = rest;
@@ -605,6 +626,21 @@ Options:
   --json             Print JSON
   -h, --help         Show help
 `;
+    case "inbox-retire":
+      return `Retire pending obligations without delivering them.
+
+Retires a stale backlog that accumulated while a profile had no owner, so
+claiming it does not replay days-old notifications. Obligations already
+leased or delivered to an active owner are never touched.
+
+Usage:
+  shepy inbox retire <profileId> [--older-than-days <n>]
+
+Options:
+  --older-than-days <n>  Only retire obligations created more than n days ago
+  --json                 Print JSON
+  -h, --help             Show help
+`;
     case "inbox-retry":
       return `Retry a dead-lettered delivery obligation.
 
@@ -769,6 +805,14 @@ async function dispatchRpcCommand(
   if (command.command === "inbox-retry") {
     return client.request("inbox.retry", { id: command.id });
   }
+  if (command.command === "inbox-retire") {
+    return client.request("inbox.retire", {
+      profileId: command.profileId,
+      ...(command.olderThanDays !== undefined
+        ? { olderThan: Date.now() - command.olderThanDays * 86_400_000 }
+        : {}),
+    });
+  }
   if (command.command === "profile-subscribe") {
     const params = {
       agentSelector: JSON.parse(command.agentSelector),
@@ -842,7 +886,8 @@ function formatHumanResult(command: CliCommand, result: unknown): string {
   if (
     command.command === "profile-ensure" ||
     command.command === "profile-subscribe" ||
-    command.command === "inbox-retry"
+    command.command === "inbox-retry" ||
+    command.command === "inbox-retire"
   )
     return JSON.stringify(result);
   return JSON.stringify(result);
@@ -1064,7 +1109,7 @@ function profileHelpTopic(subcommand: string): HelpTopic | undefined {
 }
 
 function inboxHelpTopic(subcommand: string): HelpTopic | undefined {
-  if (subcommand === "list" || subcommand === "retry") {
+  if (subcommand === "list" || subcommand === "retire" || subcommand === "retry") {
     return `inbox-${subcommand}`;
   }
   return undefined;

@@ -61,6 +61,7 @@ export class DeliveryObligationStore {
   /** Idempotent projection: one obligation per (profile, agent event). */
   project(input: {
     agentEventId: number;
+    now?: number;
     profileId: string;
     subscriptionId: number;
   }): Obligation | undefined {
@@ -70,7 +71,13 @@ export class DeliveryObligationStore {
 				 values (?, ?, ?, ?, 'pending', 0, ?)
 				 on conflict(profile_id, agent_event_id) do nothing`,
       )
-      .run(randomUUID(), input.profileId, input.subscriptionId, input.agentEventId, Date.now());
+      .run(
+        randomUUID(),
+        input.profileId,
+        input.subscriptionId,
+        input.agentEventId,
+        input.now ?? Date.now(),
+      );
     return this.byProfileEvent(input.profileId, input.agentEventId);
   }
 
@@ -242,6 +249,36 @@ export class DeliveryObligationStore {
       )
       .run(id);
     return result.changes > 0;
+  }
+
+  /**
+   * Operator retire: pending | dead_letter → acked, without delivering.
+   *
+   * Distinct from `ack`, which requires the current owner's lease token and
+   * means "the owner processed this." This means "an operator decided this no
+   * longer merits delivery" — for a backlog that accumulated while a profile
+   * had no owner and is now stale. It deliberately cannot touch `leased` or
+   * `delivered` rows: those belong to an in-flight lease, and retiring one
+   * under an active owner would race the ack path (§6.3.3).
+   *
+   * `olderThan` retires only obligations created strictly before that instant,
+   * so an operator can drain a stale backlog without discarding fresh events
+   * that arrive mid-command.
+   */
+  retire(input: { olderThan?: number; profileId: string }): { retired: number } {
+    const params: Array<string | number> = [input.profileId];
+    let ageFilter = "";
+    if (input.olderThan !== undefined) {
+      ageFilter = " and created_at < ?";
+      params.push(input.olderThan);
+    }
+    const result = this.#sqlite
+      .prepare(
+        `update delivery_obligations set state = 'acked', acked_at = unixepoch() * 1000
+				 where profile_id = ? and state in ('pending', 'dead_letter')${ageFilter}`,
+      )
+      .run(...params);
+    return { retired: Number(result.changes) };
   }
 
   list(input: { limit?: number; profileId: string; state?: ObligationState }): Obligation[] {

@@ -234,3 +234,11 @@ export const inboxRetryInputSchema = Type.Object(
   { id: Type.String({ minLength: 1 }) },
   { additionalProperties: false },
 );
+
+export const inboxRetireInputSchema = Type.Object(
+  {
+    olderThan: Type.Optional(Type.Integer({ minimum: 0 })),
+    profileId: Type.String({ minLength: 1 }),
+  },
+  { additionalProperties: false },
+);

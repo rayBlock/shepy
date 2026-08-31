@@ -103,10 +103,141 @@ function eventFor(input: { eventId: number; worker: "driffs" | "other" }): Agent
     paneId: input.worker === "driffs" ? "wA:p1" : "wB:p1",
     payload: { status: "idle" },
     terminalId: null,
-    type: "agent.status.changed",
+    // A notifiable outcome. `agent.status.changed` is filtered at projection
+    // (see NOTIFIABLE_EVENT_TYPES) and would produce no obligation here.
+    type: "agent.done",
     workspaceId: input.worker === "driffs" ? "wA" : "wB",
   };
 }
+
+describe("obligation projection filter (vault §9.1)", () => {
+  test("agent.status.changed never becomes an obligation; semantic events do", () => {
+    const { agents, delivery } = fixture();
+    const worker = agents.list().find((row) => row.name === "driffs-worker");
+    if (!worker) throw new Error("fixture: driffs-worker missing");
+
+    // The generic twin that fires on EVERY transition, including to `working`.
+    delivery.projectAgentEvent({
+      ...eventFor({ eventId: 1, worker: "driffs" }),
+      agentId: worker.id,
+      payload: { from: "idle", to: "working" },
+      type: "agent.status.changed",
+    });
+    expect(delivery.inboxList({ profileId: "driffs" })).toHaveLength(0);
+
+    // Every semantic type still projects.
+    const semantic = ["agent.done", "agent.idle", "agent.blocked", "agent.tool.failed"] as const;
+    semantic.forEach((type, index) => {
+      delivery.projectAgentEvent({
+        ...eventFor({ eventId: 100 + index, worker: "driffs" }),
+        agentId: worker.id,
+        type,
+      });
+    });
+    expect(delivery.inboxList({ profileId: "driffs" })).toHaveLength(semantic.length);
+  });
+
+  test("a done transition wakes the owner once, not twice", () => {
+    const { agents, delivery } = fixture();
+    const worker = agents.list().find((row) => row.name === "driffs-worker");
+    if (!worker) throw new Error("fixture: driffs-worker missing");
+
+    // Mirrors agent-index-service #appendStatusEvents: one transition appends
+    // the generic event AND its semantic twin. Only one may reach the owner.
+    delivery.projectAgentEvent({
+      ...eventFor({ eventId: 1, worker: "driffs" }),
+      agentId: worker.id,
+      payload: { from: "working", to: "done" },
+      type: "agent.status.changed",
+    });
+    delivery.projectAgentEvent({
+      ...eventFor({ eventId: 2, worker: "driffs" }),
+      agentId: worker.id,
+      payload: { from: "working", to: "done" },
+      type: "agent.done",
+    });
+
+    const pending = delivery.inboxList({ profileId: "driffs" });
+    expect(pending).toHaveLength(1);
+    expect(pending[0]?.agentEventId).toBe(2);
+  });
+});
+
+describe("operator retire (stale backlog cleanup)", () => {
+  test("retires pending obligations without delivering them", () => {
+    const { agents, delivery } = fixture();
+    const worker = agents.list().find((row) => row.name === "driffs-worker");
+    if (!worker) throw new Error("fixture: driffs-worker missing");
+    for (let index = 0; index < 3; index += 1) {
+      delivery.projectAgentEvent({
+        ...eventFor({ eventId: index + 1, worker: "driffs" }),
+        agentId: worker.id,
+      });
+    }
+    expect(delivery.inboxList({ profileId: "driffs", state: "pending" })).toHaveLength(3);
+
+    expect(delivery.retire({ profileId: "driffs" })).toEqual({ retired: 3 });
+
+    expect(delivery.inboxList({ profileId: "driffs", state: "pending" })).toHaveLength(0);
+    expect(delivery.inboxList({ profileId: "driffs", state: "acked" })).toHaveLength(3);
+  });
+
+  test("never retires an obligation held by an active lease", () => {
+    const { agents, delivery } = fixture();
+    const worker = agents.list().find((row) => row.name === "driffs-worker");
+    if (!worker) throw new Error("fixture: driffs-worker missing");
+    for (let index = 0; index < 2; index += 1) {
+      delivery.projectAgentEvent({
+        ...eventFor({ eventId: index + 1, worker: "driffs" }),
+        agentId: worker.id,
+      });
+    }
+    const owner = delivery.claim({
+      harnessKind: "pi",
+      harnessSessionRefJson: "{}",
+      herdrSessionName: "default",
+      paneId: "wA:p1",
+      profileId: "driffs",
+      subscriberId: "sub-1",
+      terminalId: "term-1",
+    });
+    if (owner.kind !== "claimed") throw new Error("fixture: claim rejected");
+    const leased = delivery.inboxLease({ leaseToken: owner.leaseToken, profileId: "driffs" });
+    expect(leased.obligations.length).toBeGreaterThan(0);
+
+    // An operator retire must not race the owner's in-flight batch.
+    expect(delivery.retire({ profileId: "driffs" })).toEqual({ retired: 0 });
+    expect(delivery.inboxList({ profileId: "driffs", state: "leased" })).toHaveLength(
+      leased.obligations.length,
+    );
+  });
+
+  test("olderThan retires only the stale backlog, sparing fresh events", () => {
+    const { delivery, obligations, profiles } = fixture();
+    const [subscription] = profiles.listSubscriptions("driffs");
+    if (!subscription) throw new Error("fixture: driffs subscription missing");
+
+    // Drive the store directly so both rows get deterministic created_at.
+    const stale = 10_000_000;
+    obligations.project({
+      agentEventId: 1,
+      now: stale,
+      profileId: "driffs",
+      subscriptionId: subscription.id,
+    });
+    obligations.project({
+      agentEventId: 2,
+      now: stale + 60_000,
+      profileId: "driffs",
+      subscriptionId: subscription.id,
+    });
+
+    expect(delivery.retire({ olderThan: stale + 1, profileId: "driffs" })).toEqual({ retired: 1 });
+    const remaining = delivery.inboxList({ profileId: "driffs", state: "pending" });
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]?.agentEventId).toBe(2);
+  });
+});
 
 describe("Phase 3 gate — durable delivery obligations", () => {
   test("projection is scoped: only the matching profile gets an obligation", () => {

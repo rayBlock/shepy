@@ -2,13 +2,40 @@ import type { AgentStore } from "@/db/agents.js";
 import type { DeliveryObligationStore, Obligation } from "@/db/delivery-obligations.js";
 import type { OrchestratorProfileStore } from "@/db/orchestrator-profiles.js";
 import type { ProfileOwnerStore } from "@/db/profile-owners.js";
-import type { AgentEventRecord } from "./contracts.js";
+import type { AgentEventRecord, AgentEventType } from "./contracts.js";
 import {
   parseAgentSelector,
   parseWorkspaceSelector,
   resolveAgentSelector,
   selectableFromRow,
 } from "./profile-selectors.js";
+
+/**
+ * Event types that merit waking an owner (vault §9.1: an outcome is a
+ * projection of events that *merits owner attention*).
+ *
+ * `agent.status.changed` is deliberately absent. Every status transition
+ * appends that generic event, and transitions to blocked/done/idle append a
+ * semantic twin alongside it — so projecting both wakes the owner twice for
+ * one transition. The only transitions that produce a generic event *alone*
+ * are those to `working` and `unknown`, and "an agent started working" is the
+ * orchestrator's own dispatch taking effect, not news.
+ *
+ * Measured on the live backlog before this filter: of 224 pending
+ * obligations, 97 were `agent.status.changed` — 96 of them transitions to
+ * `working`. The remaining 127 were semantic and are unaffected.
+ *
+ * Known gap: a transition to `unknown` (agent lost) currently emits only the
+ * generic event, so it no longer produces an obligation. Losing an agent is
+ * arguably news; the right fix is a dedicated semantic event rather than
+ * re-admitting the generic one, which would restore the double-wake.
+ */
+export const NOTIFIABLE_EVENT_TYPES: ReadonlySet<AgentEventType> = new Set([
+  "agent.blocked",
+  "agent.done",
+  "agent.idle",
+  "agent.tool.failed",
+]);
 
 /**
  * Phase 3 — profile delivery service (vault §9.2, §6.2).
@@ -41,6 +68,9 @@ export class ProfileDeliveryService {
   /** Project one agent event into obligations for every matching subscription. */
   projectAgentEvent(event: AgentEventRecord): void {
     if (!event.agentId) return;
+    // Filter at projection, not emission: the event log stays a complete
+    // audit record, but only notifiable outcomes become owner obligations.
+    if (!NOTIFIABLE_EVENT_TYPES.has(event.type)) return;
     const agentRows = this.#agents
       .list({ herdrSessionName: event.herdrSessionName })
       .filter((row) => row.id === event.agentId);
@@ -146,6 +176,11 @@ export class ProfileDeliveryService {
 
   inboxList(input: { limit?: number; profileId: string; state?: Obligation["state"] }) {
     return this.#obligations.list(input);
+  }
+
+  /** Operator retire — see DeliveryObligationStore.retire. */
+  retire(input: { olderThan?: number; profileId: string }) {
+    return this.#obligations.retire(input);
   }
 
   retry(obligationId: string) {
