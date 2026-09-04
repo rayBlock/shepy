@@ -217,6 +217,72 @@ describe("HerdrSocketClient", () => {
     await expect(nextEvent).rejects.toThrow("Herdr socket closed");
     client.close();
   });
+
+  // The 10 s wait cut of 2026-09-04: the default per-request deadline applied
+  // to agent.wait too, so every wait longer than 10 s died client-side. These
+  // tests shrink the default to 200 ms and let herdr answer at 300 ms —
+  // proving the wait deadline is derived from herdr's timeout_ms (plus grace)
+  // and that an unbounded wait disables the client timer entirely.
+  test("lets a bounded agent.wait outlive the default request deadline", async () => {
+    const { requests, socketPath } = await openFakeHerdrServer((socket, request) => {
+      if (request.method !== "agent.wait") return;
+      setTimeout(() => {
+        socket.write(
+          encodeJsonLine({
+            id: request.id,
+            result: { type: "wait_matched", final_status: "done" },
+          }),
+        );
+      }, 300);
+    });
+
+    const client = new HerdrSocketClient({ socketPath, requestTimeoutMs: 200 });
+    await expect(
+      client.waitForAgent({ target: "w1:p2", timeout_ms: 400, until: ["done", "blocked"] }),
+    ).resolves.toMatchObject({
+      requestId: "shepy-1",
+      result: { type: "wait_matched", final_status: "done" },
+    });
+    client.close();
+
+    expect(requests).toEqual([
+      {
+        id: "shepy-1",
+        method: "agent.wait",
+        params: { target: "w1:p2", timeout_ms: 400, until: ["done", "blocked"] },
+      },
+    ]);
+  });
+
+  test("never cuts an unbounded agent.wait with the default request deadline", async () => {
+    const { requests, socketPath } = await openFakeHerdrServer((socket, request) => {
+      if (request.method !== "agent.wait") return;
+      // herdr's bare wait (no timeout_ms) is unbounded by design; the fake
+      // peer just answers slowly — later than the 200 ms client default.
+      setTimeout(() => {
+        socket.write(
+          encodeJsonLine({
+            id: request.id,
+            result: { type: "wait_matched", final_status: "blocked" },
+          }),
+        );
+      }, 300);
+    });
+
+    const client = new HerdrSocketClient({ socketPath, requestTimeoutMs: 200 });
+    await expect(
+      client.waitForAgent({ target: "w1:p2", until: ["done", "blocked"] }),
+    ).resolves.toMatchObject({
+      requestId: "shepy-1",
+      result: { type: "wait_matched", final_status: "blocked" },
+    });
+    client.close();
+
+    expect(requests[0]).toMatchObject({
+      method: "agent.wait",
+      params: { target: "w1:p2", until: ["done", "blocked"] },
+    });
+  });
 });
 
 async function openFakeHerdrServer(

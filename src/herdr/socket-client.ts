@@ -12,6 +12,38 @@ export type HerdrRequestId = string;
  */
 export const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 
+/**
+ * Grace added on top of herdr's own wait deadline when bounding a client-side
+ * `agent.wait` request. herdr answers a bounded wait itself (matched status or
+ * a `timeout` error response), so the client only needs to outlast herdr's
+ * deadline plus round-trip slack — never the wait duration alone.
+ */
+export const WAIT_REQUEST_TIMEOUT_GRACE_MS = 5_000;
+
+/**
+ * The client's own socket-level deadline expired. This is NOT herdr's wait
+ * timeout: herdr may still be waiting (or have answered after we gave up),
+ * so callers must never interpret it as a completed bounded wait.
+ */
+export class HerdrRequestTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "HerdrRequestTimeoutError";
+  }
+}
+
+/** A herdr error response carried over the persistent socket. `code` preserves
+ * herdr's own error taxonomy (e.g. "timeout" for an expired bounded wait). */
+export class HerdrRequestError extends Error {
+  readonly code: string | undefined;
+
+  constructor(message: string, code?: string) {
+    super(message);
+    this.name = "HerdrRequestError";
+    this.code = code;
+  }
+}
+
 export type HerdrSocketClientOptions = {
   requestTimeoutMs?: number;
   socketPath: string;
@@ -29,7 +61,7 @@ type PendingRequest = {
 
 type HerdrResponse = {
   data?: unknown;
-  error?: { message?: string };
+  error?: { code?: string; message?: string };
   event?: string;
   id?: string;
   method?: string;
@@ -72,7 +104,12 @@ export class HerdrSocketClient {
   #request(
     method: string,
     params: unknown = {},
-    options: { includeRequestId?: boolean; signal?: AbortSignal } = {},
+    options: {
+      includeRequestId?: boolean;
+      signal?: AbortSignal;
+      /** Per-call deadline override; <= 0 disables the client-side timer. */
+      timeoutMs?: number;
+    } = {},
   ): Promise<unknown | RequestReceipt> {
     const id = `shepy-${this.#nextId}`;
     this.#nextId += 1;
@@ -102,13 +139,16 @@ export class HerdrSocketClient {
         onAbort = () => settle.reject(new Error(`Herdr request aborted: ${method}`));
         options.signal.addEventListener("abort", onAbort, { once: true });
       }
-      if (this.#requestTimeoutMs > 0) {
+      const timeoutMs = options.timeoutMs ?? this.#requestTimeoutMs;
+      if (timeoutMs > 0) {
         timer = setTimeout(
           () =>
             settle.reject(
-              new Error(`Herdr request timed out after ${this.#requestTimeoutMs}ms: ${method}`),
+              new HerdrRequestTimeoutError(
+                `Herdr request timed out after ${timeoutMs}ms: ${method}`,
+              ),
             ),
-          this.#requestTimeoutMs,
+          timeoutMs,
         );
       }
       try {
@@ -174,9 +214,18 @@ export class HerdrSocketClient {
     params: { target: string; timeout_ms?: number; until?: string[] },
     options: { signal?: AbortSignal } = {},
   ): Promise<{ requestId: string; result: unknown }> {
+    // herdr bounds the wait itself when timeout_ms is set, so the client only
+    // needs herdr's deadline plus slack. Without timeout_ms herdr's bare wait
+    // is unbounded by design and 0 disables the client-side timer entirely —
+    // the default deadline must never cut a wait short (the 10 s wait cut of
+    // 2026-09-04). Options are passed explicitly (not spread) so a caller's
+    // unrelated timeoutMs option can never override this derivation.
+    const requestTimeoutMs =
+      params.timeout_ms !== undefined ? params.timeout_ms + WAIT_REQUEST_TIMEOUT_GRACE_MS : 0;
     const result = await this.#request("agent.wait", params, {
-      ...options,
       includeRequestId: true,
+      timeoutMs: requestTimeoutMs,
+      ...(options.signal ? { signal: options.signal } : {}),
     });
     if (!isRequestReceipt(result)) throw new Error("Herdr wait did not return a request receipt");
     return result;
@@ -294,7 +343,12 @@ export class HerdrSocketClient {
 
       this.#pending.delete(response.id);
       if (response.error) {
-        pending.reject(new Error(response.error.message ?? "Herdr request failed"));
+        pending.reject(
+          new HerdrRequestError(
+            response.error.message ?? "Herdr request failed",
+            response.error.code,
+          ),
+        );
         continue;
       }
 

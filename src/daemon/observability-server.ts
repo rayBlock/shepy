@@ -8,6 +8,7 @@ import type { HerdrSessionStore } from "@/db/herdr-sessions.js";
 import type { HerdrWorkspaceStore } from "@/db/herdr-workspaces.js";
 import type { OperationStore } from "@/db/operations.js";
 import type { HerdrOrchestrationTransport } from "@/herdr/orchestration-transport.js";
+import { HerdrWaitTimeoutError } from "@/herdr/orchestration-transport-adapter.js";
 import {
   type HerdrPaneIdentity,
   resolveHerdrPaneIdentity,
@@ -432,8 +433,12 @@ export class ObservabilityRpcServer {
           const outcome = wait.applyLifecycle(operation.id, event);
           return { outcome };
         } catch (error) {
-          const reason = error instanceof Error ? error.message : String(error);
-          if (reason.includes("timed out")) {
+          // Only herdr's own bounded-wait expiry is a clean wait_timeout. A
+          // socket-level "Herdr request timed out" is a transport failure —
+          // surfacing it as wait_timeout silently cut every wait longer than
+          // the 10 s client deadline (2026-09-04). Anything else rethrows and
+          // surfaces as an RPC error.
+          if (error instanceof HerdrWaitTimeoutError) {
             return {
               outcome: wait.applyTimeout({
                 operationId: operation.id,

@@ -1,6 +1,10 @@
 import { describe, expect, test, vi } from "vitest";
 import type { HerdrTargetIdentity } from "@/herdr/orchestration-transport.js";
-import { HerdrOrchestrationTransportAdapter } from "@/herdr/orchestration-transport-adapter.js";
+import {
+  HerdrOrchestrationTransportAdapter,
+  HerdrWaitTimeoutError,
+} from "@/herdr/orchestration-transport-adapter.js";
+import { HerdrRequestError, HerdrRequestTimeoutError } from "@/herdr/socket-client.js";
 
 const target: HerdrTargetIdentity = {
   agentSession: "hermes-session-1",
@@ -88,5 +92,43 @@ describe("HerdrOrchestrationTransportAdapter", () => {
     await expect(adapter.waitForLifecycle("op-1", target)).rejects.toThrow(
       "recognized lifecycle status",
     );
+  });
+
+  // Only herdr's own bounded-wait expiry (its `timeout` error response) may
+  // become a wait timeout — the 10 s wait cut of 2026-09-04 relied on the
+  // two shapes being indistinguishable.
+  test("maps herdr's bounded-wait expiry to HerdrWaitTimeoutError", async () => {
+    const adapter = new HerdrOrchestrationTransportAdapter({
+      promptAgent: vi.fn(),
+      waitForAgent: vi
+        .fn()
+        .mockRejectedValue(new HerdrRequestError("timed out waiting for agent status", "timeout")),
+    });
+
+    const error = await adapter
+      .waitForLifecycle("op-1", target, { timeoutMs: 5000 })
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(HerdrWaitTimeoutError);
+    if (!(error instanceof HerdrWaitTimeoutError)) throw new Error("unreachable");
+    expect(error.operationId).toBe("op-1");
+    expect(error.message).toContain("op-1");
+  });
+
+  test("propagates a socket-level request timeout as an error, never a wait timeout", async () => {
+    const adapter = new HerdrOrchestrationTransportAdapter({
+      promptAgent: vi.fn(),
+      waitForAgent: vi
+        .fn()
+        .mockRejectedValue(
+          new HerdrRequestTimeoutError("Herdr request timed out after 10000ms: agent.wait"),
+        ),
+    });
+
+    const error = await adapter
+      .waitForLifecycle("op-1", target, { timeoutMs: 5000 })
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(HerdrRequestTimeoutError);
+    expect(error).not.toBeInstanceOf(HerdrWaitTimeoutError);
+    expect((error as Error).message).toBe("Herdr request timed out after 10000ms: agent.wait");
   });
 });
