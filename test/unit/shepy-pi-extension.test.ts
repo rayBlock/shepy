@@ -1963,14 +1963,42 @@ describe("shepy-pi profile-owner bridge (Phase 4)", () => {
   test("pump leases obligations, delivers ONE wake, acks after successful settle", async () => {
     const { pi, ctx, client } = await profileHarness();
     const obligations = [
-      { agentEventId: 1, id: "ob-1" },
-      { agentEventId: 2, id: "ob-2" },
+      {
+        agentEventId: 1,
+        id: "ob-1",
+        outcome: {
+          agent: "hermes",
+          createdAt: "2026-09-10T09:47:34.000Z",
+          eventId: 1,
+          excerpt: { text: "Worker finished the audit.", truncated: false },
+          from: "working",
+          name: "driffs-worker",
+          paneId: "wS:p1",
+          terminalId: "tS",
+          to: "done",
+          type: "agent.done",
+        },
+      },
+      {
+        agentEventId: 2,
+        id: "ob-2",
+        outcome: {
+          agent: "pi",
+          createdAt: "2026-09-10T09:52:40.000Z",
+          eventId: 2,
+          excerpt: { text: "", truncated: false },
+          from: "working",
+          name: "second-worker",
+          paneId: "wS:p2",
+          terminalId: "tS2",
+          to: "idle",
+          type: "agent.idle",
+        },
+      },
     ];
     client.response = (method) => {
       if (method === "profile.claim") return { result: { kind: "claimed", leaseToken: "lease-1" } };
       if (method === "inbox.lease") return { obligations };
-      if (method === "profile.context")
-        return { agents: [{ agent: "hermes", name: "driffs-worker", paneId: "wS:p1" }] };
       return { delivered: 2 };
     };
     await pi.command("on driffs", ctx);
@@ -1984,6 +2012,9 @@ describe("shepy-pi profile-owner bridge (Phase 4)", () => {
       "inbox.delivered",
       expect.objectContaining({ ids: ["ob-1", "ob-2"], leaseToken: "lease-1" }),
     ]);
+    // The wake is event-correlated: current profile history is never fetched
+    // as outcome truth.
+    expect(client.calls.map(([method]) => method)).not.toContain("profile.context");
     // ONE visible wake with triggerTurn + hidden context
     const wake = pi.customMessages.find(
       ([message]) =>
@@ -1996,7 +2027,13 @@ describe("shepy-pi profile-owner bridge (Phase 4)", () => {
         message.customType === "shepy-wake-context" &&
         (message.details as { profileId?: string } | undefined)?.profileId === "driffs",
     );
+    // Exact leased events with cause — never an all-agents roster.
     expect(hidden?.[0].content).toContain("driffs-worker");
+    expect(hidden?.[0].content).toContain("working→done");
+    expect(hidden?.[0].content).toContain("event: 1");
+    expect(hidden?.[0].content).toContain("event: 2");
+    expect(hidden?.[0].content).toContain("obligation: ob-1");
+    expect(hidden?.[0].content).toContain("Worker finished the audit.");
     expect(
       pi.customMessages.filter(([message]) => message.customType === "shepy-wake"),
     ).toHaveLength(1);
@@ -2013,6 +2050,189 @@ describe("shepy-pi profile-owner bridge (Phase 4)", () => {
       "inbox.ack",
       { ids: ["ob-1", "ob-2"], leaseToken: "lease-1", profileId: "driffs" },
     ]);
+  });
+
+  test("wake names the EXACT leased event even when the roster would list other workers", async () => {
+    const { pi, ctx, client } = await profileHarness();
+    client.response = (method) => {
+      if (method === "profile.claim") return { result: { kind: "claimed", leaseToken: "lease-1" } };
+      if (method === "inbox.lease")
+        return {
+          obligations: [
+            {
+              agentEventId: 14691,
+              id: "ob-1",
+              outcome: {
+                agent: "pi",
+                createdAt: "2026-09-10T09:47:34.000Z",
+                eventId: 14691,
+                excerpt: { text: "FX audit complete — 5 findings.", truncated: false },
+                from: "working",
+                name: "fx-audit",
+                paneId: "wP:p61",
+                terminalId: "term_65b",
+                to: "done",
+                type: "agent.done",
+              },
+            },
+          ],
+        };
+      // The OLD code fetched this roster and rendered every agent with no
+      // cause — the wrong-worker attribution incident. It must never be read.
+      if (method === "profile.context")
+        return {
+          agents: [
+            { agent: "pi", compactHistory: {}, name: "fx-audit", paneId: "wP:p61" },
+            { agent: "pi", compactHistory: {}, name: "mask-builder", paneId: "wP:p62" },
+          ],
+        };
+      return { delivered: 1 };
+    };
+    await pi.command("on driffs", ctx);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(client.calls.map(([method]) => method)).not.toContain("profile.context");
+    const hidden = pi.hiddenMessages.find(
+      ([message]) => message.customType === "shepy-wake-context",
+    );
+    expect(hidden?.[0].content).toContain("fx-audit");
+    expect(hidden?.[0].content).toContain("wP:p61");
+    expect(hidden?.[0].content).toContain("working→done");
+    expect(hidden?.[0].content).toContain("event: 14691");
+    expect(hidden?.[0].content).toContain("obligation: ob-1");
+    expect(hidden?.[0].content).toContain("FX audit complete — 5 findings.");
+    expect(hidden?.[0].content).not.toContain("mask-builder");
+    // Frozen correlation: a later lease change cannot rewrite the enqueued
+    // evidence, and no drift re-read ever happens.
+    const before = hidden?.[0].content;
+    client.response = (method) => {
+      if (method === "inbox.lease") return { obligations: [] };
+      if (method === "profile.context")
+        return {
+          agents: [{ agent: "pi", compactHistory: {}, name: "fx-audit", paneId: "wP:p61" }],
+        };
+      return { delivered: 0 };
+    };
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(
+      pi.hiddenMessages.filter(([message]) => message.customType === "shepy-wake-context"),
+    ).toHaveLength(1);
+    expect(hidden?.[0].content).toBe(before);
+  });
+
+  test("a failed context enqueue nacks and never strands the batch; retry delivers once", async () => {
+    const { pi, ctx, client } = await profileHarness();
+    const obligations = [{ agentEventId: 1, id: "ob-1", outcome: null }];
+    client.response = (method) => {
+      if (method === "profile.claim") return { result: { kind: "claimed", leaseToken: "lease-1" } };
+      if (method === "inbox.lease") return { obligations };
+      if (method === "inbox.nack") return { nacked: 1 };
+      if (method === "inbox.delivered") return { delivered: 1 };
+      return { acked: 1 };
+    };
+    const originalSend = pi.sendMessage.bind(pi);
+    let failContext = true;
+    pi.sendMessage = ((message: { display?: boolean }, options?: unknown) => {
+      if (failContext && message.display === false) throw new Error("context enqueue failed");
+      return originalSend(message, options);
+    }) as typeof pi.sendMessage;
+    await pi.command("on driffs", ctx);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    // Nothing displayed, nothing marked delivered, durable nack.
+    expect(client.calls).toContainEqual([
+      "inbox.nack",
+      expect.objectContaining({ errorCode: "wake_failed", ids: ["ob-1"], leaseToken: "lease-1" }),
+    ]);
+    expect(client.calls.map(([method]) => method)).not.toContain("inbox.delivered");
+    expect(pi.customMessages).toHaveLength(0);
+    // An unrelated user turn settles: it must NOT ack the never-displayed wake.
+    await pi.emit("message_end", { message: { role: "assistant", stopReason: "stop" } }, ctx);
+    client.response = (method) => {
+      if (method === "inbox.lease") return { obligations: [] };
+      return { acked: 1 };
+    };
+    await pi.emit("agent_settled", {}, ctx);
+    expect(client.calls.map(([method]) => method)).not.toContain("inbox.ack");
+    // Repair the enqueue path: the next pump cycle delivers the one batch.
+    failContext = false;
+    client.response = (method) => {
+      if (method === "profile.claim") return { result: { kind: "claimed", leaseToken: "lease-1" } };
+      if (method === "inbox.lease") return { obligations };
+      if (method === "inbox.delivered") return { delivered: 1 };
+      return { acked: 1 };
+    };
+    await pi.command("off", ctx);
+    await pi.command("on driffs", ctx);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(
+      pi.customMessages.filter(([message]) => message.customType === "shepy-wake"),
+    ).toHaveLength(1);
+    expect(client.calls).toContainEqual([
+      "inbox.delivered",
+      expect.objectContaining({ ids: ["ob-1"] }),
+    ]);
+  });
+
+  test("a failed TRIGGER enqueue nacks and a later user turn cannot ack it", async () => {
+    const { pi, ctx, client } = await profileHarness();
+    client.response = (method) => {
+      if (method === "profile.claim") return { result: { kind: "claimed", leaseToken: "lease-1" } };
+      if (method === "inbox.lease")
+        return { obligations: [{ agentEventId: 7, id: "ob-7", outcome: null }] };
+      if (method === "inbox.nack") return { nacked: 1 };
+      return { delivered: 1 };
+    };
+    const originalSend = pi.sendMessage.bind(pi);
+    pi.sendMessage = ((message: { display?: boolean }, options?: unknown) => {
+      if (message.display !== false) throw new Error("trigger enqueue failed");
+      return originalSend(message, options);
+    }) as typeof pi.sendMessage;
+    await pi.command("on driffs", ctx);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    // The hidden context may enqueue, but no wake turn ever triggers.
+    expect(pi.customMessages).toHaveLength(0);
+    expect(client.calls).toContainEqual([
+      "inbox.nack",
+      expect.objectContaining({ errorCode: "wake_failed", ids: ["ob-7"], leaseToken: "lease-1" }),
+    ]);
+    expect(client.calls.map(([method]) => method)).not.toContain("inbox.delivered");
+    // Unrelated user turn finishes successfully — still no ack.
+    await pi.emit("message_end", { message: { role: "assistant", stopReason: "stop" } }, ctx);
+    await pi.emit("agent_settled", {}, ctx);
+    expect(client.calls.map(([method]) => method)).not.toContain("inbox.ack");
+  });
+
+  test("delivered-RPC failure after a queued trigger keeps the batch ackable, no duplicate", async () => {
+    const { pi, ctx, client } = await profileHarness();
+    client.response = (method) => {
+      if (method === "profile.claim") return { result: { kind: "claimed", leaseToken: "lease-1" } };
+      if (method === "inbox.lease")
+        return { obligations: [{ agentEventId: 3, id: "ob-3", outcome: null }] };
+      if (method === "inbox.delivered") throw new Error("daemon hiccup");
+      if (method === "inbox.ack") return { acked: 1 };
+      return { delivered: 1 };
+    };
+    await pi.command("on driffs", ctx);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    // The wake DID display and trigger — exactly once.
+    expect(
+      pi.customMessages.filter(([message]) => message.customType === "shepy-wake"),
+    ).toHaveLength(1);
+    // delivered failed, but the displayed batch stays ackable at settle.
+    await pi.emit("message_end", { message: { role: "assistant", stopReason: "stop" } }, ctx);
+    client.response = (method) => {
+      if (method === "inbox.lease") return { obligations: [] };
+      if (method === "inbox.ack") return { acked: 1 };
+      throw new Error("unexpected call");
+    };
+    await pi.emit("agent_settled", {}, ctx);
+    expect(client.calls).toContainEqual([
+      "inbox.ack",
+      { ids: ["ob-3"], leaseToken: "lease-1", profileId: "driffs" },
+    ]);
+    expect(
+      pi.customMessages.filter(([message]) => message.customType === "shepy-wake"),
+    ).toHaveLength(1);
   });
 
   test("failed settle nacks — the obligations remain pending server-side", async () => {

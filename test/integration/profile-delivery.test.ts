@@ -88,8 +88,14 @@ function build(path: string, overrides: { now?: () => number } = {}) {
     ...(overrides.now ? { now: overrides.now } : {}),
     sqlite,
   });
-  const delivery = new ProfileDeliveryService({ agents, obligations, owners, profiles });
   const agentEvents = new AgentEventStore(sqlite);
+  const delivery = new ProfileDeliveryService({
+    agentEvents,
+    agents,
+    obligations,
+    owners,
+    profiles,
+  });
   return { agentEvents, agents, delivery, obligations, owners, profiles, sqlite };
 }
 
@@ -185,6 +191,113 @@ describe("obligation projection filter (vault §9.1)", () => {
     const pending = delivery.inboxList({ profileId: "driffs" });
     expect(pending).toHaveLength(1);
     expect(pending[0]?.agentEventId).toBe(2);
+  });
+});
+
+describe("inbox.lease event-correlated outcomes", () => {
+  function appendOutcomeEvent(input: {
+    compactHistory?: Record<string, unknown> | null;
+    idempotency: string;
+  }) {
+    const built = fixture();
+    const worker = built.agents.list().find((row) => row.name === "driffs-worker");
+    if (!worker) throw new Error("fixture: driffs-worker missing");
+    const stored = built.agentEvents.append({
+      agentId: worker.id,
+      compactHistory: (input.compactHistory ?? null) as never,
+      herdrSessionName: "default",
+      idempotencyKey: input.idempotency,
+      paneId: "wA:p1",
+      payload: { agent: "hermes", from: "working", name: "driffs-worker", to: "done" },
+      type: "agent.done",
+      workspaceId: "wA",
+    });
+    built.delivery.projectAgentEvent(stored);
+    return { delivery: built.delivery, sqlite: built.sqlite, stored };
+  }
+
+  test("each leased obligation carries the immutable event snapshot, not live history", () => {
+    const { delivery, stored } = appendOutcomeEvent({
+      compactHistory: {
+        historyRef: null,
+        lastAssistantMessage: {
+          ref: "r1",
+          role: "assistant",
+          text: "FX\u0007 audit\n complete — 5 findings",
+          timestamp: null,
+        },
+        lastToolResult: {
+          compact: null,
+          ref: "r2",
+          text: "TOOL BODY MUST NOT LEAK",
+          timestamp: null,
+          toolName: "bash",
+        },
+        lastUserMessage: null,
+        messageCount: 3,
+        source: "hermes-sqlite",
+        updatedAt: null,
+      },
+      idempotency: "outcome-live",
+    });
+    const lease = delivery.inboxLease({ leaseToken: "lease-1", profileId: "driffs" });
+    expect(lease.obligations).toHaveLength(1);
+    const outcome = (lease.obligations[0] as { outcome?: unknown }).outcome as
+      | Record<string, unknown>
+      | undefined;
+    expect(outcome).toMatchObject({
+      agent: "hermes",
+      eventId: stored.id,
+      from: "working",
+      name: "driffs-worker",
+      paneId: "wA:p1",
+      to: "done",
+      type: "agent.done",
+    });
+    const excerpt = outcome?.excerpt as { text: string; truncated: boolean } | undefined;
+    expect(excerpt).toEqual({ text: "FX audit complete — 5 findings", truncated: false });
+    expect(excerpt?.text).not.toContain("TOOL BODY");
+  });
+
+  test("long excerpts are bounded with a read-back hint; tool bodies never ride", () => {
+    const long = "x".repeat(5_000);
+    const { delivery } = appendOutcomeEvent({
+      compactHistory: {
+        historyRef: null,
+        lastAssistantMessage: { ref: "r1", role: "assistant", text: long, timestamp: null },
+        lastToolResult: null,
+        lastUserMessage: null,
+        messageCount: 1,
+        source: "hermes-sqlite",
+        updatedAt: null,
+      },
+      idempotency: "outcome-long",
+    });
+    const lease = delivery.inboxLease({ leaseToken: "lease-1", profileId: "driffs" });
+    const outcome = (
+      lease.obligations[0] as { outcome?: { excerpt?: { text: string; truncated: boolean } } }
+    ).outcome;
+    expect(outcome?.excerpt?.truncated).toBe(true);
+    expect(outcome?.excerpt?.text.length).toBeLessThanOrEqual(2_000);
+    expect(outcome?.excerpt?.text).toContain("shepy agent read");
+  });
+
+  test("a missing historical event leases with an honest null outcome", () => {
+    const { delivery, sqlite, stored } = appendOutcomeEvent({ idempotency: "outcome-missing" });
+    expect(delivery.inboxList({ profileId: "driffs" })).toHaveLength(1);
+    sqlite.exec("delete from agent_events");
+    const lease = delivery.inboxLease({ leaseToken: "lease-1", profileId: "driffs" });
+    expect(lease.obligations).toHaveLength(1);
+    expect((lease.obligations[0] as { outcome?: unknown }).outcome).toBeNull();
+    expect((lease.obligations[0] as { agentEventId?: number }).agentEventId).toBe(stored.id);
+  });
+
+  test("enrichment preserves lease fencing — a second lease token gets nothing", () => {
+    const { delivery } = appendOutcomeEvent({ idempotency: "outcome-fencing" });
+    const first = delivery.inboxLease({ leaseToken: "lease-1", profileId: "driffs" });
+    expect(first.obligations).toHaveLength(1);
+    const second = delivery.inboxLease({ leaseToken: "lease-2", profileId: "driffs" });
+    expect(second.obligations).toHaveLength(0);
   });
 });
 

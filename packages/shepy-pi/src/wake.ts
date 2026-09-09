@@ -112,3 +112,52 @@ export function formatAgentOutcomeUpdates(outcomes: AgentOutcome[]): string {
 
   return `${WAKE_POLICY}\n\n[SHEPY AGENT UPDATES]\n${updates}`;
 }
+
+/**
+ * Profile-mode wake content: one line per LEASED obligation, correlated to
+ * the immutable event snapshot the daemon joined onto the lease. This is the
+ * cause of the wake — never the current profile roster or live history,
+ * which can drift to other workers after the event fired.
+ */
+export type ProfileObligationOutcome = {
+  agent: string | null;
+  createdAt: string | null;
+  eventId: number | null;
+  excerpt: { text: string; truncated: boolean } | null;
+  from: string | null;
+  name: string | null;
+  paneId: string | null;
+  terminalId: string | null;
+  to: string | null;
+  type: string | null;
+};
+
+export type ProfileObligationUpdate = {
+  obligationId: string;
+  outcome: ProfileObligationOutcome | null;
+};
+
+export function formatProfileObligationUpdates(updates: ProfileObligationUpdate[]): string {
+  const lines = updates
+    .map((update) => {
+      const outcome = update.outcome;
+      if (!outcome) {
+        return `- event snapshot unavailable · obligation ${update.obligationId} (run shepy agent read for the exact pane)`;
+      }
+      const identity = agentIdentityLabel({
+        agent: outcome.agent ?? "unknown",
+        name: outcome.name ?? undefined,
+      });
+      const transition =
+        outcome.from && outcome.to ? `${outcome.from}→${outcome.to}` : (outcome.type ?? "event");
+      const excerpt =
+        outcome.excerpt && outcome.excerpt.text.length > 0
+          ? outcome.excerpt.text
+          : "(no assistant message)";
+      return `- ${outcome.type ?? "event"} ${identity} ${outcome.paneId ?? "unknown"} ${transition}
+  last assistant: ${excerpt}
+  event: ${outcome.eventId ?? "?"} · obligation: ${update.obligationId}`;
+    })
+    .join("\n");
+  return `${WAKE_POLICY}\n\n[SHEPY PROFILE OUTCOMES]\n${lines}`;
+}

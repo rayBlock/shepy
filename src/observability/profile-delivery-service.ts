@@ -1,3 +1,5 @@
+import { stripVTControlCharacters } from "node:util";
+import type { AgentEventStore } from "@/db/agent-events.js";
 import type { AgentStore } from "@/db/agents.js";
 import type { DeliveryObligationStore, Obligation } from "@/db/delivery-obligations.js";
 import type { OrchestratorProfileStore } from "@/db/orchestrator-profiles.js";
@@ -38,6 +40,78 @@ export const NOTIFIABLE_EVENT_TYPES: ReadonlySet<AgentEventType> = new Set([
 ]);
 
 /**
+ * Bounded untrusted excerpt cap for leased outcomes — mirrors the
+ * orchestrator wake path (wake.ts AGENT_UPDATE_EXCERPT_CHARS).
+ */
+export const INBOX_OUTCOME_EXCERPT_CHARS = 2_000;
+
+/**
+ * The immutable event snapshot a leased obligation refers to. Built ONLY
+ * from the stored agent event (payload + append-time compact history), never
+ * from a live history re-read — the excerpt is what the agent said at event
+ * time, so a worker resuming afterwards can never rewrite the cause of a
+ * wake. Only the last assistant message rides; tool bodies never do.
+ */
+export type InboxOutcomeSnapshot = {
+  agent: string | null;
+  createdAt: string;
+  eventId: number;
+  excerpt: { text: string; truncated: boolean } | null;
+  from: string | null;
+  name: string | null;
+  paneId: string | null;
+  terminalId: string | null;
+  to: string | null;
+  type: string;
+};
+
+function outcomeString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function normalizeOutcomeExcerpt(value: unknown, paneId: string | null) {
+  const raw = outcomeString(value);
+  if (raw === null) return null;
+  const normalized = stripVTControlCharacters(raw)
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional C0/C1 stripping — untrusted agent excerpts must never carry control bytes into a wake.
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (normalized.length === 0) return { text: "", truncated: false };
+  if (normalized.length <= INBOX_OUTCOME_EXCERPT_CHARS) {
+    return { text: normalized, truncated: false };
+  }
+  const hint = ` … [truncated; run shepy agent read ${paneId ?? "unknown"}]`;
+  const prefixLength = Math.max(0, INBOX_OUTCOME_EXCERPT_CHARS - hint.length);
+  return {
+    text: `${normalized.slice(0, prefixLength).trimEnd()}${hint}`,
+    truncated: true,
+  };
+}
+
+export function projectInboxOutcome(event: AgentEventRecord): InboxOutcomeSnapshot {
+  const payload =
+    typeof event.payload === "object" && event.payload !== null
+      ? (event.payload as Record<string, unknown>)
+      : {};
+  return {
+    agent: outcomeString(payload.agent),
+    createdAt: event.createdAt.toISOString(),
+    eventId: event.id,
+    excerpt: normalizeOutcomeExcerpt(
+      event.compactHistory?.lastAssistantMessage?.text,
+      event.paneId,
+    ),
+    from: outcomeString(payload.from),
+    name: outcomeString(payload.name),
+    paneId: event.paneId,
+    terminalId: event.terminalId,
+    to: outcomeString(payload.to),
+    type: event.type,
+  };
+}
+
+/**
  * Phase 3 — profile delivery service (vault §9.2, §6.2).
  *
  * Projection: every observed agent event becomes at most one obligation per
@@ -49,17 +123,20 @@ export const NOTIFIABLE_EVENT_TYPES: ReadonlySet<AgentEventType> = new Set([
  */
 export class ProfileDeliveryService {
   readonly #agents: AgentStore;
+  readonly #agentEvents: AgentEventStore | undefined;
   readonly #obligations: DeliveryObligationStore;
   readonly #owners: ProfileOwnerStore;
   readonly #profiles: OrchestratorProfileStore;
 
   constructor(options: {
+    agentEvents?: AgentEventStore;
     agents: AgentStore;
     obligations: DeliveryObligationStore;
     owners: ProfileOwnerStore;
     profiles: OrchestratorProfileStore;
   }) {
     this.#agents = options.agents;
+    this.#agentEvents = options.agentEvents;
     this.#obligations = options.obligations;
     this.#owners = options.owners;
     this.#profiles = options.profiles;
@@ -144,7 +221,7 @@ export class ProfileDeliveryService {
   /** Expire stranded leases, then lease the oldest pending batch. */
   inboxLease(input: { leaseToken: string; maxBatch?: number; now?: number; profileId: string }): {
     expired: number;
-    obligations: Obligation[];
+    obligations: Array<Obligation & { outcome: InboxOutcomeSnapshot | null }>;
   } {
     const sweep = this.#obligations.sweepExpired({
       ...(input.now !== undefined ? { now: input.now } : {}),
@@ -167,7 +244,23 @@ export class ProfileDeliveryService {
       .list({ limit: input.maxBatch ?? 20, profileId: input.profileId, state: "leased" })
       .filter((obligation) => obligation.leaseToken === input.leaseToken)
       .sort((a, b) => a.agentEventId - b.agentEventId);
-    return { expired: sweep.expired + sweep.deadLettered, obligations: leased };
+    // Lease fencing is untouched: enrichment is a read-only join onto the
+    // already-leased rows. A missing historical event stays honest — the
+    // obligation still leases, with a null snapshot and no invented source.
+    const obligations = leased.map((obligation) => ({
+      ...obligation,
+      outcome: this.#outcomeSnapshotFor(obligation.agentEventId),
+    }));
+    return { expired: sweep.expired + sweep.deadLettered, obligations };
+  }
+
+  #outcomeSnapshotFor(agentEventId: number): InboxOutcomeSnapshot | null {
+    if (!this.#agentEvents) return null;
+    try {
+      return projectInboxOutcome(this.#agentEvents.get(agentEventId));
+    } catch {
+      return null;
+    }
   }
 
   inboxDelivered(input: {

@@ -68,6 +68,7 @@ export async function runObservabilityDaemonService(
   });
   const operationWait = new OperationWaitService({ operations: operationStore });
   const deliveryService = new ProfileDeliveryService({
+    agentEvents,
     agents,
     obligations: new DeliveryObligationStore(sqlite),
     owners: new ProfileOwnerStore({ sqlite }),
