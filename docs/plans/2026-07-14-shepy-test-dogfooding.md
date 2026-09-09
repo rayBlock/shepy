@@ -149,7 +149,7 @@ Expected: Shepy preserves the meaningful messages while omitting terminal chrome
 In Pi A, submit:
 
 ```text
-Shepy hidden contextだけを使い、別ペインのagentが最後に依頼されたことと、最後に報告したことを説明してください。追加のCLI問い合わせはしないでください。
+Using only Shepy's hidden context, explain what the agent in another pane was last asked to do and what it last reported. Do not make additional CLI queries.
 ```
 
 Expected: Pi A identifies the agent and accurately summarizes its latest user/assistant messages without invoking `shepy agent get/read` during this turn.
@@ -159,7 +159,7 @@ Expected: Pi A identifies the agent and accurately summarizes its latest user/as
 In Pi A, submit:
 
 ```text
-別ペインのagentの現在の状態、直近20件の履歴、最後のtool resultを確認してください。
+Check the agent in another pane: its current status, its latest 20 history entries, and its last tool result.
 ```
 
 Expected:

@@ -794,7 +794,8 @@ Run:
 
 ```bash
 wc -l README.md README.ja.md
-rg -n "observe-current|TODO|TBD|foo|bar|example|重要なのは|本質的|実は|まさに|—|——|ではなく|以下に|ここでは|することができる|両輪|示唆" README.md README.ja.md || true
+# Unicode escapes preserve the historical multilingual filler-word checks.
+rg -n "observe-current|TODO|TBD|foo|bar|example|\u91cd\u8981\u306a\u306e\u306f|\u672c\u8cea\u7684|\u5b9f\u306f|\u307e\u3055\u306b|—|——|\u3067\u306f\u306a\u304f|\u4ee5\u4e0b\u306b|\u3053\u3053\u3067\u306f|\u3059\u308b\u3053\u3068\u304c\u3067\u304d\u308b|\u4e21\u8f2a|\u793a\u5506" README.md README.ja.md || true
 PATH="$HOME/.local/share/mise/installs/node/24.18.0/bin:$HOME/.local/share/mise/installs/pnpm/11.9.0/bin:$PATH" pnpm format:check
 ```
 

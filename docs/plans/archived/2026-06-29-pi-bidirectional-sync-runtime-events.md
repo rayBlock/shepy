@@ -16,7 +16,7 @@ This plan captured the first `pi.*` runtime event design, but the target archite
 
 ## Global Constraints
 
-- Chat/user-facing progress remains Japanese in this repository, but code and public docs use English unless existing local context differs.
+- Chat, user-facing progress, code, and public docs use English. The former Japanese-language requirement is superseded by `AGENTS.md`.
 - This repository is not released yet; do not preserve compatibility for old `gateway.stream_delta`, `gateway.stream_finish`, `gateway.stream_segment_break`, `gateway.stream_tool_progress`, `gateway.complete_run`, or `gateway.fail_run` RPCs.
 - Do not expose thinking by default.
 - Do not persist or send raw Pi tool args, raw tool results, stdout/stderr dumps, file contents, provider request/response payloads, or thinking.

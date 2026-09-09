@@ -91,7 +91,8 @@ Replace generic “Pi may receive unread updates” text with: current workspace
 Run:
 
 ```bash
-rg -n "orchestrator|オーケストレーター|agent updates|agent update" README.md README.ja.md packages/shepherd-pi/README.md packages/shepherd-pi/skills/shepherd/SKILL.md SKILL.md
+# Unicode escapes preserve the historical Japanese spelling of "orchestrator."
+rg -n "orchestrator|\u30aa\u30fc\u30b1\u30b9\u30c8\u30ec\u30fc\u30bf\u30fc|agent updates|agent update" README.md README.ja.md packages/shepherd-pi/README.md packages/shepherd-pi/skills/shepherd/SKILL.md SKILL.md
 rg -n "agent\.notifications\.subscribe|subscriptionId" README.md README.ja.md packages/shepherd-pi/README.md packages/shepherd-pi/skills/shepherd/SKILL.md SKILL.md
 ```
 

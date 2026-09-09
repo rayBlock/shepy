@@ -662,13 +662,13 @@ It must not mention removed messaging platforms, removed queueing, removed old c
 In root `AGENTS.md`, replace the opening description from an orchestration gateway to an orchestration layer. The first sentence should read:
 
 ```markdown
-Shepherd は、Herdr 管理の coding agent を TUI / Pi / Herdr plugin などのイベントストリームから観測・操作する orchestration layer です。
+Shepherd is an orchestration layer that observes and controls coding agents managed by Herdr through event streams such as the TUI / Pi / Herdr plugin.
 ```
 
 If `TUI` is no longer a supported surface in current code, use this instead:
 
 ```markdown
-Shepherd は、Herdr 管理の coding agent を CLI / Pi / Herdr plugin などのイベントストリームから観測・操作する orchestration layer です。
+Shepherd is an orchestration layer that observes and controls coding agents managed by Herdr through event streams such as the CLI / Pi / Herdr plugin.
 ```
 
 Choose the second version if no current `src/tui` implementation exists.

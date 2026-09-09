@@ -19,9 +19,9 @@ Archived. Slack access scope MVP is implemented and tested.
 
 ## Goal
 
-Slack から Shepherd を操作できる範囲を、チーム、チャンネル、ユーザー ID で明示的に制御できるようにする。
+Explicitly control access to Shepherd from Slack by team, channel, and user ID.
 
-Shepherd は Herdr 上の agent や terminal を動かす control-plane なので、Slack workspace 全体に開いた bot として扱ってはいけない。MVP では Slack だけを対象にし、Discord / Telegram などは後で同じ考え方を adapter ごとに拡張できる余地を残す。
+Shepherd is a control plane for agents and terminals in Herdr, not a bot open to an entire Slack workspace. The MVP targets Slack only, while leaving room to extend the same approach to Discord / Telegram through separate adapters later.
 
 ## Implementation status
 
@@ -37,9 +37,9 @@ Implemented:
 - denied inbound events are not stored in the Shepherd DB.
 - README Slack setup example includes `allowed_users` and `allowed_channels`, and uses env var names for tokens.
 
-## 現状
+## Current State
 
-`platforms.slack` には以下の設定がある。
+`platforms.slack` has the following settings:
 
 ```yaml
 platforms:
@@ -54,43 +54,43 @@ platforms:
       - U123
 ```
 
-実装上も Slack inbound で `teamId`、`channelId`、`sourceUserId` を AND 条件で確認している。未設定の allowlist は制限なしとして扱われる。`allowed_users` 未設定時は起動時に警告し、拒否時は message text を含めず debug log に理由と ID だけを出す。
+The implementation checks `teamId`, `channelId`, and `sourceUserId` with AND semantics for Slack inbound messages. An unset allowlist imposes no restriction on that axis. Startup warns when `allowed_users` is unset; denial debug logs include only the reason and IDs, never message text.
 
-## 方針
+## Approach
 
-MVP では Slack だけを実装対象にする。
+Implement only Slack for the MVP.
 
-ただし命名と責務分離は platform-neutral に寄せる。
+Keep naming and responsibilities platform-neutral:
 
-- core DB は Slack 専用カラムを増やさない。
-- platform adapter が外部イベントを正規化し、core には `platform`、`spaceId`、`threadId`、`actor.sourceUserId` として渡す。
-- Slack の `team_id` は binding metadata または policy 判定用の platform metadata として扱う。
-- `allowed_channels` は channel / thread の入口制限に使う。
-- `allowed_users` は DM / channel / thread すべてで sender 制限に使う。
-- `allowed_teams` は Slack workspace 境界の制限に使う。
+- Do not add Slack-specific columns to the core DB.
+- The platform adapter normalizes external events and passes `platform`, `spaceId`, `threadId`, and `actor.sourceUserId` to the core.
+- Treat Slack's `team_id` as binding metadata or platform metadata for policy evaluation.
+- Use `allowed_channels` to restrict channel / thread entry points.
+- Use `allowed_users` to restrict senders across DMs, channels, and threads.
+- Use `allowed_teams` to enforce the Slack workspace boundary.
 
-Hermes Agent の複雑な admin tier や pairing flow はコピーしない。Shepherd MVP は静的 YAML と `/reload-config` に絞る。
+Do not copy Hermes Agent's complex admin tiers or pairing flows. Limit the Shepherd MVP to static YAML and `/reload-config`.
 
 ## Access Policy Semantics
 
-Slack inbound message は次の順で判定する。
+Evaluate Slack inbound messages in this order:
 
-1. Slack message として正規化できないイベント、bot 自身の message、編集 / 削除などは無視する。
-2. `allowed_teams` が設定されている場合、`teamId` が含まれない message は拒否する。
-3. `allowed_channels` が設定されている場合、対象 channel が含まれない channel/thread message は拒否する。
-4. `allowed_users` が設定されている場合、sender user ID が含まれない message は拒否する。
-5. すべて通過した message だけを Shepherd session に保存し、gateway turn を起こす。
+1. Ignore events that cannot be normalized as Slack messages, the bot's own messages, edits, deletions, and similar events.
+2. If `allowed_teams` is configured, reject messages whose `teamId` is not listed.
+3. If `allowed_channels` is configured, reject channel/thread messages whose channel is not listed.
+4. If `allowed_users` is configured, reject messages whose sender user ID is not listed.
+5. Store only messages that pass every check in the Shepherd session and trigger a gateway turn.
 
-未設定 allowlist は「その軸では制限しない」を意味する。ただし安全な運用のため、Slack platform を有効にする設定例では `allowed_users` を必須扱いにする。
+An unset allowlist means "no restriction on this axis." For safe operation, however, configuration examples that enable Slack should treat `allowed_users` as required.
 
-将来的に fail-closed を強める場合は、互換性を壊さないために以下のどちらかで段階導入する。
+If stricter fail-closed behavior is introduced later, phase it in using one of these approaches to avoid an abrupt compatibility break:
 
-- `allow_all_users: true` を明示したときだけ user allowlist なしを許可する。
-- daemon 起動時に `allowed_users` なしを警告し、次の破壊的変更タイミングで必須化する。
+- Allow an absent user allowlist only when `allow_all_users: true` is explicit.
+- Warn at daemon startup when `allowed_users` is absent, then make it required at the next breaking-change boundary.
 
 ## Config Shape
 
-当面は既存 shape を維持する。
+Keep the existing shape for now:
 
 ```yaml
 platforms:
@@ -106,7 +106,7 @@ platforms:
       - U1234567890
 ```
 
-将来の拡張候補:
+Possible future extensions:
 
 ```yaml
 platforms:
@@ -116,36 +116,36 @@ platforms:
       - C9999999999
 ```
 
-`denied_channels` は MVP では入れない。allowlist と denylist の優先順位が必要になった時点で、Hermes の `allowed_channels` / `ignored_channels` 相当として検討する。
+Do not include `denied_channels` in the MVP. Consider it as an equivalent of Hermes's `allowed_channels` / `ignored_channels` only when allowlist/denylist precedence is needed.
 
 ## Delivery Scope
 
-Outbound delivery は既存の session binding に従う。Slack inbound で許可済みの thread から作られた binding だけが delivery target になるため、通常の gateway / TUI message はその thread に戻る。
+Outbound delivery follows existing session bindings. Only bindings created from Slack threads that passed inbound authorization become delivery targets, so ordinary gateway / TUI messages return to that thread.
 
-追加で確認すること:
+Additional checks:
 
-- TUI から Slack-bound session に送った user message は、許可済み binding の thread にだけ delivery される。
-- `allowed_channels` を狭めたあと、既存 binding への outbound delivery を止めるかどうかは別判断にする。
+- A user message sent from the TUI to a Slack-bound session is delivered only to the authorized binding's thread.
+- Decide separately whether narrowing `allowed_channels` should stop outbound delivery to existing bindings.
 
-MVP では inbound policy を最優先にし、既存 binding の outbound 無効化までは行わない。`/reload-config` 後に既存 binding の delivery も止めたい場合は、別途 delivery policy を追加する。
+The MVP prioritizes inbound policy and does not retroactively disable outbound delivery for existing bindings. Add a separate delivery policy if `/reload-config` must also stop delivery to existing bindings.
 
 ## Observability
 
-Slack event を拒否したとき、ユーザーには返答しない。不要な情報漏えいとチャンネルノイズを避ける。
+Do not reply to users when rejecting a Slack event. Avoid unnecessary information disclosure and channel noise.
 
-daemon log には debug level で理由を残す。
+Record the reason at debug level in the daemon log:
 
 - `slack policy denied: team`
 - `slack policy denied: channel`
 - `slack policy denied: user`
 
-event stream には拒否イベントを保存しない。未許可ユーザーの message 内容を DB に入れないため。
+Do not persist denied events in the event stream, so unauthorized users' message content never enters the DB.
 
 ## Future Adapter Compatibility
 
-Discord / Telegram を追加するときは、Slack の設定名を無理に抽象化しない。platform ごとに自然な ID を持つ。
+When adding Discord / Telegram, do not force Slack configuration names into a shared abstraction. Use each platform's natural IDs.
 
-想定:
+Expected shape:
 
 ```yaml
 platforms:
@@ -168,48 +168,48 @@ platforms:
       - "123456"
 ```
 
-core 側の共通契約は次に留める。
+Limit the shared core contract to:
 
-- adapter は platform event を正規化する。
-- adapter は platform-specific policy を inbound 保存前に判定する。
-- core は許可済み message だけを session event として扱う。
-- DB binding は `platform`, `spaceId`, `threadId`, `metadata` で platform-neutral に保存する。
+- Adapters normalize platform events.
+- Adapters evaluate platform-specific policy before persisting inbound messages.
+- The core treats only authorized messages as session events.
+- DB bindings store `platform`, `spaceId`, `threadId`, and `metadata` in a platform-neutral form.
 
-Discord の role 認可や Telegram の group / forum topic は、Slack MVP に持ち込まない。
+Do not bring Discord role authorization or Telegram groups / forum topics into the Slack MVP.
 
 ## Implementation Steps
 
-1. [x] Slack access policy の契約をテストで固定する。
-   - team / channel / user が一致すると保存される。
-   - どれか 1 つでも allowlist から外れると保存されない。
-   - 未設定 allowlist はその軸を制限しない。
-   - bot message / edit / delete は保存されない。
+1. [x] Lock the Slack access-policy contract with tests.
+   - Matching team / channel / user messages are stored.
+   - A mismatch on any allowlist prevents storage.
+   - An unset allowlist does not restrict that axis.
+   - Bot messages, edits, and deletions are not stored.
 
-2. [x] 起動時 validation / warning を追加する。
-   - `platforms.slack` が有効で `allowed_users` なしの場合、警告する。
-   - 将来 `allow_all_users` を導入する場合は、この step で schema と warning を調整する。
+2. [x] Add startup validation / warnings.
+   - Warn when `platforms.slack` is enabled without `allowed_users`.
+   - If `allow_all_users` is introduced later, adjust the schema and warning in this step.
 
-3. [x] 拒否理由の debug log を追加する。
-   - message text は log しない。
-   - team/channel/user ID と拒否理由だけを出す。
+3. [x] Add denial-reason debug logs.
+   - Never log message text.
+   - Log only team/channel/user IDs and the denial reason.
 
-4. [x] docs / example config を更新する。
-   - Slack setup 例には `allowed_users` と `allowed_channels` を含める。
-   - token は env var name だけを YAML に書く方針を明記する。
+4. [x] Update docs / example configuration.
+   - Include `allowed_users` and `allowed_channels` in Slack setup examples.
+   - Explicitly state that YAML contains only environment-variable names for tokens.
 
-5. [x] `pnpm check` を通す。
+5. [x] Pass `pnpm check`.
 
 ## Non-goals
 
-- Discord / Telegram adapter 実装。
-- Hermes Agent の pairing flow。
-- role-based authorization。
-- Slack workspace 管理 UI。
-- 未許可 inbound message の DB 保存。
-- outbound delivery に対する config reload 後の retroactive blocking。
+- Discord / Telegram adapter implementations.
+- Hermes Agent's pairing flow.
+- Role-based authorization.
+- Slack workspace administration UI.
+- DB storage of unauthorized inbound messages.
+- Retroactive outbound-delivery blocking after configuration reload.
 
 ## Open Questions
 
-- `allowed_users` なしの Slack config を将来的に hard error にするか、警告に留めるか。
-- `allowed_channels` を DM に適用しない仕様を Shepherd でも明示するか。現状 Slack channel ID ベースのため、DM channel を allowlist に入れれば制限できるが、Hermes は DM を channel allowlist の対象外としている。
-- `/reload-config` 後、既存 Slack binding への outbound delivery も新 policy で止めるべきか。
+- Should Slack configuration without `allowed_users` eventually be a hard error, or remain a warning?
+- Should Shepherd explicitly exempt DMs from `allowed_channels`? The current implementation uses Slack channel IDs, so DMs can be restricted by listing their channel IDs; Hermes excludes DMs from the channel allowlist.
+- Should the new policy also stop outbound delivery to existing Slack bindings after `/reload-config`?

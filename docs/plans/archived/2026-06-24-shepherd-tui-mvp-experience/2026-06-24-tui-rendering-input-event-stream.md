@@ -172,7 +172,7 @@ Default MVP rendering should be compact:
 
 ```text
 tool ensure_herdr_workspace started
-工具 ensure_herdr_workspace completed
+Tool ensure_herdr_workspace completed
 ```
 
 Show key output fields for Herdr tools when useful, for example workspace id or agent name. Do not dump full JSON into the main stream.

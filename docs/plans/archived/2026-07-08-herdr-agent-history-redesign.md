@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Chat responses are Japanese; public repository code/docs should use English unless an existing local file uses Japanese.
+- Chat responses and public repository code/docs use English. The former Japanese-language requirement is superseded by `AGENTS.md`.
 - Use Herdr official vocabulary externally: `agent`, `agent_session`, `agent history`.
 - Do not expose `worker`, `run`, standalone `session`, `context`, or `snapshot` in user-facing CLI/API/docs after this rewrite. Plan files may mention old names only to describe deletion/migration.
 - Remove old external commands: `shepherd context`, `shepherd snapshot`, `shepherd events`, `shepherd notifications`, `shepherd ack`, `shepherd message-worker`, `shepherd wait-worker`.

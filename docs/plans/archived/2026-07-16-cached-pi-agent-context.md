@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Chat responses are Japanese; public repository code, docs, test names, and commit messages are English.
+- Chat responses, public repository code, docs, test names, and commit messages are English. The former Japanese-language requirement is superseded by `AGENTS.md`.
 - Follow TDD: focused red test, failing-test confirmation, minimal implementation, focused green test, then refactor.
 - Do not add runtime dependencies.
 - Do not change Herdr or Pi minimum versions: Herdr remains `>= 0.7.0`; Pi remains `>= 0.80.6`.

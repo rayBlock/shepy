@@ -1190,7 +1190,7 @@ Shepherd currently reads compact history from Pi, Claude Code, Codex, OpenCode, 
 Update `README.ja.md` with the matching Japanese sentence:
 
 ```md
-Shepherd は現在、Herdr が agent を識別できる場合、または workspace directory から履歴を発見できる場合に、Pi、Claude Code、Codex、OpenCode、Gemini CLI の短い履歴を読み取れます。
+Shepherd can currently read short histories from Pi, Claude Code, Codex, OpenCode, and Gemini CLI when Herdr identifies the agent or history can be discovered from the workspace directory.
 ```
 
 Do not update package READMEs unless their current wording claims a narrower supported runtime list. The current package READMEs describe the Pi extension/plugin behavior and do not need runtime-source lists.

@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Chat responses are Japanese; public repository code/docs and commit messages are English.
+- Chat responses, public repository code/docs, and commit messages are English. The former Japanese-language requirement is superseded by `AGENTS.md`.
 - Plan-only work must not edit implementation, tests, runtime config, generated DB files, or docs outside this plan tree.
 - Orchestrator scope is exactly `(herdrSessionName, workspaceId)`, not workspace id alone, Herdr session alone, or daemon-global.
 - Shepherd daemon is the source of truth. Pi session logs and project settings are not role authorities.

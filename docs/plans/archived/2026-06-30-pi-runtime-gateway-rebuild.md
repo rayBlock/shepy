@@ -41,7 +41,7 @@ No implementation steps remain for this plan. Future changes should use a new ac
 - Slack `platforms.slack.streaming.tool_progress` remains exactly `"off" | "compact" | "verbose"`; default is `off`. Compact/verbose progress is transient and sanitized.
 - Do not persist or send raw Pi tool args, raw tool results, stdout/stderr dumps, full file contents, provider request/response payloads, or hidden thinking.
 - Herdr progress is internal event data. Rebuild it on `events.subscribe`, not `events.wait`. Do not normal-fanout `herdr.progress` to Slack.
-- All public docs/code comments in this private repo may be English unless surrounding content is Japanese. Chat progress remains Japanese.
+- Public docs, code comments, and chat progress use English. The former Japanese-language requirement is superseded by `AGENTS.md`.
 - After implementation changes, run `pnpm check`. Run `pnpm build` because this rebuild changes import/export surfaces and CLI package output.
 
 ## Current Context

@@ -2,9 +2,7 @@
 
 # Shepy
 
-<!-- README-I18N:START -->
-**English** | [日本語](./README.ja.md)
-<!-- README-I18N:END -->
+Documentation and agent communication are maintained in English. See [AGENTS.md](./AGENTS.md#language) for the language policy.
 
 Shepy is a daemon-backed observability layer for coding agents running in Herdr. It provides two interfaces over the same durable agent index: pull-based CLI access to structured history, and owner-scoped Pi notifications with cached context and automatic wake.
 
@@ -22,7 +20,7 @@ Shepy currently supports session history from Claude Code, Codex, Gemini CLI, Op
 
 ```bash
 npm install --global shepy
-shepy help
+shepy --help
 ```
 
 ### Install from source
@@ -35,7 +33,7 @@ cd shepy
 pnpm install
 pnpm build
 npm install --global . --ignore-scripts
-shepy help
+shepy --help
 ```
 
 ## Start the daemon

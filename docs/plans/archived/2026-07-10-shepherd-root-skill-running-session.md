@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Follow TDD for the running-session fix: Red, Green, then refactor only if the focused tests remain green.
-- Public repository code, docs, skill instructions, and commit messages remain in English. Chat updates remain in Japanese.
+- Public repository code, docs, skill instructions, commit messages, and chat updates use English. The former Japanese-language requirement is superseded by `AGENTS.md`.
 - Modify the root `SKILL.md`; do not modify `packages/shepherd-pi/skills/shepherd/SKILL.md` in this plan.
 - Shepherd remains useful without the official Herdr skill. It provides structured agent status, compact history, and recent compact tool results.
 - Pure workspace, tab, pane, terminal input/output, spawn, focus, and wait operations belong to the official `herdr` skill. Do not duplicate Herdr CLI recipes in the root Shepherd skill.
@@ -532,28 +532,30 @@ Do not add fixture-specific target names, output strings, or fake-script paths t
 
 Create exactly 20 cases: 10 should-trigger and 10 should-not-trigger. Before running them, use `/skill-creator`'s `assets/eval_review.html` flow so the user can edit labels or wording and export the approved set.
 
+The examples below are English translations for readability. Recorded historical evaluation results refer to the original prompts, not a rerun of these translations.
+
 | ID | Should trigger | Query |
 | --- | --- | --- |
-| 1 | yes | `Herdrの今のworkspaceにいるagentを一覧して、blockedのagentだけ理由と最後のメッセージを教えて。` |
-| 2 | yes | `Codexは今どこまで進んでる？直近のstructured historyと最新tool resultを確認して。` |
-| 3 | yes | `worker-2がdoneか確認して、終わっていたら何を変更したのかShepherdの履歴からまとめて。` |
-| 4 | yes | `Herdrの外からworkspace wBにいるclaudeの状態と直近20メッセージを読みたい。` |
-| 5 | yes | `session nightlyのrelease-checkerが最後に何を報告したか確認して。` |
-| 6 | yes | `このHerdr workspaceのClaude CodeとCodexの進捗を比較して、どちらが入力待ちか調べて。` |
-| 7 | yes | `別agentのテスト結果が失敗していないか、compact tool resultまで見て判断して。` |
-| 8 | yes | `migration担当agentがどこまで作業したか、last user/assistant messageとstatusを取得して。` |
-| 9 | yes | `pane名は分からないけど、このworkspaceでidleになったcoding agentの直近の作業を確認して。` |
-| 10 | yes | `別のHerdr agentに指示を送る前に、いま何をしているかstructured contextを取って。` |
-| 11 | no | `packages/shepherd-herdr-plugin/srcのevent payload型を修正してunit testを追加して。Herdr操作は不要。` |
-| 12 | no | `Herdr workspaceの名前をapi-serverに変更して。` |
-| 13 | no | `右側にHerdr paneをsplitしてClaude Codeを起動して。` |
-| 14 | no | `tmuxのdev sessionでpane %4のログを読んでnpm testが終わったか確認して。` |
-| 15 | no | `Zellijのpaneで動く2つのagentを監視するlayoutを作って。` |
-| 16 | no | `このリファクタを3つのCodex subagentへ分担する計画を作って。terminal multiplexerは使わない。` |
-| 17 | no | `ReactのShepherd.js tourを初回ユーザーだけに表示して。` |
-| 18 | no | `社内CRM製品Shepherdのworkspace別sales agent dashboardを実装して。Herdr連携はない。` |
-| 19 | no | `別terminalで起動したViteの出力を追ってhot reload失敗を直して。` |
-| 20 | no | `Herdrのキーバインドを変更する方法とconfig.tomlの設定項目を教えて。` |
+| 1 | yes | `List agents in the current Herdr workspace, and give the reason and last message only for blocked agents.` |
+| 2 | yes | `How far has Codex progressed? Check its recent structured history and latest tool result.` |
+| 3 | yes | `Check whether worker-2 is done; if so, summarize its changes from Shepherd history.` |
+| 4 | yes | `From outside Herdr, read claude's status and latest 20 messages in workspace wB.` |
+| 5 | yes | `Check what release-checker in session nightly last reported.` |
+| 6 | yes | `Compare Claude Code and Codex progress in this Herdr workspace and identify which is waiting for input.` |
+| 7 | yes | `Check whether another agent's tests failed, including its compact tool result.` |
+| 8 | yes | `Get the migration agent's last user/assistant messages and status to see how far it progressed.` |
+| 9 | yes | `I do not know the pane name; check the recent work of the coding agent that became idle in this workspace.` |
+| 10 | yes | `Before sending instructions to another Herdr agent, get structured context on what it is doing.` |
+| 11 | no | `Fix the event payload types in packages/shepherd-herdr-plugin/src and add unit tests. No Herdr operations are needed.` |
+| 12 | no | `Rename the Herdr workspace to api-server.` |
+| 13 | no | `Split a Herdr pane on the right and start Claude Code.` |
+| 14 | no | `Read the logs from pane %4 in tmux session dev and check whether npm test finished.` |
+| 15 | no | `Create a Zellij layout for monitoring two agents running in panes.` |
+| 16 | no | `Plan how to divide this refactor among three Codex subagents. Do not use a terminal multiplexer.` |
+| 17 | no | `Show the React Shepherd.js tour only to first-time users.` |
+| 18 | no | `Implement a per-workspace sales agent dashboard for our internal CRM product Shepherd. There is no Herdr integration.` |
+| 19 | no | `Follow Vite output in another terminal and fix the hot-reload failure.` |
+| 20 | no | `Explain how to change Herdr keybindings and the relevant config.toml settings.` |
 
 - [ ] **Step 4: Review and run Claude Code trigger optimization**
 
@@ -770,15 +772,15 @@ Use this as the initial Japanese meaning, allowing `/readme-i18n` to make natura
 ````markdown
 ## Agent Skill
 
-Agent Skillを追加する前にShepherd CLIをインストールし、daemonを起動してください。対応するcoding agentには次のコマンドでShepherdのガイダンスを追加できます。
+Before adding the Agent Skill, install the Shepherd CLI and start the daemon. Add Shepherd guidance to supported coding agents with the following command.
 
 ```bash
 npx skills add ryonakae/shepherd --skill shepherd -g
 ```
 
-Shepherd skillは、構造化されたagent status、compact history、直近のtool resultを読みます。agentを確認するだけなら単独で使えます。
+The Shepherd skill reads structured agent status, compact history, and recent tool results. Use it alone when you only need to inspect agents.
 
-workspace、tab、pane、terminal input/output、waitもagentから操作する場合は、公式Herdr skillを追加してください。
+Add the official Herdr skill when agents also need to control workspaces, tabs, panes, terminal input/output, or waits.
 
 ```bash
 npx skills add ogulcancelik/herdr --skill herdr -g
@@ -1007,7 +1009,7 @@ Expected: `docs/plans/` has no active copy of this plan and the archive commit c
 
 - [x] Task 1: Enforced the running-session agent contract. The new RPC test failed before the join and passed with 29 files / 131 tests after the fix. Retained rows can be briefly queryable after a session is marked running and before its first replacement snapshot completes; generation/epoch freshness remains outside this scope.
 - [x] Task 2: Rewrote and statically validated the root Shepherd skill. The committed 57-line skill was saved as the external baseline; the 80-line candidate passes `quick_validate.py` and contains no duplicated Herdr control recipes.
-- [x] Task 3: Completed skill-creator behavior, Claude trigger, Codex smoke, and viewer review gates. Candidate behavior passed 4/4 with a 100% mean assertion rate versus 62.5% for the committed baseline. Claude passed 20/20 with three runs per query. `run_loop.py` could not create its multiprocessing semaphore under agent-safehouse (`Operation not permitted`), so the same skill-creator `run_single_query` evaluator ran sequentially without bypassing the sandbox. Codex CLI 0.144.1 passed 10/10 after its explicit `Shepherd スキルを使います` JSONL selection was counted as the invocation; safehouse blocked the subsequent file-read tool before a path event was emitted.
+- [x] Task 3: Completed skill-creator behavior, Claude trigger, Codex smoke, and viewer review gates. Candidate behavior passed 4/4 with a 100% mean assertion rate versus 62.5% for the committed baseline. Claude passed 20/20 with three runs per query. `run_loop.py` could not create its multiprocessing semaphore under agent-safehouse (`Operation not permitted`), so the same skill-creator `run_single_query` evaluator ran sequentially without bypassing the sandbox. Codex CLI 0.144.1 passed 10/10 after its explicit JSONL selection (translated: `I will use the Shepherd skill`) was counted as the invocation; safehouse blocked the subsequent file-read tool before a path event was emitted.
 - [x] Task 4: Updated English and Japanese README files through `/readme-creator`, `/stop-slop`, `/readme-i18n`, and `/stop-slop-ja`. The README checklist passed 21/21 applicable checks; the preserved opening selector cluster, prohibited table of contents, and prohibited Options section were recorded as explicit exceptions. English scored 48/50 and Japanese 47/50. The bundled translationese script lacked every supported provider API key, so the same S1-S4 rubric ran through authenticated Claude CLI judge/critic passes and returned `pass` with zero high-confidence flags. Selector counts, eight paired code fences, heading order, commands, and three external links all passed.
 - [x] Task 5: Passed full validation and package audit. Focused tests and `pnpm check` passed 29 files / 131 tests; `pnpm build`, skill validation, diff checks, and Pi-skill byte comparison passed. Root package dry-run contained 395 files and zero eval artifacts. Final gates were behavior 4/4 (100% candidate vs 62.5% baseline), Claude 20/20, Codex 10/10, README checklist 21/21, English 48/50, and Japanese 47/50.
 - [x] Task 6: Archived this completed plan in a docs-only commit; no active dependency or feedback remains.

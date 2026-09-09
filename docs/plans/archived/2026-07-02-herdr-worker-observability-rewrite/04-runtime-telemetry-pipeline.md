@@ -100,8 +100,10 @@ Create `PiTranscriptAdapter` that:
 - extracts last assistant text from text content blocks
 - extracts last toolResult with text content, `toolCallId`, `toolName`, `isError`
 - redacts and truncates excerpts to 4096 characters
-- sets blocked hint when final assistant text matches `/\b(blocked|ブロック|確認が必要|cannot proceed|need input)\b/i`
-- sets completion hint when final assistant text matches `/\b(done|completed|完了|実装しました|修正しました)\b/i`
+- sets blocked hint when final assistant text matches `/\b(blocked|\u30d6\u30ed\u30c3\u30af|\u78ba\u8a8d\u304c\u5fc5\u8981|cannot proceed|need input)\b/i`
+- sets completion hint when final assistant text matches `/\b(done|completed|\u5b8c\u4e86|\u5b9f\u88c5\u3057\u307e\u3057\u305f|\u4fee\u6b63\u3057\u307e\u3057\u305f)\b/i`
+
+The Unicode escapes preserve the original historical Japanese match terms: "blocked," "confirmation required," "complete," "implemented," and "fixed." They do not prescribe a response language.
 
 - [x] **Step 5: Run tests**
 
