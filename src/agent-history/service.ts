@@ -8,7 +8,11 @@ import type {
 } from "@/observability/contracts.js";
 import { ClaudeHistoryReader } from "./claude-reader.js";
 import { CodexHistoryReader } from "./codex-reader.js";
-import { type AgentHistoryLookupInput, discoverAgentHistory } from "./discovery.js";
+import {
+  type AgentHistoryLookupInput,
+  discoverAgentHistory,
+  hintMatchesAgentSession,
+} from "./discovery.js";
 import { GeminiHistoryReader } from "./gemini-reader.js";
 import { HermesHistoryReader } from "./hermes-reader.js";
 import { OpenCodeHistoryReader } from "./opencode-reader.js";
@@ -95,9 +99,15 @@ export function createAgentHistoryService(
     resolveOptions: { forceDiscovery?: boolean; preferredRef?: AgentHistoryRef | null } = {},
   ): Promise<ResolvedCompactAgentHistory> {
     // A preferred ref is a cached discovery hint, never session identity.
-    // At startup the session file may not exist yet and the hint can belong
-    // to another agent in the same cwd. Herdr's exact session always wins.
-    if (!input.agentSession && resolveOptions.preferredRef && !resolveOptions.forceDiscovery) {
+    // With an exact session the hint is honored only after it validates as
+    // genuinely belonging to that session (header identity for files, exact
+    // probe for SQLite stores) — the pre-fix binder could stamp a wrong
+    // file with the right id, so value/source equality alone proves nothing.
+    if (
+      resolveOptions.preferredRef &&
+      !resolveOptions.forceDiscovery &&
+      (await hintAllowed(input, resolveOptions.preferredRef))
+    ) {
       const preferred = await readCompactRef(resolveOptions.preferredRef);
       if (preferred.historyRef) return preferred;
     }
@@ -130,7 +140,7 @@ export function createAgentHistoryService(
       input: AgentHistoryLookupInput,
       readOptions: { limit: number; preferredRef?: AgentHistoryRef | null },
     ): Promise<{ historyRef: AgentHistoryRef | null; messages: AgentHistoryMessage[] }> {
-      if (!input.agentSession && readOptions.preferredRef) {
+      if (readOptions.preferredRef && (await hintAllowed(input, readOptions.preferredRef))) {
         const preferred = await readRef(readOptions.preferredRef, readOptions);
         if (preferred.historyRef) return preferred;
       }
@@ -139,6 +149,18 @@ export function createAgentHistoryService(
       return readRef(historyRef, readOptions);
     },
   };
+
+  async function hintAllowed(
+    input: AgentHistoryLookupInput,
+    hint: AgentHistoryRef,
+  ): Promise<boolean> {
+    if (!input.agentSession) return true;
+    return hintMatchesAgentSession({
+      hint,
+      homeDir: input.homeDir ?? options.homeDir ?? process.env.HOME ?? "",
+      session: input.agentSession,
+    });
+  }
 }
 
 function unresolvedCompactHistory(source: string | null = null): ResolvedCompactAgentHistory {

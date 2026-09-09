@@ -1,8 +1,17 @@
 import { existsSync } from "node:fs";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { open, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { AgentHistoryRef, AgentSessionRef } from "@/observability/contracts.js";
+
+/**
+ * Header metadata is extracted from a bounded prefix, never a full read of
+ * potentially huge transcripts. Identity fields (sessionId, cwd) live on the
+ * first records of every supported format; if they do not appear within the
+ * bound the candidate honestly resolves without identity.
+ */
+const HEADER_READ_BYTES = 128 * 1024;
+const GEMINI_METADATA_READ_BYTES = 1024 * 1024;
 
 export type AgentHistoryLookupInput = {
   agent: string | null;
@@ -72,9 +81,15 @@ export async function discoverAgentHistory(
   if (input.agentSession?.kind === "id") {
     const session = input.agentSession;
     const exact = candidates.filter((candidate) => candidate.sessionId === session.value);
+    // Claude Code writes subagent transcripts under
+    // <project>/<parent-id>/subagents/ that carry the PARENT sessionId on
+    // every record. An exact header match that is a subagent copy is never
+    // the canonical main transcript. Multiple genuine mains (or
+    // subagent-only hits) stay unresolved — no newest-mtime selection.
+    const mains = exact.filter((candidate) => !isSubagentTranscriptPath(candidate.path));
     // IDs are authority, not hints for cwd ranking. Ambiguous copies and
     // unavailable sessions stay unresolved rather than inventing a binding.
-    const match = exact.length === 1 ? exact[0] : undefined;
+    const match = mains.length === 1 ? mains[0] : undefined;
     return match
       ? { kind: "agent_session", path: match.path, source: match.source, value: session.value }
       : null;
@@ -172,7 +187,8 @@ async function listJsonlFiles(root: string): Promise<string[]> {
 async function readCandidateMetadata(
   path: string,
 ): Promise<{ cwd: string | null; sessionId: string | null }> {
-  const content = await readFile(path, "utf8").catch(() => "");
+  const content = await readHeaderPrefix(path, HEADER_READ_BYTES);
+  if (content === null) return { cwd: null, sessionId: null };
   let cwd: string | null = null;
   let sessionId: string | null = null;
   let inspected = 0;
@@ -208,17 +224,19 @@ async function scanGeminiRoot(root: string): Promise<Candidate[]> {
   const candidates: Candidate[] = [];
   for (const projectDir of projectDirs) {
     const cwd =
-      (await readFile(join(projectDir, ".project_root"), "utf8").catch(() => "")).trim() || null;
+      (
+        (await readHeaderPrefix(join(projectDir, ".project_root"), HEADER_READ_BYTES)) ?? ""
+      ).trim() || null;
     const sessions = await listGeminiSessionFiles(join(projectDir, "chats"));
     for (const path of sessions) {
       const stats = await stat(path).catch(() => null);
       if (!stats?.isFile()) continue;
-      const session = await readFile(path, "utf8")
-        .then((text) => recordValue(JSON.parse(text)))
-        .catch(() => recordValue(null));
+      const session = await readHeaderPrefix(path, GEMINI_METADATA_READ_BYTES)
+        .then((prefix) => (prefix === null ? null : recordValue(safeJsonParse(prefix))))
+        .catch(() => null);
       candidates.push({
         cwd,
-        sessionId: stringValue(session.sessionId),
+        sessionId: stringValue(session?.sessionId),
         mtimeMs: stats.mtimeMs,
         path,
         source: "gemini-json",
@@ -293,6 +311,81 @@ function resolveOpenCodeDbPath(homeDir: string): string {
 
 function recordValue(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+}
+
+function safeJsonParse(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+/** True for transcript copies stored under a `subagents` directory. */
+function isSubagentTranscriptPath(path: string): boolean {
+  return path.split(/[\\/]/).includes("subagents");
+}
+
+/**
+ * Read at most `limitBytes` from the head of a file. Returns the decoded
+ * prefix truncated to the last complete line (the tail partial line is
+ * dropped), or null when the file cannot be opened.
+ */
+async function readHeaderPrefix(path: string, limitBytes: number): Promise<string | null> {
+  let handle: Awaited<ReturnType<typeof open>> | null = null;
+  try {
+    handle = await open(path, "r");
+    const buffer = Buffer.alloc(limitBytes);
+    const { bytesRead } = await handle.read(buffer, 0, limitBytes, 0);
+    if (bytesRead <= 0) return "";
+    const text = buffer.subarray(0, bytesRead).toString("utf8");
+    if (bytesRead < limitBytes) return text;
+    const lastNewline = text.lastIndexOf("\n");
+    return lastNewline === -1 ? "" : text.slice(0, lastNewline + 1);
+  } catch {
+    return null;
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
+/**
+ * Validate that a cached history hint really belongs to the exact session
+ * Herdr reported. Value/source/kind equality alone is NOT sufficient: the
+ * pre-fix binder stamped the requested id onto whatever file discovery
+ * found. File-backed sources re-read the hint file's header (bounded) and
+ * require the identity to come from the file itself; SQLite sources re-run
+ * the exact session probe so a shared database keeps per-session identity.
+ */
+export async function hintMatchesAgentSession(input: {
+  hint: AgentHistoryRef;
+  homeDir: string;
+  session: AgentSessionRef;
+}): Promise<boolean> {
+  const source = historySourceFromSessionRef(input.session);
+  if (input.hint.kind !== "agent_session") return false;
+  if (input.hint.source !== source) return false;
+  if (input.session.kind === "path") {
+    return input.hint.path === input.session.value;
+  }
+  if (input.hint.value !== input.session.value) return false;
+  if (source === "opencode-sqlite") {
+    const ref = discoverOpenCodeSession({
+      cwd: null,
+      homeDir: input.homeDir,
+      sessionId: input.session.value,
+    });
+    return ref !== null && (input.hint.path ?? input.hint.value) === ref.path;
+  }
+  if (source === "hermes-sqlite") {
+    const ref = discoverHermesSession({ homeDir: input.homeDir, sessionId: input.session.value });
+    return ref !== null && input.hint.path === ref.path;
+  }
+  if (source === "unknown") return false;
+  const path = input.hint.path;
+  if (!path || isSubagentTranscriptPath(path)) return false;
+  const metadata = await readCandidateMetadata(path);
+  return metadata.sessionId === input.session.value;
 }
 
 function stringValue(value: unknown): string | null {

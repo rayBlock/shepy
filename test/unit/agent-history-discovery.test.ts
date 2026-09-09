@@ -89,6 +89,84 @@ describe("agent history discovery", () => {
     ).resolves.toBeNull();
   });
 
+  test("resolves a Claude parent id to the canonical main transcript, not subagent copies", async () => {
+    const homeDir = await tempHome("shepy-claude-subagents-");
+    const id = "11111111-2222-4333-8444-555555555555";
+    const projectDir = join(homeDir, ".claude", "projects", "-Users-repo");
+    const subagentsDir = join(projectDir, id, "subagents");
+    await mkdir(subagentsDir, { recursive: true });
+    const main = join(projectDir, `${id}.jsonl`);
+    const claudeLine = (text: string) =>
+      `${JSON.stringify({
+        cwd: "/repo",
+        message: { content: [{ text, type: "text" }], role: "assistant" },
+        sessionId: id,
+        type: "assistant",
+      })}\n`;
+    await writeFile(main, claudeLine("MAIN ONLY"));
+    await writeFile(join(subagentsDir, "agent-a.jsonl"), claudeLine("SUBAGENT A"));
+    await writeFile(join(subagentsDir, "agent-b.jsonl"), claudeLine("SUBAGENT B"));
+    await expect(
+      discoverAgentHistory({
+        agent: "claude",
+        agentSession: { agent: "claude", kind: "id", source: "herdr:claude", value: id },
+        cwd: "/repo",
+        foregroundCwd: null,
+        homeDir,
+      }),
+    ).resolves.toMatchObject({ kind: "agent_session", path: main, value: id });
+  });
+
+  test("fails closed when two genuine main transcripts share one id", async () => {
+    const homeDir = await tempHome("shepy-claude-twomains-");
+    const id = "11111111-2222-4333-8444-555555555555";
+    const projectDir = join(homeDir, ".claude", "projects", "-Users-repo");
+    await mkdir(projectDir, { recursive: true });
+    const claudeLine = (text: string) =>
+      `${JSON.stringify({
+        cwd: "/repo",
+        message: { content: [{ text, type: "text" }], role: "assistant" },
+        sessionId: id,
+        type: "assistant",
+      })}\n`;
+    await writeFile(join(projectDir, `${id}.jsonl`), claudeLine("FIRST"));
+    await writeFile(join(projectDir, `${id}-resumed.jsonl`), claudeLine("SECOND"));
+    await expect(
+      discoverAgentHistory({
+        agent: "claude",
+        agentSession: { agent: "claude", kind: "id", source: "herdr:claude", value: id },
+        cwd: "/repo",
+        foregroundCwd: null,
+        homeDir,
+      }),
+    ).resolves.toBeNull();
+  });
+
+  test("subagent-only exact matches stay unresolved", async () => {
+    const homeDir = await tempHome("shepy-claude-subonly-");
+    const id = "11111111-2222-4333-8444-555555555555";
+    const subagentsDir = join(homeDir, ".claude", "projects", "-Users-repo", id, "subagents");
+    await mkdir(subagentsDir, { recursive: true });
+    await writeFile(
+      join(subagentsDir, "agent-a.jsonl"),
+      `${JSON.stringify({
+        cwd: "/repo",
+        message: { content: [{ text: "SUBAGENT A", type: "text" }], role: "assistant" },
+        sessionId: id,
+        type: "assistant",
+      })}\n`,
+    );
+    await expect(
+      discoverAgentHistory({
+        agent: "claude",
+        agentSession: { agent: "claude", kind: "id", source: "herdr:claude", value: id },
+        cwd: "/repo",
+        foregroundCwd: null,
+        homeDir,
+      }),
+    ).resolves.toBeNull();
+  });
+
   test("maps session refs for new runtime sources", () => {
     expect(
       historySourceFromSessionRef({
