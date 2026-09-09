@@ -2068,6 +2068,8 @@ describe("shepy-pi profile-owner bridge (Phase 4)", () => {
                 eventId: 14691,
                 excerpt: { text: "FX audit complete — 5 findings.", truncated: false },
                 from: "working",
+                lastAssistantAt: "2026-09-10T09:47:33.000Z",
+                lastAssistantRef: "0eb4f8f3",
                 name: "fx-audit",
                 paneId: "wP:p61",
                 terminalId: "term_65b",
@@ -2100,6 +2102,9 @@ describe("shepy-pi profile-owner bridge (Phase 4)", () => {
     expect(hidden?.[0].content).toContain("working→done");
     expect(hidden?.[0].content).toContain("event: 14691");
     expect(hidden?.[0].content).toContain("obligation: ob-1");
+    // The immutable append-time assistant reference rides the wake so the
+    // owner can correlate WITHOUT a fresh agent read.
+    expect(hidden?.[0].content).toContain("0eb4f8f3");
     expect(hidden?.[0].content).toContain("FX audit complete — 5 findings.");
     expect(hidden?.[0].content).not.toContain("mask-builder");
     // Frozen correlation: a later lease change cannot rewrite the enqueued
@@ -2233,6 +2238,106 @@ describe("shepy-pi profile-owner bridge (Phase 4)", () => {
     expect(
       pi.customMessages.filter(([message]) => message.customType === "shepy-wake"),
     ).toHaveLength(1);
+  });
+
+  test("older-daemon lease without outcome renders ids honestly and invents no pane", async () => {
+    const { pi, ctx, client } = await profileHarness();
+    // Older daemon: obligations carry agentEventId but no joined outcome.
+    client.response = (method) => {
+      if (method === "profile.claim") return { result: { kind: "claimed", leaseToken: "lease-1" } };
+      if (method === "inbox.lease")
+        return { obligations: [{ agentEventId: 14698, id: "ob-14698" }] };
+      return { delivered: 1 };
+    };
+    await pi.command("on driffs", ctx);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const hidden = pi.hiddenMessages.find(
+      ([message]) => message.customType === "shepy-wake-context",
+    );
+    expect(hidden?.[0].content).toContain("14698");
+    expect(hidden?.[0].content).toContain("ob-14698");
+    expect(hidden?.[0].content).toContain("snapshot unavailable");
+    // No pane is known for a missing snapshot — none may be invented.
+    expect(hidden?.[0].content).not.toMatch(/w[A-Z]:p\d+/);
+  });
+
+  test("a lease resolving after owner-off must not enqueue and must not be ackable", async () => {
+    const { pi, ctx, client } = await profileHarness();
+    let resolveLease: ((value: unknown) => void) | undefined;
+    client.response = (method) => {
+      if (method === "profile.claim") return { result: { kind: "claimed", leaseToken: "lease-1" } };
+      if (method === "inbox.lease")
+        return new Promise((resolve) => {
+          resolveLease = resolve;
+        });
+      if (method === "inbox.nack") return { nacked: 1 };
+      return { delivered: 1 };
+    };
+    await pi.command("on driffs", ctx);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    // The owner goes OFF while inbox.lease is still in flight.
+    await pi.command("off", ctx);
+    resolveLease?.({ obligations: [{ agentEventId: 5, id: "ob-5", outcome: null }] });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    // Stale lease: no enqueue into the now-off owner, durable cleanup.
+    expect(pi.customMessages).toHaveLength(0);
+    expect(pi.hiddenMessages).toHaveLength(0);
+    expect(client.calls.map(([method]) => method)).not.toContain("inbox.delivered");
+    expect(client.calls).toContainEqual([
+      "inbox.nack",
+      expect.objectContaining({ ids: ["ob-5"], leaseToken: "lease-1" }),
+    ]);
+    // A later user turn can never acknowledge an event it never saw.
+    await pi.emit("message_end", { message: { role: "assistant", stopReason: "stop" } }, ctx);
+    await pi.emit("agent_settled", {}, ctx);
+    expect(client.calls.map(([method]) => method)).not.toContain("inbox.ack");
+    // Re-claim delivers the batch exactly once.
+    client.response = (method) => {
+      if (method === "profile.claim") return { result: { kind: "claimed", leaseToken: "lease-2" } };
+      if (method === "inbox.lease")
+        return { obligations: [{ agentEventId: 5, id: "ob-5", outcome: null }] };
+      if (method === "inbox.delivered") return { delivered: 1 };
+      return { acked: 1 };
+    };
+    await pi.command("on driffs", ctx);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(
+      pi.customMessages.filter(([message]) => message.customType === "shepy-wake"),
+    ).toHaveLength(1);
+  });
+
+  test("overlapping pump ticks with the same lease token cannot double-lease", async () => {
+    const { pi, ctx, client } = await profileHarness();
+    let resolveLease: ((value: unknown) => void) | undefined;
+    let leaseCalls = 0;
+    client.response = (method) => {
+      if (method === "profile.claim") return { result: { kind: "claimed", leaseToken: "lease-1" } };
+      if (method === "inbox.lease") {
+        leaseCalls += 1;
+        return new Promise((resolve) => {
+          resolveLease = resolve;
+        });
+      }
+      return { delivered: 1 };
+    };
+    await pi.command("on driffs", ctx);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    // A second pump tick begins while the first lease is in flight and the
+    // mode is re-claimed with the SAME lease token.
+    await pi.command("off", ctx);
+    await pi.command("on driffs", ctx);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(leaseCalls).toBe(1);
+    resolveLease?.({ obligations: [{ agentEventId: 6, id: "ob-6", outcome: null }] });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    // Exactly one wake from the in-flight pump; no duplicated batch.
+    expect(
+      pi.customMessages.filter(([message]) => message.customType === "shepy-wake"),
+    ).toHaveLength(1);
+    expect(client.calls).toContainEqual([
+      "inbox.delivered",
+      expect.objectContaining({ ids: ["ob-6"], leaseToken: "lease-1" }),
+    ]);
   });
 
   test("failed settle nacks — the obligations remain pending server-side", async () => {

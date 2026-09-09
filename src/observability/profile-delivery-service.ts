@@ -58,6 +58,9 @@ export type InboxOutcomeSnapshot = {
   eventId: number;
   excerpt: { text: string; truncated: boolean } | null;
   from: string | null;
+  /** Immutable append-time identity of the assistant final the event carried. */
+  lastAssistantAt: string | null;
+  lastAssistantRef: string | null;
   name: string | null;
   paneId: string | null;
   terminalId: string | null;
@@ -94,15 +97,15 @@ export function projectInboxOutcome(event: AgentEventRecord): InboxOutcomeSnapsh
     typeof event.payload === "object" && event.payload !== null
       ? (event.payload as Record<string, unknown>)
       : {};
+  const lastAssistant = event.compactHistory?.lastAssistantMessage ?? null;
   return {
     agent: outcomeString(payload.agent),
     createdAt: event.createdAt.toISOString(),
     eventId: event.id,
-    excerpt: normalizeOutcomeExcerpt(
-      event.compactHistory?.lastAssistantMessage?.text,
-      event.paneId,
-    ),
+    excerpt: normalizeOutcomeExcerpt(lastAssistant?.text, event.paneId),
     from: outcomeString(payload.from),
+    lastAssistantAt: typeof lastAssistant?.timestamp === "string" ? lastAssistant.timestamp : null,
+    lastAssistantRef: outcomeString(lastAssistant?.ref),
     name: outcomeString(payload.name),
     paneId: event.paneId,
     terminalId: event.terminalId,
@@ -149,16 +152,22 @@ export class ProfileDeliveryService {
     // audit record, but only notifiable outcomes become owner obligations.
     if (!NOTIFIABLE_EVENT_TYPES.has(event.type)) return;
     // Herdr's done/idle are the same settled state, differing only in
-    // whether the completed tab has been seen. Marking it seen is not a
-    // second completion. Keep the audit event, but never wake for this UI
-    // transition. working -> idle/done and blocked outcomes still project.
+    // whether the completed tab has been seen. A within-settled transition is
+    // suppressed ONLY with evidence it is the SAME outcome already recorded:
+    // the append-time assistant reference must exactly match the agent's
+    // prior settled event's reference. Herdr pane revisions do NOT prove
+    // this (live workers stay at revision 1 across many completed turns).
+    // Missing or changed evidence DELIVERS — a reconnect that missed the
+    // intermediate working phase must never hide a genuine new completion,
+    // and no evidence ever silently drops an event.
     const from =
       typeof event.payload === "object" && event.payload !== null && "from" in event.payload
         ? event.payload.from
         : null;
     if (
       (event.type === "agent.done" || event.type === "agent.idle") &&
-      (from === "done" || from === "idle")
+      (from === "done" || from === "idle") &&
+      this.#sameSettledOutcomeAsPrior(event)
     )
       return;
     const agentRows = this.#agents
@@ -252,6 +261,22 @@ export class ProfileDeliveryService {
       outcome: this.#outcomeSnapshotFor(obligation.agentEventId),
     }));
     return { expired: sweep.expired + sweep.deadLettered, obligations };
+  }
+
+  /**
+   * True only when BOTH the event and the agent's prior settled event carry
+   * the same non-empty append-time assistant reference — the live incident
+   * shape (working->done delivered, done->idle same final suppressed).
+   * Any missing evidence (no store, no prior, null refs) returns false, so
+   * the caller delivers. The comparison reads persisted events: a daemon
+   * restart re-derives it from the same rows, no in-memory dedup.
+   */
+  #sameSettledOutcomeAsPrior(event: AgentEventRecord): boolean {
+    if (!this.#agentEvents || !event.agentId) return false;
+    const prior = this.#agentEvents.findPriorSettledEvent(event.agentId, event.id);
+    const currentRef = event.compactHistory?.lastAssistantMessage?.ref ?? null;
+    const priorRef = prior?.compactHistory?.lastAssistantMessage?.ref ?? null;
+    return currentRef !== null && currentRef === priorRef;
   }
 
   #outcomeSnapshotFor(agentEventId: number): InboxOutcomeSnapshot | null {

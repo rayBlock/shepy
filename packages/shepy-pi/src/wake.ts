@@ -125,6 +125,8 @@ export type ProfileObligationOutcome = {
   eventId: number | null;
   excerpt: { text: string; truncated: boolean } | null;
   from: string | null;
+  lastAssistantAt: string | null;
+  lastAssistantRef: string | null;
   name: string | null;
   paneId: string | null;
   terminalId: string | null;
@@ -133,6 +135,8 @@ export type ProfileObligationOutcome = {
 };
 
 export type ProfileObligationUpdate = {
+  /** Known from the lease itself even when the daemon joins no snapshot. */
+  agentEventId: number | null;
   obligationId: string;
   outcome: ProfileObligationOutcome | null;
 };
@@ -141,8 +145,12 @@ export function formatProfileObligationUpdates(updates: ProfileObligationUpdate[
   const lines = updates
     .map((update) => {
       const outcome = update.outcome;
+      const eventId = outcome?.eventId ?? update.agentEventId;
       if (!outcome) {
-        return `- event snapshot unavailable · obligation ${update.obligationId} (run shepy agent read for the exact pane)`;
+        // Honest fallback: the lease itself proves the event and obligation
+        // identity. No pane is known for a missing snapshot — none may be
+        // invented; the owner can locate the worker via shepy agent list.
+        return `- event ${eventId ?? "?"} · obligation ${update.obligationId} — snapshot unavailable (no pane known; run shepy agent list to locate the worker)`;
       }
       const identity = agentIdentityLabel({
         agent: outcome.agent ?? "unknown",
@@ -154,9 +162,12 @@ export function formatProfileObligationUpdates(updates: ProfileObligationUpdate[
         outcome.excerpt && outcome.excerpt.text.length > 0
           ? outcome.excerpt.text
           : "(no assistant message)";
+      const assistantRef = outcome.lastAssistantRef
+        ? ` · assistantRef: ${outcome.lastAssistantRef}`
+        : "";
       return `- ${outcome.type ?? "event"} ${identity} ${outcome.paneId ?? "unknown"} ${transition}
   last assistant: ${excerpt}
-  event: ${outcome.eventId ?? "?"} · obligation: ${update.obligationId}`;
+  event: ${eventId ?? "?"} · obligation: ${update.obligationId}${assistantRef}`;
     })
     .join("\n");
   return `${WAKE_POLICY}\n\n[SHEPY PROFILE OUTCOMES]\n${lines}`;

@@ -129,6 +129,24 @@ export class AgentEventStore {
     return row?.id ?? 0;
   }
 
+  /**
+   * Most recent prior done/idle event for the same agent — the previous
+   * settled outcome. Used by delivery projection to distinguish "the same
+   * completed turn being marked seen" from "a NEW completion observed after
+   * an observation gap". Read-only; persisted, so the comparison survives
+   * daemon restarts by construction.
+   */
+  findPriorSettledEvent(agentId: string, beforeEventId: number): AgentEventRecord | null {
+    const row = this.#sqlite
+      .prepare(
+        `select * from agent_events
+         where agent_id = ? and id < ? and type in ('agent.done', 'agent.idle')
+         order by id desc limit 1`,
+      )
+      .get(agentId, beforeEventId) as AgentEventRow | undefined;
+    return row ? mapAgentEvent(row) : null;
+  }
+
   get(id: number): AgentEventRecord {
     const row = this.#sqlite.prepare("select * from agent_events where id = ?").get(id) as
       | AgentEventRow

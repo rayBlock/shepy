@@ -108,6 +108,9 @@ type ShepyState = {
   pinnedContext: AgentWorkspaceContextSnapshot | undefined;
   profileBatch: ProfileBatch | undefined;
   profileMode: { leaseToken: string; pendingCount: number; profileId: string } | undefined;
+  /** Pump tick currently awaiting an RPC, keyed by its mode's lease token —
+   * prevents a second tick from double-leasing while one lease is in flight. */
+  profilePumpInFlight: { leaseToken: string; profileId: string } | undefined;
   profileTimer: ReturnType<typeof setInterval> | undefined;
   reconnectingFromOn: boolean;
   registrationInFlight: Promise<void> | undefined;
@@ -192,6 +195,7 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
       pinnedContext: undefined,
       profileBatch: undefined,
       profileMode: undefined,
+      profilePumpInFlight: undefined,
       profileTimer: undefined,
       reconnectingFromOn: false,
       registrationInFlight: undefined,
@@ -452,8 +456,69 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
       if (!mode || !state.client || !state.connected) return;
       if (state.profileBatch || state.deliveredBatch) return;
       if (state.runActive || ctx?.isIdle?.() === false) return;
+      // Serialize ticks per (profile, lease): while one lease RPC is in
+      // flight, a later tick for the SAME mode must skip — otherwise two
+      // awaited leases double-lease and one batch strands until expiry.
+      // A tick for a DIFFERENT mode proceeds; the older pump self-exits via
+      // the stillOwner revalidation below.
+      if (
+        state.profilePumpInFlight?.leaseToken === mode.leaseToken &&
+        state.profilePumpInFlight.profileId === mode.profileId
+      ) {
+        return;
+      }
+      state.profilePumpInFlight = { leaseToken: mode.leaseToken, profileId: mode.profileId };
       try {
-        const lease = (await state.client.request("inbox.lease", {
+        await pumpProfileOwned(mode, ctx);
+      } finally {
+        if (
+          state.profilePumpInFlight?.leaseToken === mode.leaseToken &&
+          state.profilePumpInFlight.profileId === mode.profileId
+        ) {
+          state.profilePumpInFlight = undefined;
+        }
+      }
+    };
+
+    /**
+     * Boundary assumptions (Pi extension API, docs/extensions.md):
+     * - `sendMessage({deliverAs:"followUp"})` ENQUEUES; during an active run
+     *   the message is delivered after the run settles, so a user run that
+     *   starts mid-pump does not corrupt delivery — it only delays it.
+     * - `triggerTurn` fires only when idle; enqueue success is the strongest
+     *   delivery signal the API exposes. Residual unproved edge: a queued
+     *   follow-up can be restored to the editor on an abort (Escape), in
+     *   which case the wake content never reaches a turn while settle still
+     *   acks it. Accepted risk; documented rather than papered over.
+     * - Ownership can change across ANY await (off, replacement, scope
+     *   movement). stillOwner re-derives from live state at each resume and
+     *   a stale lease is nacked, never enqueued, never ackable.
+     */
+    const pumpProfileOwned = async (
+      mode: { leaseToken: string; pendingCount: number; profileId: string },
+      ctx: PiContext | undefined,
+    ) => {
+      const client = state.client;
+      if (!client) return;
+      const stillOwner = () =>
+        state.connected &&
+        state.profileMode?.profileId === mode.profileId &&
+        state.profileMode.leaseToken === mode.leaseToken &&
+        !state.profileBatch &&
+        !state.deliveredBatch;
+      const nackStaleLease = async (ids: string[]) => {
+        try {
+          await client.request("inbox.nack", {
+            errorCode: "wake_failed",
+            ids,
+            leaseToken: mode.leaseToken,
+          });
+        } catch {
+          // lease expiry recovers server-side
+        }
+      };
+      try {
+        const lease = (await client.request("inbox.lease", {
           leaseToken: mode.leaseToken,
           maxBatch: 20,
           profileId: mode.profileId,
@@ -465,10 +530,24 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
           }>;
         };
         const obligations = lease.obligations ?? [];
+        if (obligations.length === 0) {
+          if (stillOwner()) {
+            state.profileMode = { ...mode, pendingCount: 0 };
+            setShepyUi(ctx);
+          }
+          return;
+        }
+        const ids = obligations.map((obligation) => obligation.id);
+        // The await above is the hazard window: ownership may have moved
+        // (off, replacement, scope change) while the lease was in flight.
+        // A lease returned to a former owner must never enqueue — and the
+        // leased rows need durable cleanup, so nack with the closure token.
+        if (!stillOwner()) {
+          await nackStaleLease(ids);
+          return;
+        }
         state.profileMode = { ...mode, pendingCount: obligations.length };
         setShepyUi(ctx);
-        if (obligations.length === 0) return;
-        const ids = obligations.map((obligation) => obligation.id);
         // Correlation BEFORE delivery: everything the owner sees is built
         // from the LEASED events' immutable snapshots joined onto the lease.
         // Current profile history (profile.context) is never read as outcome
@@ -476,13 +555,14 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
         // after the event fired.
         const content = formatProfileObligationUpdates(
           obligations.map((obligation) => ({
+            agentEventId: obligation.agentEventId,
             obligationId: obligation.id,
             outcome: obligation.outcome ?? null,
           })),
         );
         const nackBatch = async () => {
           try {
-            await state.client?.request("inbox.nack", {
+            await client.request("inbox.nack", {
               errorCode: "wake_failed",
               ids,
               leaseToken: mode.leaseToken,
@@ -535,7 +615,7 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
           triggerQueued: true,
         };
         try {
-          await state.client.request("inbox.delivered", {
+          await client.request("inbox.delivered", {
             harnessTurnId: state.subscriberId ?? "pi",
             ids,
             leaseToken: mode.leaseToken,

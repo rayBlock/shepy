@@ -144,28 +144,55 @@ describe("obligation projection filter (vault §9.1)", () => {
   });
 
   test("marking a completed tab seen never creates another outcome; a new turn still does", () => {
-    const { agents, delivery } = fixture();
-    const worker = agents.list().find((row) => row.name === "driffs-worker");
+    const built = fixture();
+    const worker = built.agents.list().find((row) => row.name === "driffs-worker");
     if (!worker) throw new Error("fixture: driffs-worker missing");
-    const project = (id: number, from: string, to: "done" | "idle" | "blocked") =>
-      delivery.projectAgentEvent({
-        ...eventFor({ eventId: id, worker: "driffs" }),
+    const { agentEvents, delivery } = built;
+    const project = (id: number, from: string, to: "done" | "idle" | "blocked", ref: string) => {
+      // The suppression is evidence-based: within-settled transitions only
+      // vanish when the append-time assistant reference matches the prior
+      // settled outcome. Events are appended first (production order), then
+      // projected.
+      const stored = agentEvents.append({
         agentId: worker.id,
+        compactHistory:
+          to === "blocked"
+            ? null
+            : ({
+                historyRef: null,
+                lastAssistantMessage: { ref, role: "assistant", text: "final", timestamp: null },
+                lastToolResult: null,
+                lastUserMessage: null,
+                messageCount: 1,
+                source: "pi-jsonl",
+                updatedAt: null,
+              } as never),
+        herdrSessionName: "default",
+        idempotencyKey: `seen-${id}`,
+        paneId: "wA:p1",
         payload: { from, to },
         type: `agent.${to}`,
+        workspaceId: "wA",
       });
-    project(1, "working", "done");
+      delivery.projectAgentEvent(stored);
+      return stored;
+    };
+    const first = project(1, "working", "done", "ref-incident");
     // Actual incident: Herdr marked the tab seen five minutes after its
-    // completion was delivered. Same completed turn, different UI status.
-    project(2, "done", "idle");
-    project(3, "idle", "done");
-    expect(delivery.inboxList({ profileId: "driffs" }).map((row) => row.agentEventId)).toEqual([1]);
-    // Do not remove idle outcomes wholesale: a visible tab completes to idle.
-    project(4, "working", "idle");
-    project(5, "working", "blocked");
+    // completion was delivered. Same completed turn (same assistant ref),
+    // different UI status — suppressed by evidence, not by status alone.
+    project(2, "done", "idle", "ref-incident");
+    project(3, "idle", "done", "ref-incident");
     expect(delivery.inboxList({ profileId: "driffs" }).map((row) => row.agentEventId)).toEqual([
-      5, 4, 1,
+      first.id,
     ]);
+    // Do not remove idle outcomes wholesale: a visible tab completes to idle.
+    const fourth = project(4, "working", "idle", "ref-turn-2");
+    project(5, "working", "blocked", "ref-blocked");
+    expect(delivery.inboxList({ profileId: "driffs" }).map((row) => row.agentEventId)).toEqual(
+      expect.arrayContaining([first.id, fourth.id]),
+    );
+    expect(delivery.inboxList({ profileId: "driffs" })).toHaveLength(3);
   });
 
   test("a done transition wakes the owner once, not twice", () => {
@@ -298,6 +325,186 @@ describe("inbox.lease event-correlated outcomes", () => {
     expect(first.obligations).toHaveLength(1);
     const second = delivery.inboxLease({ leaseToken: "lease-2", profileId: "driffs" });
     expect(second.obligations).toHaveLength(0);
+  });
+});
+
+describe("evidence-based settled-outcome suppression (same-ref rule)", () => {
+  function projectWithHistory(input: {
+    delivery: ProfileDeliveryService;
+    agentEvents: AgentEventStore;
+    agentId: string;
+    from: string;
+    ref: string | null;
+    to: "done" | "idle";
+  }) {
+    const stored = input.agentEvents.append({
+      agentId: input.agentId,
+      compactHistory:
+        input.ref === null
+          ? null
+          : ({
+              historyRef: null,
+              lastAssistantMessage: {
+                ref: input.ref,
+                role: "assistant",
+                text: "final response",
+                timestamp: null,
+              },
+              lastToolResult: null,
+              lastUserMessage: null,
+              messageCount: 1,
+              source: "pi-jsonl",
+              updatedAt: null,
+            } as never),
+      herdrSessionName: "default",
+      idempotencyKey: `settled-${input.from}-${input.to}-${input.ref ?? "null"}-${Math.random()}`,
+      paneId: "wA:p1",
+      payload: { agent: "pi", from: input.from, name: "driffs-worker", to: input.to },
+      type: `agent.${input.to}`,
+      workspaceId: "wA",
+    });
+    input.delivery.projectAgentEvent(stored);
+    return stored;
+  }
+
+  function workerOf(built: ReturnType<typeof build>) {
+    const worker = built.agents.list().find((row) => row.name === "driffs-worker");
+    if (!worker) throw new Error("fixture: driffs-worker missing");
+    return worker;
+  }
+
+  test("live incident shape: same assistant ref on the seen-transition produces ONE obligation", () => {
+    const built = fixture();
+    const worker = workerOf(built);
+    // event 14691: working -> done (delivered)
+    const project = (from: string, ref: string, to: "done" | "idle") =>
+      projectWithHistory({
+        agentEvents: built.agentEvents,
+        agentId: worker.id,
+        delivery: built.delivery,
+        from,
+        ref,
+        to,
+      });
+    const first = project("working", "0eb4f8f3", "done");
+    // event 14698: done -> idle (same immutable assistant final)
+    project("done", "0eb4f8f3", "idle");
+    expect(
+      built.delivery.inboxList({ profileId: "driffs" }).map((row) => row.agentEventId),
+    ).toEqual([first.id]);
+  });
+
+  test("a NEW completion across reconnect (different assistant ref) DELIVERS", () => {
+    const built = fixture();
+    const worker = workerOf(built);
+    const project = (from: string, ref: string, to: "done" | "idle") =>
+      projectWithHistory({
+        agentEvents: built.agentEvents,
+        agentId: worker.id,
+        delivery: built.delivery,
+        from,
+        ref,
+        to,
+      });
+    const first = project("working", "ref-old", "idle");
+    // Observation gap: agent worked and completed while unobserved, then the
+    // snapshot diff sees idle -> done with a NEW assistant final.
+    const second = project("idle", "ref-new", "done");
+    expect(
+      built.delivery.inboxList({ profileId: "driffs" }).map((row) => row.agentEventId),
+    ).toEqual([second.id, first.id]);
+  });
+
+  test("missing assistant-ref evidence is conservative: the transition DELIVERS", () => {
+    const built = fixture();
+    const worker = workerOf(built);
+    const project = (from: string, ref: string | null, to: "done" | "idle") =>
+      projectWithHistory({
+        agentEvents: built.agentEvents,
+        agentId: worker.id,
+        delivery: built.delivery,
+        from,
+        ref,
+        to,
+      });
+    const first = project("working", null, "done");
+    const second = project("done", null, "idle");
+    expect(
+      built.delivery.inboxList({ profileId: "driffs" }).map((row) => row.agentEventId),
+    ).toEqual([second.id, first.id]);
+  });
+
+  test("the same-ref comparison survives a daemon restart (reopened DB, not memory)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "shepy-settled-restart-"));
+    tempDirs.push(dir);
+    const path = join(dir, "test.sqlite");
+    const first = build(path);
+    const workerOne = workerOf(first);
+    const settled = projectWithHistory({
+      delivery: first.delivery,
+      agentEvents: first.agentEvents,
+      agentId: workerOne.id,
+      from: "working",
+      ref: "ref-stable",
+      to: "done",
+    });
+    projectWithHistory({
+      delivery: first.delivery,
+      agentEvents: first.agentEvents,
+      agentId: workerOne.id,
+      from: "done",
+      ref: "ref-stable",
+      to: "idle",
+    });
+    expect(first.delivery.inboxList({ profileId: "driffs" })).toHaveLength(1);
+    // Daemon restart: every store reopens from the same SQLite file.
+    const reopened = build(path);
+    const workerTwo = workerOf(reopened);
+    expect(workerTwo.id).toBe(workerOne.id);
+    projectWithHistory({
+      delivery: reopened.delivery,
+      agentEvents: reopened.agentEvents,
+      agentId: workerTwo.id,
+      from: "idle",
+      ref: "ref-stable",
+      to: "done",
+    });
+    const changed = projectWithHistory({
+      delivery: reopened.delivery,
+      agentEvents: reopened.agentEvents,
+      agentId: workerTwo.id,
+      from: "done",
+      ref: "ref-after-restart",
+      to: "idle",
+    });
+    expect(
+      reopened.delivery.inboxList({ profileId: "driffs" }).map((row) => row.agentEventId),
+    ).toEqual([changed.id, settled.id]);
+  });
+
+  test("genuine working transitions and blockers still project", () => {
+    const built = fixture();
+    const worker = workerOf(built);
+    const project = (from: string, ref: string, to: "done" | "idle") =>
+      projectWithHistory({
+        agentEvents: built.agentEvents,
+        agentId: worker.id,
+        delivery: built.delivery,
+        from,
+        ref,
+        to,
+      });
+    const idle = project("working", "ref-a", "idle");
+    const blocked = project("working", "ref-b", "done");
+    built.delivery.projectAgentEvent({
+      ...eventFor({ eventId: 900, worker: "driffs" }),
+      agentId: worker.id,
+      payload: { from: "working", to: "blocked" },
+      type: "agent.blocked",
+    });
+    expect(
+      built.delivery.inboxList({ profileId: "driffs" }).map((row) => row.agentEventId),
+    ).toEqual([900, blocked.id, idle.id]);
   });
 });
 
