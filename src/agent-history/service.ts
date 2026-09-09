@@ -94,7 +94,10 @@ export function createAgentHistoryService(
     input: AgentHistoryLookupInput,
     resolveOptions: { forceDiscovery?: boolean; preferredRef?: AgentHistoryRef | null } = {},
   ): Promise<ResolvedCompactAgentHistory> {
-    if (resolveOptions.preferredRef && !resolveOptions.forceDiscovery) {
+    // A preferred ref is a cached discovery hint, never session identity.
+    // At startup the session file may not exist yet and the hint can belong
+    // to another agent in the same cwd. Herdr's exact session always wins.
+    if (!input.agentSession && resolveOptions.preferredRef && !resolveOptions.forceDiscovery) {
       const preferred = await readCompactRef(resolveOptions.preferredRef);
       if (preferred.historyRef) return preferred;
     }
@@ -127,7 +130,7 @@ export function createAgentHistoryService(
       input: AgentHistoryLookupInput,
       readOptions: { limit: number; preferredRef?: AgentHistoryRef | null },
     ): Promise<{ historyRef: AgentHistoryRef | null; messages: AgentHistoryMessage[] }> {
-      if (readOptions.preferredRef) {
+      if (!input.agentSession && readOptions.preferredRef) {
         const preferred = await readRef(readOptions.preferredRef, readOptions);
         if (preferred.historyRef) return preferred;
       }

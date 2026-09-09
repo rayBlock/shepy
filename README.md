@@ -52,6 +52,8 @@ shepy daemon start
 - `shepy agent get <target>`: performs an explicit detail lookup and returns one agent's metadata, compact history, and latest compact tool result.
 - `shepy agent read <target> --limit N`: performs an explicit history read and returns the latest N user / assistant / compact `tool_result` messages.
 
+An explicit session path or ID reported by Herdr is authoritative: cached history hints and newer sessions in the same directory cannot override it. If that session is unavailable, history is empty rather than borrowed from another agent. Pi session files created after startup are retried, and previously misbound path snapshots repair on refresh without deleting the database.
+
 Each agent record keeps Herdr's optional live `name`, such as `reviewer`, separate from its runtime `agent` kind, such as `codex`. Human list output uses distinct `name` and `agent` columns, and JSON returns both fields. Inside a Herdr workspace, Shepy selects the current workspace automatically.
 
 ```bash

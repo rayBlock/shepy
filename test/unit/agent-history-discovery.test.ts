@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -18,6 +18,77 @@ async function tempHome(name: string) {
 }
 
 describe("agent history discovery", () => {
+  test("a missing exact path never falls back to a neighbor's same-cwd session", async () => {
+    const homeDir = await tempHome("shepy-pi-missing-");
+    const dir = join(homeDir, ".pi", "agent", "sessions", "repo");
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      join(dir, "owner.jsonl"),
+      `${JSON.stringify({ type: "session", cwd: "/repo" })}\n`,
+    );
+    await expect(
+      discoverAgentHistory({
+        agent: "pi",
+        agentSession: {
+          agent: "pi",
+          kind: "path",
+          source: "herdr:pi",
+          value: join(dir, "not-created-yet.jsonl"),
+        },
+        cwd: "/repo",
+        foregroundCwd: null,
+        homeDir,
+      }),
+    ).resolves.toBeNull();
+  });
+
+  test.each([
+    {
+      agent: "pi",
+      root: [".pi", "agent", "sessions"],
+      header: (id: string) => ({ type: "session", id, cwd: "/repo" }),
+    },
+    {
+      agent: "claude",
+      root: [".claude", "projects"],
+      header: (id: string) => ({ type: "user", sessionId: id, cwd: "/repo" }),
+    },
+    {
+      agent: "codex",
+      root: [".codex", "sessions"],
+      header: (id: string) => ({ type: "session_meta", payload: { id, cwd: "/repo" } }),
+    },
+  ])("$agent ID lookup selects the exact session, never the newer cwd neighbor", async ({
+    agent,
+    root,
+    header,
+  }) => {
+    const homeDir = await tempHome("shepy-id-");
+    const dir = join(homeDir, ...root);
+    await mkdir(dir, { recursive: true });
+    const worker = join(dir, "worker.jsonl");
+    const neighbor = join(dir, "neighbor.jsonl");
+    await writeFile(worker, `${JSON.stringify(header("worker"))}\n`);
+    await writeFile(neighbor, `${JSON.stringify(header("neighbor"))}\n`);
+    await utimes(worker, 1, 1);
+    await utimes(neighbor, 2, 2);
+    const input = {
+      agent,
+      agentSession: { agent, kind: "id" as const, source: `herdr:${agent}`, value: "worker" },
+      cwd: "/repo",
+      foregroundCwd: null,
+      homeDir,
+    };
+    await expect(discoverAgentHistory(input)).resolves.toMatchObject({
+      kind: "agent_session",
+      path: worker,
+      value: "worker",
+    });
+    await expect(
+      discoverAgentHistory({ ...input, agentSession: { ...input.agentSession, value: "absent" } }),
+    ).resolves.toBeNull();
+  });
+
   test("maps session refs for new runtime sources", () => {
     expect(
       historySourceFromSessionRef({
@@ -112,6 +183,15 @@ describe("agent history discovery", () => {
       source: "opencode-sqlite",
       value: "s_new",
     });
+    await expect(
+      discoverAgentHistory({
+        agent: "opencode",
+        agentSession: { agent: "opencode", kind: "id", source: "herdr:opencode", value: "absent" },
+        cwd: "/repo",
+        foregroundCwd: null,
+        homeDir,
+      }),
+    ).resolves.toBeNull();
   });
 
   test("discovers Gemini session JSON through .project_root", async () => {
@@ -123,7 +203,10 @@ describe("agent history discovery", () => {
     const sessionPath = join(chatsDir, "session-2026-07-09T12-00-00abcdef.json");
     await writeFile(
       sessionPath,
-      JSON.stringify({ messages: [{ type: "user", content: [{ text: "hello" }] }] }),
+      JSON.stringify({
+        sessionId: "gemini-worker",
+        messages: [{ type: "user", content: [{ text: "hello" }] }],
+      }),
     );
 
     await expect(
@@ -140,5 +223,16 @@ describe("agent history discovery", () => {
       source: "gemini-json",
       value: sessionPath,
     });
+    for (const id of ["gemini-worker", "absent"]) {
+      const result = await discoverAgentHistory({
+        agent: "gemini",
+        agentSession: { agent: "gemini", kind: "id", source: "herdr:gemini", value: id },
+        cwd: "/repo",
+        foregroundCwd: null,
+        homeDir,
+      });
+      if (id === "absent") expect(result).toBeNull();
+      else expect(result).toMatchObject({ kind: "agent_session", path: sessionPath, value: id });
+    }
   });
 });

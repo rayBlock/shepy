@@ -82,6 +82,46 @@ function service(input: {
 }
 
 describe("agent history service", () => {
+  test("an exact session path overrides another same-cwd agent's cached history", async () => {
+    const ownerPath = await sourceFile("owner.jsonl");
+    const workerPath = await sourceFile("worker.jsonl");
+    for (const [path, text] of [
+      [ownerPath, "OWNER ONLY"],
+      [workerPath, "WORKER ONLY"],
+    ] as const) {
+      await writeFile(
+        path,
+        `${JSON.stringify({
+          type: "message",
+          id: "reply",
+          message: { role: "assistant", content: [{ type: "text", text }] },
+        })}\n`,
+      );
+    }
+    const realService = createAgentHistoryService();
+    const worker = {
+      ...lookup,
+      agentSession: { agent: "pi", kind: "path" as const, source: "herdr:pi", value: workerPath },
+    };
+    const preferredRef = ref(ownerPath);
+
+    const compact = await realService.resolveCompactHistory(worker, { preferredRef });
+    expect(compact.compactHistory.lastAssistantMessage?.text).toBe("WORKER ONLY");
+    expect(compact.historyRef?.path).toBe(workerPath);
+    const full = await realService.read(worker, { limit: 1, preferredRef });
+    expect(full.messages.map((message) => message.text)).toEqual(["WORKER ONLY"]);
+    expect(full.historyRef?.path).toBe(workerPath);
+
+    await rm(workerPath);
+    expect(
+      (await realService.resolveCompactHistory(worker, { preferredRef })).historyRef,
+    ).toBeNull();
+    expect(await realService.read(worker, { limit: 1, preferredRef })).toEqual({
+      historyRef: null,
+      messages: [],
+    });
+  });
+
   test("reads a valid preferred ref without discovery and returns its file fingerprint", async () => {
     const path = await sourceFile("preferred.jsonl");
     const preferred = ref(path);

@@ -199,7 +199,12 @@ export class AgentIndexService {
           !cached ||
           agent.paneRevision === null ||
           cached.paneRevision !== agent.paneRevision ||
-          identityChanged;
+          identityChanged ||
+          // A session can be announced before its file exists. Retry without
+          // requiring a pane revision, and heal pre-fix fallback snapshots.
+          (agent.agentSession?.kind === "path" &&
+            (cached.historyRef?.kind !== "agent_session" ||
+              cached.historyRef.path !== agent.agentSession.value));
         let refreshed = cached;
         if (dirty) {
           const result = await this.#context.refreshAgent({ agent, identityChanged });

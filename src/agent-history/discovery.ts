@@ -16,13 +16,17 @@ type Candidate = {
   cwd: string | null;
   mtimeMs: number;
   path: string;
+  sessionId: string | null;
   source: AgentHistoryRef["source"];
 };
 
 export async function discoverAgentHistory(
   input: AgentHistoryLookupInput,
 ): Promise<AgentHistoryRef | null> {
-  if (input.agentSession?.kind === "path" && existsSync(input.agentSession.value)) {
+  if (input.agentSession?.kind === "path") {
+    // Pi reports the path before its first prompt creates the file. Missing
+    // history is honest; another same-cwd session is not a substitute.
+    if (!existsSync(input.agentSession.value)) return null;
     const source = historySourceFromSessionRef(input.agentSession);
     return {
       kind: "agent_session",
@@ -39,11 +43,11 @@ export async function discoverAgentHistory(
     const source = historySourceFromSessionRef(input.agentSession);
     if (source === "opencode-sqlite") {
       const ref = discoverOpenCodeSession({ cwd, homeDir, sessionId: input.agentSession.value });
-      if (ref) return { ...ref, kind: "agent_session" };
+      return ref ? { ...ref, kind: "agent_session" } : null;
     }
     if (source === "hermes-sqlite") {
       const ref = discoverHermesSession({ homeDir, sessionId: input.agentSession.value });
-      if (ref) return ref;
+      return ref;
     }
   }
 
@@ -64,6 +68,16 @@ export async function discoverAgentHistory(
   if (agent === "opencode") {
     const ref = discoverOpenCodeSession({ cwd, homeDir, sessionId: null });
     if (ref) return ref;
+  }
+  if (input.agentSession?.kind === "id") {
+    const session = input.agentSession;
+    const exact = candidates.filter((candidate) => candidate.sessionId === session.value);
+    // IDs are authority, not hints for cwd ranking. Ambiguous copies and
+    // unavailable sessions stay unresolved rather than inventing a binding.
+    const match = exact.length === 1 ? exact[0] : undefined;
+    return match
+      ? { kind: "agent_session", path: match.path, source: match.source, value: session.value }
+      : null;
   }
   const ranked = candidates.sort((a, b) => {
     const aMatch = cwd && a.cwd === cwd ? 1 : 0;
@@ -134,7 +148,12 @@ async function scanRoot(root: string, source: AgentHistoryRef["source"]): Promis
   for (const path of files) {
     const stats = await stat(path).catch(() => null);
     if (!stats?.isFile()) continue;
-    candidates.push({ cwd: await readCandidateCwd(path), mtimeMs: stats.mtimeMs, path, source });
+    candidates.push({
+      ...(await readCandidateMetadata(path)),
+      mtimeMs: stats.mtimeMs,
+      path,
+      source,
+    });
   }
   return candidates;
 }
@@ -150,29 +169,37 @@ async function listJsonlFiles(root: string): Promise<string[]> {
   return files;
 }
 
-async function readCandidateCwd(path: string): Promise<string | null> {
+async function readCandidateMetadata(
+  path: string,
+): Promise<{ cwd: string | null; sessionId: string | null }> {
   const content = await readFile(path, "utf8").catch(() => "");
+  let cwd: string | null = null;
+  let sessionId: string | null = null;
   let inspected = 0;
   for (const line of content.split(/\r?\n/)) {
     if (line.trim().length === 0) continue;
-    inspected += 1;
+    if (inspected++ >= 100) break;
     try {
-      const parsed = JSON.parse(line) as unknown;
-      const record = recordValue(parsed);
-      const cwd = stringValue(record.cwd) ?? stringValue(record.foreground_cwd);
-      if (cwd) return cwd;
+      const record = recordValue(JSON.parse(line));
       const payload = recordValue(record.payload);
-      const payloadCwd = stringValue(payload.cwd) ?? stringValue(payload.foreground_cwd);
-      if (payloadCwd) return payloadCwd;
       const message = recordValue(record.message);
-      const nestedCwd = stringValue(message.cwd) ?? stringValue(message.foreground_cwd);
-      if (nestedCwd) return nestedCwd;
-    } catch {
-      continue;
-    }
-    if (inspected >= 100) break;
+      cwd ??=
+        stringValue(record.cwd) ??
+        stringValue(record.foreground_cwd) ??
+        stringValue(payload.cwd) ??
+        stringValue(payload.foreground_cwd) ??
+        stringValue(message.cwd) ??
+        stringValue(message.foreground_cwd);
+      // Claude: sessionId on messages; Pi: session header id; Codex:
+      // session_meta payload.id. Ordinary message IDs are NOT session IDs.
+      sessionId ??=
+        stringValue(record.sessionId) ??
+        (record.type === "session" ? stringValue(record.id) : null) ??
+        (record.type === "session_meta" ? stringValue(payload.id) : null);
+      if (cwd && sessionId) break;
+    } catch {}
   }
-  return null;
+  return { cwd, sessionId };
 }
 
 async function scanGeminiRoot(root: string): Promise<Candidate[]> {
@@ -186,7 +213,16 @@ async function scanGeminiRoot(root: string): Promise<Candidate[]> {
     for (const path of sessions) {
       const stats = await stat(path).catch(() => null);
       if (!stats?.isFile()) continue;
-      candidates.push({ cwd, mtimeMs: stats.mtimeMs, path, source: "gemini-json" });
+      const session = await readFile(path, "utf8")
+        .then((text) => recordValue(JSON.parse(text)))
+        .catch(() => recordValue(null));
+      candidates.push({
+        cwd,
+        sessionId: stringValue(session.sessionId),
+        mtimeMs: stats.mtimeMs,
+        path,
+        source: "gemini-json",
+      });
     }
   }
   return candidates;
