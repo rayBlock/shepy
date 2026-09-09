@@ -71,6 +71,19 @@ export class ProfileDeliveryService {
     // Filter at projection, not emission: the event log stays a complete
     // audit record, but only notifiable outcomes become owner obligations.
     if (!NOTIFIABLE_EVENT_TYPES.has(event.type)) return;
+    // Herdr's done/idle are the same settled state, differing only in
+    // whether the completed tab has been seen. Marking it seen is not a
+    // second completion. Keep the audit event, but never wake for this UI
+    // transition. working -> idle/done and blocked outcomes still project.
+    const from =
+      typeof event.payload === "object" && event.payload !== null && "from" in event.payload
+        ? event.payload.from
+        : null;
+    if (
+      (event.type === "agent.done" || event.type === "agent.idle") &&
+      (from === "done" || from === "idle")
+    )
+      return;
     const agentRows = this.#agents
       .list({ herdrSessionName: event.herdrSessionName })
       .filter((row) => row.id === event.agentId);

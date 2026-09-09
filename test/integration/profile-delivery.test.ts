@@ -137,6 +137,31 @@ describe("obligation projection filter (vault §9.1)", () => {
     expect(delivery.inboxList({ profileId: "driffs" })).toHaveLength(semantic.length);
   });
 
+  test("marking a completed tab seen never creates another outcome; a new turn still does", () => {
+    const { agents, delivery } = fixture();
+    const worker = agents.list().find((row) => row.name === "driffs-worker");
+    if (!worker) throw new Error("fixture: driffs-worker missing");
+    const project = (id: number, from: string, to: "done" | "idle" | "blocked") =>
+      delivery.projectAgentEvent({
+        ...eventFor({ eventId: id, worker: "driffs" }),
+        agentId: worker.id,
+        payload: { from, to },
+        type: `agent.${to}`,
+      });
+    project(1, "working", "done");
+    // Actual incident: Herdr marked the tab seen five minutes after its
+    // completion was delivered. Same completed turn, different UI status.
+    project(2, "done", "idle");
+    project(3, "idle", "done");
+    expect(delivery.inboxList({ profileId: "driffs" }).map((row) => row.agentEventId)).toEqual([1]);
+    // Do not remove idle outcomes wholesale: a visible tab completes to idle.
+    project(4, "working", "idle");
+    project(5, "working", "blocked");
+    expect(delivery.inboxList({ profileId: "driffs" }).map((row) => row.agentEventId)).toEqual([
+      5, 4, 1,
+    ]);
+  });
+
   test("a done transition wakes the owner once, not twice", () => {
     const { agents, delivery } = fixture();
     const worker = agents.list().find((row) => row.name === "driffs-worker");
