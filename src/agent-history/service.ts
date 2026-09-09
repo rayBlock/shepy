@@ -75,7 +75,13 @@ export function createAgentHistoryService(
       sourceSize: sourceFingerprint.size,
     });
     if (cached) {
-      return { compactHistory: cached.compactHistory, historyRef, sourceFingerprint };
+      // A file can first be cached by cwd discovery, then resolved by exact
+      // session identity. Reuse content, not the old lookup's reference.
+      return {
+        compactHistory: { ...cached.compactHistory, historyRef },
+        historyRef,
+        sourceFingerprint,
+      };
     }
 
     try {

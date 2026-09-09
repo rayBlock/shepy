@@ -139,6 +139,31 @@ test("poisoned hints stamped with the requested id are rejected", async () => {
   expect(viaForeign.compactHistory.lastAssistantMessage?.text).toBe("MAIN ONLY");
 });
 
+test("an authoritative lookup rebinds the nested compact reference from a warm discovery cache", async () => {
+  const id = "11111111-2222-4333-8444-555555555555";
+  const { homeDir, main } = await claudeHome("shepy-identity-cache-ref-", id);
+  const harness = openObservabilityDbHarness();
+  try {
+    const history = createAgentHistoryService({ homeDir, cache: harness.agentHistoryCache });
+    const seeded = await history.readCompactRef({
+      kind: "discovered_file",
+      path: main,
+      source: "claude-jsonl",
+      value: main,
+    });
+    const expected = { kind: "agent_session", path: main, source: "claude-jsonl", value: id };
+    const resolved = await history.resolveCompactHistory(claudeSession(id));
+    expect(resolved.historyRef).toEqual(expected);
+    // agent.get exposes compactHistory, not the outer resolved reference.
+    expect(resolved.compactHistory.historyRef).toEqual(expected);
+    expect(resolved.compactHistory.lastAssistantMessage?.text).toBe("MAIN ONLY");
+    expect((await history.getCompactHistory(claudeSession(id))).historyRef).toEqual(expected);
+    expect(seeded.compactHistory.historyRef?.kind).toBe("discovered_file");
+  } finally {
+    harness.sqlite.close();
+  }
+});
+
 test("same-revision refresh recovers a late Pi file and repairs a persisted wrong-session hint", async () => {
   const homeDir = await mkdtemp(join(tmpdir(), "shepy-identity-"));
   homes.push(homeDir);
