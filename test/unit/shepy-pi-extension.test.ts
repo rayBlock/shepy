@@ -2510,6 +2510,50 @@ describe("shepy-pi profile-owner bridge (Phase 4)", () => {
     ]);
   });
 
+  test.each([
+    "close",
+    "disconnected",
+  ] as const)("contains a profile release rejection during shutdown (%s)", async (failure) => {
+    const { pi, ctx, client } = await profileHarness();
+    let rejectRelease: ((error: Error) => void) | undefined;
+    client.response = (method) => {
+      if (method === "profile.claim") {
+        return { result: { kind: "claimed", leaseToken: "lease-1" } };
+      }
+      if (method === "inbox.lease") return { obligations: [] };
+      if (method === "profile.release") {
+        if (failure === "disconnected") {
+          return Promise.reject(new Error("Shepy daemon client is not connected"));
+        }
+        return new Promise((_resolve, reject) => {
+          rejectRelease = reject;
+        });
+      }
+      return connectionResponse();
+    };
+    const close = vi.spyOn(client, "close").mockImplementation(() => {
+      client.closed = true;
+      rejectRelease?.(new Error("Shepy daemon client is closed"));
+    });
+    try {
+      await pi.command("on driffs", ctx);
+      if (failure === "disconnected") client.disconnect();
+      await pi.emit("session_shutdown", { reason: "reload" }, ctx);
+      await pi.emit("session_shutdown", { reason: "reload" }, ctx);
+      // Let unhandled rejections reach the runtime (Vitest fails the run),
+      // rather than merely checking the synchronous shutdown return value.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(client.closed).toBe(true);
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(client.calls.filter(([method]) => method === "profile.release")).toEqual([
+        ["profile.release", { leaseToken: "lease-1", profileId: "driffs" }],
+      ]);
+    } finally {
+      await pi.emit("session_shutdown", {}, ctx);
+      close.mockRestore();
+    }
+  });
+
   async function profileHarness() {
     const client = createFakeClient();
     const pi = createFakePi();

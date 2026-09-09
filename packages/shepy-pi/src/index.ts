@@ -949,7 +949,12 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
       state.profileBatch = undefined;
       if (mode && state.client) {
         try {
-          void state.client.request("profile.release", { leaseToken: mode.leaseToken, profileId: mode.profileId });
+          void state.client
+            .request("profile.release", { leaseToken: mode.leaseToken, profileId: mode.profileId })
+            .catch(() => {
+              // close() below rejects pending RPCs. Shutdown must stay non-blocking;
+              // lease expiry reclaims ownership if this best-effort release fails.
+            });
         } catch {
           // lease expiry reclaims server-side
         }
