@@ -93,6 +93,9 @@ type ProfileBatch = {
   profileId: string;
   shepyTriggered: boolean;
   triggerQueued: boolean;
+  /** Set by the context hook when a run's LLM context actually contained
+   * the wake message — the consumption witness that gates acknowledgement. */
+  wakeConsumed: boolean;
 };
 
 type ShepyState = {
@@ -481,18 +484,24 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
     };
 
     /**
-     * Boundary assumptions (Pi extension API, docs/extensions.md):
-     * - `sendMessage({deliverAs:"followUp"})` ENQUEUES; during an active run
-     *   the message is delivered after the run settles, so a user run that
-     *   starts mid-pump does not corrupt delivery — it only delays it.
-     * - `triggerTurn` fires only when idle; enqueue success is the strongest
-     *   delivery signal the API exposes. Residual unproved edge: a queued
-     *   follow-up can be restored to the editor on an abort (Escape), in
-     *   which case the wake content never reaches a turn while settle still
-     *   acks it. Accepted risk; documented rather than papered over.
-     * - Ownership can change across ANY await (off, replacement, scope
-     *   movement). stillOwner re-derives from live state at each resume and
-     *   a stale lease is nacked, never enqueued, never ackable.
+     * Boundary behaviour (Pi extension API, docs/extensions.md):
+     * - `sendMessage({deliverAs:"followUp"})` ENQUEUES; enqueue alone proves
+     *   nothing about delivery. Acknowledgement therefore requires the
+     *   CONSUMPTION WITNESS: the `context` hook fires before each LLM call
+     *   with the full message list, and a run whose context contains the
+     *   wake message (matched by obligation ids) proves the content reached
+     *   a model call. A queued follow-up that is aborted before consumption
+     *   (Escape restores it to the editor) never witnesses, never acks —
+     *   it is nacked and redelivered. No completion is silently lost.
+     * - Residual boundary, stated precisely: the witness proves inclusion in
+     *   the LLM input of a run that ended with a successful final — not that
+     *   the model acted on the content. The extension API exposes no
+     *   stronger per-message delivery signal.
+     * - Ownership and busyness can change across ANY await (off,
+     *   replacement, scope movement, a user run starting). stillOwner plus a
+     *   post-lease run recheck re-derive from live state at each resume; a
+     *   stale or busy resolution is nacked durably (wake_failed / owner_busy),
+     *   never enqueued, never ackable.
      */
     const pumpProfileOwned = async (
       mode: { leaseToken: string; pendingCount: number; profileId: string },
@@ -506,10 +515,10 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
         state.profileMode.leaseToken === mode.leaseToken &&
         !state.profileBatch &&
         !state.deliveredBatch;
-      const nackStaleLease = async (ids: string[]) => {
+      const nackStaleLease = async (ids: string[], errorCode: string) => {
         try {
           await client.request("inbox.nack", {
-            errorCode: "wake_failed",
+            errorCode,
             ids,
             leaseToken: mode.leaseToken,
           });
@@ -539,11 +548,17 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
         }
         const ids = obligations.map((obligation) => obligation.id);
         // The await above is the hazard window: ownership may have moved
-        // (off, replacement, scope change) while the lease was in flight.
-        // A lease returned to a former owner must never enqueue — and the
-        // leased rows need durable cleanup, so nack with the closure token.
+        // (off, replacement, scope change) or a normal user run may have
+        // started while the lease was in flight. A lease returned to a
+        // former owner must never enqueue, and a busy owner defers — the
+        // wake must not ride behind an unrelated run it cannot witness.
+        // Both paths nack durably so a later idle pump redelivers.
         if (!stillOwner()) {
-          await nackStaleLease(ids);
+          await nackStaleLease(ids, "wake_failed");
+          return;
+        }
+        if (state.runActive || ctx?.isIdle?.() === false) {
+          await nackStaleLease(ids, "owner_busy");
           return;
         }
         state.profileMode = { ...mode, pendingCount: obligations.length };
@@ -613,6 +628,7 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
           profileId: mode.profileId,
           shepyTriggered: true,
           triggerQueued: true,
+          wakeConsumed: false,
         };
         try {
           await client.request("inbox.delivered", {
@@ -968,6 +984,26 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
     });
 
     pi.on("context", (event: { messages: PiAgentMessage[] }) => {
+      // Consumption witness (fires before EVERY LLM call): if this run's
+      // context contains our profile wake message — matched by obligation
+      // ids — the batch's content provably reached a model call. Only such
+      // a witnessed batch may be acknowledged at settle.
+      const batch = state.profileBatch;
+      if (batch && !batch.wakeConsumed) {
+        const witnessed = event.messages.some((message) => {
+          if (message.customType !== "shepy-wake-context" || message.role !== "custom") {
+            return false;
+          }
+          const details = message.details as { obligationIds?: unknown } | undefined;
+          if (!Array.isArray(details?.obligationIds)) return false;
+          const ids = details.obligationIds as unknown[];
+          return (
+            ids.length === batch.obligationIds.length &&
+            batch.obligationIds.every((id) => ids.includes(id))
+          );
+        });
+        if (witnessed) batch.wakeConsumed = true;
+      }
       const messages = event.messages.filter((message) => !isNormalShepyContext(message));
       const snapshot = state.pinnedContext;
       if (!snapshot || snapshot.agents.length === 0) return { messages };
@@ -1000,6 +1036,7 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
           !profileBatch.invalidated &&
           profileBatch.assistantFinalSucceeded &&
           profileBatch.triggerQueued &&
+          profileBatch.wakeConsumed &&
           state.client &&
           state.connected
         ) {

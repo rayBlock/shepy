@@ -2038,6 +2038,21 @@ describe("shepy-pi profile-owner bridge (Phase 4)", () => {
       pi.customMessages.filter(([message]) => message.customType === "shepy-wake"),
     ).toHaveLength(1);
 
+    // Consumption witness: the settling run's LLM context must contain the
+    // wake message before its successful final can acknowledge the batch.
+    await pi.emitContext(
+      [
+        {
+          content: hidden?.[0].content ?? "",
+          customType: "shepy-wake-context",
+          details: { obligationIds: ["ob-1", "ob-2"], profileId: "driffs" },
+          display: false,
+          role: "custom",
+          timestamp: Date.now(),
+        },
+      ],
+      ctx,
+    );
     // Successful assistant final, then settle → ack
     await pi.emit("message_end", { message: { role: "assistant", stopReason: "stop" } }, ctx);
     client.response = (method) => {
@@ -2223,7 +2238,24 @@ describe("shepy-pi profile-owner bridge (Phase 4)", () => {
     expect(
       pi.customMessages.filter(([message]) => message.customType === "shepy-wake"),
     ).toHaveLength(1);
-    // delivered failed, but the displayed batch stays ackable at settle.
+    // delivered failed, but the displayed batch stays ackable at settle —
+    // proven consumed by the settling run's context first.
+    const hiddenDelivered = pi.hiddenMessages.find(
+      ([message]) => message.customType === "shepy-wake-context",
+    );
+    await pi.emitContext(
+      [
+        {
+          content: hiddenDelivered?.[0].content ?? "",
+          customType: "shepy-wake-context",
+          details: { obligationIds: ["ob-3"], profileId: "driffs" },
+          display: false,
+          role: "custom",
+          timestamp: Date.now(),
+        },
+      ],
+      ctx,
+    );
     await pi.emit("message_end", { message: { role: "assistant", stopReason: "stop" } }, ctx);
     client.response = (method) => {
       if (method === "inbox.lease") return { obligations: [] };
@@ -2337,6 +2369,92 @@ describe("shepy-pi profile-owner bridge (Phase 4)", () => {
     expect(client.calls).toContainEqual([
       "inbox.delivered",
       expect.objectContaining({ ids: ["ob-6"], leaseToken: "lease-1" }),
+    ]);
+  });
+
+  test("a user run starting during the lease RPC defers delivery (no enqueue, no ack)", async () => {
+    const { pi, ctx, client } = await profileHarness();
+    let resolveLease: ((value: unknown) => void) | undefined;
+    client.response = (method) => {
+      if (method === "profile.claim") return { result: { kind: "claimed", leaseToken: "lease-1" } };
+      if (method === "inbox.lease")
+        return new Promise((resolve) => {
+          resolveLease = resolve;
+        });
+      if (method === "inbox.nack") return { nacked: 1 };
+      if (method === "inbox.delivered") return { delivered: 1 };
+      return { acked: 1 };
+    };
+    await pi.command("on driffs", ctx);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    // A normal user run begins while inbox.lease is still in flight.
+    await pi.emit("agent_start", {}, ctx);
+    resolveLease?.({ obligations: [{ agentEventId: 5, id: "ob-5", outcome: null }] });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    // Deferral, not enqueue-behind: nothing displayed, nothing delivered,
+    // the leased rows go back to pending durably.
+    expect(pi.customMessages).toHaveLength(0);
+    expect(pi.hiddenMessages).toHaveLength(0);
+    expect(client.calls.map(([method]) => method)).not.toContain("inbox.delivered");
+    expect(client.calls).toContainEqual([
+      "inbox.nack",
+      expect.objectContaining({ errorCode: "owner_busy", ids: ["ob-5"], leaseToken: "lease-1" }),
+    ]);
+    // The unrelated user run finishes successfully — it saw nothing.
+    await pi.emit("message_end", { message: { role: "assistant", stopReason: "stop" } }, ctx);
+    await pi.emit("agent_settled", {}, ctx);
+    expect(client.calls.map(([method]) => method)).not.toContain("inbox.ack");
+    // A later idle pump delivers the batch exactly once.
+    client.response = (method) => {
+      if (method === "profile.claim") return { result: { kind: "claimed", leaseToken: "lease-2" } };
+      if (method === "inbox.lease")
+        return { obligations: [{ agentEventId: 5, id: "ob-5", outcome: null }] };
+      if (method === "inbox.delivered") return { delivered: 1 };
+      return { acked: 1 };
+    };
+    await pi.command("off", ctx);
+    await pi.command("on driffs", ctx);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(
+      pi.customMessages.filter(([message]) => message.customType === "shepy-wake"),
+    ).toHaveLength(1);
+    expect(client.calls).toContainEqual([
+      "inbox.delivered",
+      expect.objectContaining({ ids: ["ob-5"] }),
+    ]);
+  });
+
+  test("a wake never consumed by any run is never acked (abort-before-consumption)", async () => {
+    const { pi, ctx, client } = await profileHarness();
+    client.response = (method) => {
+      if (method === "profile.claim") return { result: { kind: "claimed", leaseToken: "lease-1" } };
+      if (method === "inbox.lease")
+        return { obligations: [{ agentEventId: 8, id: "ob-8", outcome: null }] };
+      if (method === "inbox.delivered") return { delivered: 1 };
+      if (method === "inbox.nack") return { nacked: 1 };
+      return { acked: 1 };
+    };
+    await pi.command("on driffs", ctx);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    // The wake enqueued and the batch is live — but NO run ever consumed it
+    // (queued follow-up restored to the editor on abort: the negative shape).
+    expect(
+      pi.customMessages.filter(([message]) => message.customType === "shepy-wake"),
+    ).toHaveLength(1);
+    // A successful final exists (an earlier, unrelated run), then settle.
+    await pi.emit("message_end", { message: { role: "assistant", stopReason: "stop" } }, ctx);
+    client.response = (method) => {
+      if (method === "inbox.nack") return { nacked: 1 };
+      if (method === "inbox.lease") return { obligations: [] };
+      if (method === "inbox.delivered") return { delivered: 1 };
+      return { acked: 1 };
+    };
+    await pi.emit("agent_settled", {}, ctx);
+    // Never consumed ⇒ never acknowledged, even with a successful final.
+    expect(client.calls.map(([method]) => method)).not.toContain("inbox.ack");
+    expect(client.calls).toContainEqual([
+      "inbox.nack",
+      expect.objectContaining({ errorCode: "wake_failed", ids: ["ob-8"], leaseToken: "lease-1" }),
     ]);
   });
 
