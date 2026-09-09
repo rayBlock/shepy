@@ -2,6 +2,8 @@
 
 **Status:** Phase 1 core acceptance completed; extended routing/lifecycle phases pending
 
+**Related live field evidence:** [2026-09-09 two-worker mask orchestration](../field-notes/2026-09-09-mask-orchestration.md) — recovery, stale/repeated wake excerpts, task correlation, and the distinction between Shepy defects and worker/dispatcher mistakes.
+
 **Goal:** Exercise Shepy from `/Users/ryo.nakae/Dev/_sandbox/shepy-test` as a real user would, covering structured agent history, the Shepy Agent Skill, owner-only cached Pi context, and owner-only updates without risking the normal Shepy runtime state.
 
 **Architecture:** Run one owner Pi, one off Pi, one Claude agent, and one shell observer in the same Herdr workspace. The owner receives a daemon-cached snapshot locally during normal prompts; an off Pi receives neither context nor updates. Use an isolated `SHEPY_HOME` for restart, disconnect, owner transfer, and unread-transfer scenarios so the normal `~/.shepy` database is not changed by destructive tests.
