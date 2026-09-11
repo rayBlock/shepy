@@ -259,6 +259,7 @@ async function handlePromptSubmit(payload: HookPayload, input: ClaudeHookInput):
     // acked: its process died before inbox.delivered committed, so nobody
     // ever saw those rows.
     const previous = readOwnerFile(input.homeDir, payload.session_id, input.profileId);
+    let handled: HandledRecord = null;
     if (previous?.delivered) {
       if (previous.delivered.phase === "delivered") {
         try {
@@ -277,6 +278,7 @@ async function handlePromptSubmit(payload: HookPayload, input: ClaudeHookInput):
       // rejected ids are permanently fenced away from this token), and a
       // leased-phase record is discarded outright. Keeping either would only
       // block the next record.
+      handled = { ids: previous.delivered.ids, leaseToken: previous.leaseToken };
       previous.delivered = null;
     }
 
@@ -296,7 +298,14 @@ async function handlePromptSubmit(payload: HookPayload, input: ClaudeHookInput):
       // Persist even with nothing to deliver: this clears a stale delivered
       // record (an interrupted turn never ran Stop to clear it) and parks the
       // fresh token so Stop can ack and lease without another prompt first.
-      writeOwnerFile(input.homeDir, payload.session_id, input.profileId, cleared);
+      // Guarded: a concurrent invocation's newer record is left alone.
+      writeOwnerFileIfUnchanged(
+        input.homeDir,
+        payload.session_id,
+        input.profileId,
+        cleared,
+        handled,
+      );
       // Ownership held, nothing to deliver: stay silent so Claude Code adds
       // no context to the turn.
       return;
@@ -314,10 +323,20 @@ async function handlePromptSubmit(payload: HookPayload, input: ClaudeHookInput):
       phase: "leased",
       promptId: payload.prompt_id ?? null,
     };
-    writeOwnerFile(input.homeDir, payload.session_id, input.profileId, {
-      ...cleared,
-      delivered: record,
-    });
+    if (
+      !writeOwnerFileIfUnchanged(
+        input.homeDir,
+        payload.session_id,
+        input.profileId,
+        { ...cleared, delivered: record },
+        handled,
+      )
+    ) {
+      // A concurrent invocation recorded a newer delivery while we leased.
+      // Abandon our batch: the rows stay leased, expire, and are re-delivered
+      // under the winner's record — a duplicate, never a loss.
+      return;
+    }
     try {
       await request("inbox.delivered", {
         ...(payload.prompt_id ? { harnessTurnId: payload.prompt_id } : {}),
@@ -328,17 +347,25 @@ async function handlePromptSubmit(payload: HookPayload, input: ClaudeHookInput):
     } catch (error) {
       // In-process failure, not a kill: revert immediately so the next
       // prompt's ack cannot retire outcomes the model never saw. The rows
-      // stay leased and expire back to pending server-side.
-      writeOwnerFile(input.homeDir, payload.session_id, input.profileId, cleared);
+      // stay leased and expire back to pending server-side. Guarded: only if
+      // the on-disk record is still ours.
+      writeOwnerFileIfUnchanged(input.homeDir, payload.session_id, input.profileId, cleared, {
+        ids,
+        leaseToken,
+      });
       throw new ExpectedHookError(`inbox delivered failed: ${describe(error)}`);
     }
     // Phase 2: the daemon committed the batch and the injection is about to
     // reach the model — promote the record to "delivered", the only phase a
-    // later turn may ack.
-    writeOwnerFile(input.homeDir, payload.session_id, input.profileId, {
-      ...cleared,
-      delivered: { ...record, phase: "delivered" },
-    });
+    // later turn may ack. If a concurrent writer replaced our record in this
+    // second window, leave theirs alone: our batch expires and re-delivers.
+    writeOwnerFileIfUnchanged(
+      input.homeDir,
+      payload.session_id,
+      input.profileId,
+      { ...cleared, delivered: { ...record, phase: "delivered" } },
+      { ids, leaseToken },
+    );
     input.writeStdout(
       JSON.stringify({
         hookSpecificOutput: {
@@ -362,6 +389,7 @@ async function handleStop(payload: HookPayload, input: ClaudeHookInput): Promise
     // before inbox.delivered committed — is discarded without acking, exactly
     // like on UserPromptSubmit.
     const file = readOwnerFile(input.homeDir, payload.session_id, input.profileId);
+    let handled: HandledRecord = null;
     if (file && file.profileId === input.profileId && file.delivered) {
       if (file.delivered.phase === "delivered") {
         try {
@@ -374,8 +402,15 @@ async function handleStop(payload: HookPayload, input: ClaudeHookInput): Promise
           throw new ExpectedHookError(`inbox ack failed: ${describe(error)}`);
         }
       }
+      handled = { ids: file.delivered.ids, leaseToken: file.leaseToken };
       file.delivered = null;
-      writeOwnerFile(input.homeDir, payload.session_id, input.profileId, file);
+      // Clear ONLY if the on-disk record is still exactly the one this Stop
+      // just settled. If a concurrent prompt replaced it, leave the newer
+      // record alone — it belongs to a batch this Stop never saw.
+      writeOwnerFileIfUnchanged(input.homeDir, payload.session_id, input.profileId, file, handled);
+      // The clear succeeded: any later write this Stop makes must expect no
+      // unsettled record on disk, not the one it just removed.
+      handled = null;
     }
 
     // stop_hook_active guards the loop a Stop injection creates: injecting
@@ -402,10 +437,19 @@ async function handleStop(payload: HookPayload, input: ClaudeHookInput): Promise
       phase: "leased",
       promptId: payload.prompt_id ?? null,
     };
-    writeOwnerFile(input.homeDir, payload.session_id, input.profileId, {
-      ...file,
-      delivered: record,
-    });
+    if (
+      !writeOwnerFileIfUnchanged(
+        input.homeDir,
+        payload.session_id,
+        input.profileId,
+        { ...file, delivered: record },
+        handled,
+      )
+    ) {
+      // A concurrent prompt owns the record now; do not deliver under a
+      // stale identity on top of it. Our batch expires and re-delivers.
+      return;
+    }
     try {
       await request("inbox.delivered", {
         ...(payload.prompt_id ? { harnessTurnId: payload.prompt_id } : {}),
@@ -414,16 +458,22 @@ async function handleStop(payload: HookPayload, input: ClaudeHookInput): Promise
         ownerSessionRefJson: file.ownerSessionRefJson,
       });
     } catch (error) {
-      writeOwnerFile(input.homeDir, payload.session_id, input.profileId, {
-        ...file,
-        delivered: null,
-      });
+      writeOwnerFileIfUnchanged(
+        input.homeDir,
+        payload.session_id,
+        input.profileId,
+        { ...file, delivered: null },
+        { ids, leaseToken: file.leaseToken },
+      );
       throw new ExpectedHookError(`inbox delivered failed: ${describe(error)}`);
     }
-    writeOwnerFile(input.homeDir, payload.session_id, input.profileId, {
-      ...file,
-      delivered: { ...record, phase: "delivered" },
-    });
+    writeOwnerFileIfUnchanged(
+      input.homeDir,
+      payload.session_id,
+      input.profileId,
+      { ...file, delivered: { ...record, phase: "delivered" } },
+      { ids, leaseToken: file.leaseToken },
+    );
     input.writeStdout(
       JSON.stringify({
         hookSpecificOutput: {
@@ -546,6 +596,48 @@ function readOwnerFile(homeDir: string, sessionId: string, profileId: string): O
   } catch {
     return null;
   }
+}
+
+/**
+ * The record an invocation has already settled (acked or discarded): its
+ * lease token and batch ids. Null means the invocation expects no unsettled
+ * record on disk at all.
+ */
+type HandledRecord = { ids: string[]; leaseToken: string } | null;
+
+function sameUnsettledRecord(current: OwnerFile | null, handled: HandledRecord): boolean {
+  const currentDelivered = current?.delivered ?? null;
+  if (handled === null) return currentDelivered === null;
+  if (currentDelivered === null) return false;
+  return (
+    current?.leaseToken === handled.leaseToken &&
+    currentDelivered.ids.length === handled.ids.length &&
+    currentDelivered.ids.every((id, index) => id === handled.ids[index])
+  );
+}
+
+/**
+ * Read-modify-write against the current on-disk state. Claude Code does not
+ * serialize hooks: the Stop for turn N can still be running when the
+ * UserPromptSubmit for turn N+1 finishes. A write derived from a stale
+ * in-memory read would erase a record this invocation never settled,
+ * orphaning a delivered batch — it expires, is re-leased, and the model
+ * sees it twice. So every write re-reads the file first and proceeds only
+ * when the on-disk record is still exactly the one this invocation settled
+ * (or there is no unsettled record to protect). A lost race leaves the
+ * newer record alone; the caller's own batch, if it had one, is abandoned
+ * and expires back to pending server-side — a duplicate, never a loss.
+ */
+function writeOwnerFileIfUnchanged(
+  homeDir: string,
+  sessionId: string,
+  profileId: string,
+  next: OwnerFile,
+  handled: HandledRecord,
+): boolean {
+  if (!sameUnsettledRecord(readOwnerFile(homeDir, sessionId, profileId), handled)) return false;
+  writeOwnerFile(homeDir, sessionId, profileId, next);
+  return true;
 }
 
 /**

@@ -816,6 +816,79 @@ describe("claude-hook owner-record crash consistency", () => {
     // as a duplicate — the accepted failure mode for an unknown record.
     expect(fixture.delivery.inboxList({ profileId: "driffs", state: "delivered" })).toHaveLength(1);
   });
+
+  test("a concurrent prompt's fresh record survives a slower Stop's stale write", async () => {
+    const fixture = await openHookServer();
+    projectOutcome(fixture, "hook-a1", "first outcome");
+    await runHook(fixture, promptPayload());
+    const stale = readOwnerFile(fixture);
+    expect(stale.delivered?.ids).toHaveLength(1);
+
+    projectOutcome(fixture, "hook-b1", "second outcome");
+
+    // Claude Code does not serialize hooks: the Stop for turn N can still be
+    // running when the UserPromptSubmit for turn N+1 finishes. Park the Stop
+    // path at its inbox.ack RPC, run a full UPS to completion against the
+    // same owner file, then let Stop finish.
+    const realAck = fixture.delivery.inboxAck.bind(fixture.delivery);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let ackCalls = 0;
+    // The service method is synchronous, but the daemon awaits whatever it
+    // returns — so a promise-returning patch parks the RPC response until
+    // the gate resolves. The first ack (the slow Stop's) parks; later ones
+    // (the interleaved prompt's) pass straight through.
+    Object.assign(fixture.delivery, {
+      inboxAck: async (input: Parameters<ProfileDeliveryService["inboxAck"]>[0]) => {
+        ackCalls += 1;
+        if (ackCalls !== 1) return realAck(input);
+        await gate;
+        return realAck(input);
+      },
+    });
+    const stopRun = runHook(fixture, stopPayload({ prompt_id: "stop-n" }));
+    await vi.waitFor(() => {
+      expect(ackCalls).toBe(1);
+    });
+
+    const promptRun = await runHook(fixture, promptPayload({ prompt_id: "prompt-n1" }));
+    expect(promptRun.code).toBe(0);
+    expect(promptRun.stdout).toContain("second outcome");
+    const fresh = readOwnerFile(fixture);
+    expect(fresh.leaseToken).not.toBe(stale.leaseToken);
+    expect(fresh.delivered?.phase).toBe("delivered");
+    const freshIds = fresh.delivered?.ids ?? [];
+    expect(freshIds).toHaveLength(1);
+
+    release();
+    const stop = await stopRun;
+    expect(stop.code).toBe(0);
+
+    // The fresh record survives the stale Stop byte-for-byte: no clobber.
+    const after = readOwnerFile(fixture);
+    expect(after.leaseToken).toBe(fresh.leaseToken);
+    expect(after.delivered?.phase).toBe("delivered");
+    expect(after.delivered?.ids).toEqual(freshIds);
+    // The fresh batch was delivered exactly once — the stale Stop did not
+    // lease it again, ack it, or erase its record.
+    const delivered = fixture.delivery.inboxList({ profileId: "driffs", state: "delivered" });
+    expect(delivered.map((row) => row.id).sort()).toEqual(freshIds);
+    expect(delivered[0]?.attemptCount).toBe(1);
+    // The old batch settled exactly once (the prompt acked it; Stop's
+    // duplicate ack of it is a fenced no-op).
+    expect(fixture.delivery.inboxList({ profileId: "driffs", state: "acked" })).toHaveLength(1);
+
+    // Only the next prompt — after the model saw the injection — acks batch B.
+    Object.assign(fixture.delivery, { inboxAck: realAck });
+    const settle = await runHook(fixture, promptPayload({ prompt_id: "prompt-n2" }));
+    expect(settle.code).toBe(0);
+    const acked = fixture.delivery.inboxList({ profileId: "driffs", state: "acked" });
+    expect(acked.map((row) => row.id).sort()).toEqual(
+      [...(stale.delivered?.ids ?? []), ...freshIds].sort(),
+    );
+  });
 });
 
 describe("claude-hook injected-context budget", () => {
