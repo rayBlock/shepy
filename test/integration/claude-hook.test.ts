@@ -1069,4 +1069,125 @@ describe("claude-hook expected-failure surfaces", () => {
     expect(stdout).toBe("");
     expect(fixture.delivery.inboxList({ profileId: "driffs", state: "pending" })).toHaveLength(1);
   });
+
+  test("a persistent inbox.delivered failure warns every turn before the unseen outcomes dead-letter", async () => {
+    const fixture = await openHookServer();
+    projectOutcome(fixture, "hook-climb", "never-seen outcome");
+    // The realistic trigger (verify-b W1/S1): a daemon left running across a
+    // package upgrade whose delivered-params schema no longer accepts this
+    // hook's call. The daemon is otherwise healthy — claim, lease, and ack
+    // keep working, so the pane looks connected while its backlog quietly
+    // burns one attempt per turn and dies at the fifth.
+    fixture.delivery.inboxDelivered = () => {
+      throw new Error("params rejected: inboxDeliveredInputSchema");
+    };
+    const realLease = fixture.delivery.inboxLease.bind(fixture.delivery);
+    let leaseCalls = 0;
+    fixture.delivery.inboxLease = (input) => {
+      leaseCalls += 1;
+      return realLease({ ...input, now: Date.now() + leaseCalls * 3 * 60_000 });
+    };
+
+    const turns: string[] = [];
+    for (let i = 0; i < 7; i += 1) {
+      const turn = await runHook(fixture, promptPayload({ prompt_id: `climb-${i}` }));
+      expect(turn.code).toBe(0);
+      turns.push(turn.stdout);
+    }
+
+    // The FIRST failed handoff is transient-class: silent, and the record was
+    // reverted so nothing can ever ack the unseen rows.
+    expect(turns[0]).toBe("");
+    expect(readOwnerFile(fixture).delivered).toBeNull();
+
+    // Every repeat — from the second consecutive failure on — warns the
+    // operator. The dead-letter sweep runs inside the sixth lease, so turns
+    // 1-4 (attempts 2-5) each carry a warning BEFORE anything is destroyed.
+    for (let i = 1; i <= 4; i += 1) {
+      const parsed = JSON.parse(turns[i] || "{}") as {
+        hookSpecificOutput?: unknown;
+        systemMessage?: string;
+      };
+      expect(parsed.systemMessage).toContain("driffs");
+      expect(parsed.systemMessage).toContain("dead_letter");
+      expect(parsed.hookSpecificOutput).toBeUndefined();
+    }
+    // After the sweep the rows are gone; nothing fails, nothing warns.
+    expect(turns[5]).toBe("");
+    expect(turns[6]).toBe("");
+
+    const dead = fixture.delivery.inboxList({ profileId: "driffs", state: "dead_letter" });
+    expect(dead).toHaveLength(1);
+    expect(dead[0]?.attemptCount).toBe(5);
+    expect(fixture.delivery.inboxList({ profileId: "driffs", state: "acked" })).toHaveLength(0);
+    expect(fixture.delivery.inboxList({ profileId: "driffs", state: "pending" })).toHaveLength(0);
+    expect(fixture.delivery.inboxList({ profileId: "driffs", state: "delivered" })).toHaveLength(0);
+  });
+
+  test("a repeated delivery failure warns on Stop too and counts across turn kinds", async () => {
+    const fixture = await openHookServer();
+    projectOutcome(fixture, "hook-stop-c1", "stop climb outcome");
+    fixture.delivery.inboxDelivered = () => {
+      throw new Error("params rejected");
+    };
+    const realLease = fixture.delivery.inboxLease.bind(fixture.delivery);
+    let leaseCalls = 0;
+    fixture.delivery.inboxLease = (input) => {
+      leaseCalls += 1;
+      return realLease({ ...input, now: Date.now() + leaseCalls * 3 * 60_000 });
+    };
+
+    const prompt = await runHook(fixture, promptPayload());
+    expect(prompt.code).toBe(0);
+    expect(prompt.stdout).toBe(""); // first failure: transient-class, silent
+
+    projectOutcome(fixture, "hook-stop-c2", "one more outcome");
+    // Stop re-leases the expired batch plus the fresh outcome; the handoff
+    // fails again — the same ids failed the turn before, so this is
+    // persistent no matter which hook event carried it.
+    const stop = await runHook(fixture, stopPayload({ prompt_id: "stop-climb" }));
+    expect(stop.code).toBe(0);
+    const parsed = JSON.parse(stop.stdout || "{}") as { systemMessage?: string };
+    expect(parsed.systemMessage).toContain("dead_letter");
+    // The batch stays leased-unseen: never delivered, never acked.
+    expect(fixture.delivery.inboxList({ profileId: "driffs", state: "leased" })).toHaveLength(2);
+    expect(fixture.delivery.inboxList({ profileId: "driffs", state: "delivered" })).toHaveLength(0);
+    expect(fixture.delivery.inboxList({ profileId: "driffs", state: "acked" })).toHaveLength(0);
+  });
+
+  test("an empty-lease turn carries the failure marker so turn spacing cannot reset the climb", async () => {
+    const fixture = await openHookServer();
+    projectOutcome(fixture, "hook-carry", "carry outcome");
+    fixture.delivery.inboxDelivered = () => {
+      throw new Error("params rejected");
+    };
+
+    // Turn 1 leases and fails: marker attempts 1, silent. The lease is live
+    // for 2 minutes.
+    const first = await runHook(fixture, promptPayload({ prompt_id: "carry-1" }));
+    expect(first.code).toBe(0);
+    expect(first.stdout).toBe("");
+
+    // Turn 2 arrives within the live lease (no clock advance): nothing to
+    // re-lease. The empty lease must CARRY the marker, not drop it, or a
+    // fast-typing user would reset the climb every turn and the failure
+    // would stay silent all the way to dead_letter.
+    const second = await runHook(fixture, promptPayload({ prompt_id: "carry-2" }));
+    expect(second.code).toBe(0);
+    expect(second.stdout).toBe("");
+    const carried = JSON.parse(readFileSync(ownerFilePath(fixture), "utf8")) as {
+      failedDelivery?: { attempts: number };
+    };
+    expect(carried.failedDelivery?.attempts).toBe(1);
+
+    // Turn 3, after expiry: the same rows fail again — a SECOND consecutive
+    // failure from the marker's point of view — and must warn.
+    const realLease = fixture.delivery.inboxLease.bind(fixture.delivery);
+    fixture.delivery.inboxLease = (input) => realLease({ ...input, now: Date.now() + 3 * 60_000 });
+    const third = await runHook(fixture, promptPayload({ prompt_id: "carry-3" }));
+    fixture.delivery.inboxLease = realLease;
+    expect(third.code).toBe(0);
+    const parsed = JSON.parse(third.stdout || "{}") as { systemMessage?: string };
+    expect(parsed.systemMessage).toContain("dead_letter");
+  });
 });

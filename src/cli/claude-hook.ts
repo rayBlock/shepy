@@ -43,10 +43,11 @@ import { ObservabilityRpcClient } from "@/daemon/client.js";
  *  - Exit 0 on every expected condition. The hook runs inside the user's turn
  *    latency; Shepy is observability and must never degrade the session.
  *  - Silent is the default; loud is for persistent operator action. A
- *    rejected claim, a profile that cannot receive anything, and owner-file
- *    storage failures surface as a top-level systemMessage — user-facing
- *    only, never model input, one short line each. Transient daemon trouble
- *    stays silent.
+ *    rejected claim, a profile that cannot receive anything, owner-file
+ *    storage failures, and a delivery handoff that keeps failing across
+ *    turns surface as a top-level systemMessage — user-facing only, never
+ *    model input, one short line each. A first failed handoff and other
+ *    transient daemon trouble stay silent.
  *  - One claim, one lease, no retries, no sleeps, and a hard per-request
  *    deadline.
  *  - The lease token is a credential. It never reaches stdout or the
@@ -115,6 +116,19 @@ const ownerFileSchema = Type.Object(
         { additionalProperties: false },
       ),
     ]),
+    // Consecutive post-lease delivery-handoff failures (see recordHandoff-
+    // Failure): the ids of the last failed batch and how many turns in a row
+    // a batch sharing those ids has failed. Optional — absent on every
+    // healthy and phase-1/phase-2 record.
+    failedDelivery: Type.Optional(
+      Type.Object(
+        {
+          attempts: Type.Integer({ minimum: 1 }),
+          ids: Type.Array(Type.String({ minLength: 1 })),
+        },
+        { additionalProperties: false },
+      ),
+    ),
     leaseToken: Type.String({ minLength: 1 }),
     ownerSessionRefJson: Type.String({ minLength: 1 }),
     profileId: Type.String({ minLength: 1 }),
@@ -135,6 +149,8 @@ type OwnerFile = {
     phase: "leased" | "delivered";
     promptId: string | null;
   } | null;
+  /** See ownerFileSchema.failedDelivery. */
+  failedDelivery?: { attempts: number; ids: string[] } | undefined;
   leaseToken: string;
   ownerSessionRefJson: string;
   profileId: string;
@@ -298,6 +314,14 @@ async function handlePromptSubmit(
       value: payload.session_id,
     });
     const herdrSessionName = await resolveHerdrSessionName(request, paneId, workspaceId);
+    // The owner-file read sits ABOVE the claim on purpose: the persisted
+    // record (and its lease token) must be in scope at the profile.claim
+    // call site below. That is the single insertion point for the upcoming
+    // proof-of-possession parameter (same-subscriber re-claims will have to
+    // present the current lease token): one conditional line inside the
+    // params object, fed from `previous`.
+    const previous = readOwnerFile(input.homeDir, payload.session_id, input.profileId, warnings);
+    const previousFailedDelivery = previous?.failedDelivery;
     const claim = await request<{
       result?: {
         kind?: string;
@@ -358,7 +382,6 @@ async function handlePromptSubmit(
     // correlation required. A "leased"-phase record is discarded, never
     // acked: its process died before inbox.delivered committed, so nobody
     // ever saw those rows.
-    const previous = readOwnerFile(input.homeDir, payload.session_id, input.profileId, warnings);
     let handled: HandledRecord = null;
     if (previous?.delivered) {
       if (previous.delivered.phase === "delivered") {
@@ -398,12 +421,17 @@ async function handlePromptSubmit(
       // Persist even with nothing to deliver: this clears a stale delivered
       // record (an interrupted turn never ran Stop to clear it) and parks the
       // fresh token so Stop can ack and lease without another prompt first.
-      // Guarded: a concurrent invocation's newer record is left alone.
+      // Guarded: a concurrent invocation's newer record is left alone. The
+      // failure marker is CARRIED over, not dropped: an empty lease (the rows
+      // are still inside a live 2-minute lease) is not a recovery, and
+      // dropping the marker here would let a fast-typing user reset the
+      // failure climb every turn and keep it silent all the way to
+      // dead_letter.
       writeOwnerFileIfUnchanged(
         input.homeDir,
         payload.session_id,
         input.profileId,
-        cleared,
+        { ...cleared, failedDelivery: previousFailedDelivery },
         handled,
       );
       // Ownership held, nothing to deliver: stay silent so Claude Code adds
@@ -448,12 +476,17 @@ async function handlePromptSubmit(
       // In-process failure, not a kill: revert immediately so the next
       // prompt's ack cannot retire outcomes the model never saw. The rows
       // stay leased and expire back to pending server-side. Guarded: only if
-      // the on-disk record is still ours.
-      writeOwnerFileIfUnchanged(input.homeDir, payload.session_id, input.profileId, cleared, {
+      // the on-disk record is still ours. A repeat of this failure warns —
+      // see recordHandoffFailure.
+      recordHandoffFailure(
+        input,
+        payload.session_id,
+        cleared,
+        { ids, leaseToken },
+        previousFailedDelivery,
         ids,
-        leaseToken,
-      });
-      throw new ExpectedHookError(`inbox delivered failed: ${describe(error)}`);
+        `inbox delivered failed: ${describe(error)}`,
+      );
     }
     // Phase 2: the daemon committed the batch and the injection is about to
     // reach the model — promote the record to "delivered", the only phase a
@@ -489,6 +522,7 @@ async function handleStop(
     // before inbox.delivered committed — is discarded without acking, exactly
     // like on UserPromptSubmit.
     const file = readOwnerFile(input.homeDir, payload.session_id, input.profileId, warnings);
+    const previousFailedDelivery = file?.failedDelivery;
     let handled: HandledRecord = null;
     if (file && file.profileId === input.profileId && file.delivered) {
       if (file.delivered.phase === "delivered") {
@@ -558,20 +592,24 @@ async function handleStop(
         ownerSessionRefJson: file.ownerSessionRefJson,
       });
     } catch (error) {
-      writeOwnerFileIfUnchanged(
-        input.homeDir,
+      recordHandoffFailure(
+        input,
         payload.session_id,
-        input.profileId,
-        { ...file, delivered: null },
+        file,
         { ids, leaseToken: file.leaseToken },
+        previousFailedDelivery,
+        ids,
+        `inbox delivered failed: ${describe(error)}`,
       );
-      throw new ExpectedHookError(`inbox delivered failed: ${describe(error)}`);
     }
+    // Phase 2: the daemon committed the batch. A successful delivery clears
+    // the failure marker with the promotion (failedDelivery: undefined is
+    // dropped by JSON.stringify).
     writeOwnerFileIfUnchanged(
       input.homeDir,
       payload.session_id,
       input.profileId,
-      { ...file, delivered: { ...record, phase: "delivered" } },
+      { ...file, delivered: { ...record, phase: "delivered" }, failedDelivery: undefined },
       { ids, leaseToken: file.leaseToken },
     );
     return {
@@ -853,6 +891,57 @@ function outcomeLine(obligation: LeasedObligation): string {
   const assistantRef = safeToken(outcome.lastAssistantRef, ASSISTANT_REF_TOKEN);
   const ref = assistantRef ? ` · assistantRef: ${assistantRef}` : "";
   return `- ${type ?? "event"} ${identity} ${paneId} ${transition}\n  last assistant: ${excerpt}\n  event: ${outcome.eventId} · obligation: ${id}${ref}`;
+}
+
+/**
+ * A failed post-lease delivery handoff (`inbox.delivered` rejected, or — from
+ * round 4 — a lease response this build cannot render): the rows are leased
+ * server-side and unseen, the batch was already re-leased or is about to be,
+ * and every retry burns another attempt. classify + persist + throw:
+ *
+ * - FIRST failure on a batch: transient-class, silent. Daemon trouble may
+ *   self-heal; one burned attempt is the accepted cost of not nagging.
+ * - A failure on a batch sharing an obligation id with the previous failed
+ *   batch: PERSISTENT — the daemon keeps rejecting exactly these rows (the
+ *   realistic trigger is a daemon left running across a package upgrade that
+ *   no longer accepts this hook's params; claim/lease/ack keep working so
+ *   the pane looks connected). Every retry re-leases the same rows,
+ *   attempt_count climbs, and the fifth lease's sweep retires them to
+ *   dead_letter — outcomes the model never saw. Warn every turn until a
+ *   delivery succeeds.
+ *
+ * The marker (failedDelivery in the owner file) survives empty-lease turns,
+ * so turn spacing cannot reset the climb; it is cleared by the next
+ * successful delivery. A null `ids` means the batch itself was unreadable —
+ * treat any previous marker as continuing.
+ */
+function recordHandoffFailure(
+  input: ClaudeHookInput,
+  sessionId: string,
+  base: OwnerFile,
+  handled: HandledRecord,
+  previous: OwnerFile["failedDelivery"],
+  ids: string[] | null,
+  reason: string,
+): never {
+  const overlaps =
+    ids !== null
+      ? previous !== undefined && ids.some((id) => previous.ids.includes(id))
+      : previous !== undefined;
+  const attempts = (overlaps && previous ? previous.attempts : 0) + 1;
+  writeOwnerFileIfUnchanged(
+    input.homeDir,
+    sessionId,
+    input.profileId,
+    { ...base, delivered: null, failedDelivery: { attempts, ids: ids ?? [] } },
+    handled,
+  );
+  throw new ExpectedHookError(
+    reason,
+    overlaps
+      ? `shepy: profile ${plainText(input.profileId)} — outcome delivery has failed ${attempts} turns in a row; unseen outcomes will retire to dead_letter after 5 attempts. Check shepy inbox list ${plainText(input.profileId)} --state dead_letter`
+      : undefined,
+  );
 }
 
 function describe(error: unknown): string {
