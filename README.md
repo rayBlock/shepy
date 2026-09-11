@@ -87,6 +87,39 @@ Add the official Herdr skill when an agent needs to control workspaces, tabs, pa
 npx skills add ogulcancelik/herdr --skill herdr -g
 ```
 
+### Claude Code
+
+Claude Code reads skills from `~/.claude/skills/<name>/SKILL.md`. Link the repository skill so it stays current with the checkout:
+
+```bash
+mkdir -p ~/.claude/skills/shepy
+ln -sfn "$PWD/SKILL.md" ~/.claude/skills/shepy/SKILL.md
+```
+
+Claude Code loads skills at startup, so start a fresh session after installing or updating the link.
+
+### Claude Code hook bridge
+
+`shepy claude-hook --profile <profileId>` lets a Claude Code pane own a Shepy profile. The hook claims the profile at every turn, delivers pending worker outcomes as injected context on `UserPromptSubmit` (and on `Stop`, when outcomes arrive mid-turn), and acknowledges what each prompt consumed at the next turn boundary — on the following `UserPromptSubmit`, or on `Stop` when it runs. Each re-claim presents the lease token persisted in the owner file as proof of possession: a matching token re-claims immediately with a fresh token, while a stale one is refused only while the current lease is alive and the bridge recovers by itself once it lapses (lease + grace, 5 min + 30 s at defaults) — no operator action. When a claim is refused the hook says which situation applies through a `systemMessage`: a stale persisted token (wait for the lease to lapse) is a different line from another pane owning the profile (coordinate with the owner). Register it in `.claude/settings.json` yourself — Shepy never edits that file:
+
+```json
+{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"shepy claude-hook --profile <profileId>"}]}]}}
+```
+
+Register the `Stop` hook too — it is not optional, and the same command handles both events:
+
+```json
+{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"shepy claude-hook --profile <profileId>"}]}]}}
+```
+
+The hook only works for a Claude Code pane running inside Herdr: it reads `HERDR_PANE_ID` and `HERDR_WORKSPACE_ID` from the environment. Registered outside Herdr, it cannot claim anything — a stall, not a loss (nothing is leased) — and it says so through a `systemMessage` on every prompt, naming the missing variable, instead of staying silently deaf.
+
+Without the `Stop` hook delivery degrades in two visible ways: outcomes that arrive while the pane is working wait for the following prompt (on a pane that goes idle, that can mean they are never shown), and each delivery is only acknowledged one prompt later than necessary.
+
+Recovery is conditional, not guaranteed. The next prompt settles the recorded delivery only while the hook can read and write its owner file and the process is not killed mid-turn. The injected context is composed and runtime-shape-checked before the delivery record is promoted to acknowledged-able, so a daemon response this build cannot render degrades to a no-op instead of promoting a record for text that was never shown. A record that cannot prove the model saw a batch is discarded instead of acknowledged, and the batch is re-delivered — a duplicate, never a silent loss. The one remaining loss window is a process killed (or an unwritable stdout) in the narrow gap between the record's promotion and the injection reaching Claude Code; a stateless hook cannot close it, because stdout is its last side effect. When the hook cannot write its owner file (unwritable `SHEPY_HOME`, full disk, a symlink planted at the path), it says so through a `systemMessage` warning every turn — user-facing only, never model input — instead of failing silently; the stranded outcomes still march toward `dead_letter` on the daemon side until storage recovers. The same applies when the daemon accepts a lease but then repeatedly fails the delivery handoff (for example after an upgrade changed what the daemon accepts): the first failed handoff is treated as transient daemon trouble and stays silent, but from the second consecutive failure on the same rows the hook warns through a `systemMessage` every turn — before the unseen outcomes can retire to `dead_letter`. If outcomes seem to have vanished, check `shepy inbox list <profileId> --state dead_letter` and re-deliver with `shepy inbox retry <id>`.
+
+Delivery is at turn boundaries only. A Pi extension can interrupt an idle terminal; a hook cannot. If an outcome lands while a Claude pane sits idle with nothing queued, it waits for the next prompt — nothing polls in between.
+
 ### Orchi orchestration skill
 
 [Orchi](skills/orchi/SKILL.md) is an explicitly invoked lead-agent playbook for
