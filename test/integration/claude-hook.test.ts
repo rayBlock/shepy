@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { createAgentHistoryService } from "@/agent-history/service.js";
 import {
   CONTEXT_MAX_CHARS,
@@ -21,6 +21,7 @@ import {
   runClaudeHook,
 } from "@/cli/claude-hook.js";
 import { formatCliError, helpText, parseCliArgs } from "@/cli/shepy.js";
+import { ObservabilityRpcClient } from "@/daemon/client.js";
 import { ObservabilityRpcServer } from "@/daemon/observability-server.js";
 import { AgentContextSnapshotStore } from "@/db/agent-context-snapshots.js";
 import { AgentEventStore } from "@/db/agent-events.js";
@@ -257,14 +258,32 @@ function readOwnerFile(
   fixture: Fixture,
   profileId = "driffs",
 ): {
-  delivered: { ids: string[]; promptId: string | null } | null;
+  delivered: { ids: string[]; phase: "leased" | "delivered"; promptId: string | null } | null;
   leaseToken: string;
   ownerSessionRefJson: string;
 } {
   return JSON.parse(readFileSync(ownerFilePath(fixture, profileId), "utf8")) as {
-    delivered: { ids: string[]; promptId: string | null } | null;
+    delivered: { ids: string[]; phase: "leased" | "delivered"; promptId: string | null } | null;
     leaseToken: string;
     ownerSessionRefJson: string;
+  };
+}
+
+function hookClaimParams(): Record<string, string> {
+  return {
+    harnessKind: "claude",
+    harnessSessionRefJson: JSON.stringify({
+      agent: "claude",
+      kind: "id",
+      source: "herdr:claude",
+      value: SESSION_ID,
+    }),
+    herdrSessionName: "lane-b",
+    paneId: "w1:p1",
+    profileId: "driffs",
+    subscriberId: SESSION_ID,
+    terminalId: "w1:p1",
+    workspaceId: "w1",
   };
 }
 
@@ -327,6 +346,9 @@ describe("claude-hook UserPromptSubmit", () => {
       firstEventId + 1,
     ]);
     for (const row of delivered) expect(row.deliveredHarnessTurnId).toBe(PROMPT_ID);
+
+    // The record reached its final phase only after inbox.delivered committed.
+    expect(file.delivered?.phase).toBe("delivered");
 
     // The claim carries the exact identity the indexer emits for Claude agents.
     const owner = fixture.owners.get("driffs");
@@ -507,7 +529,11 @@ describe("claude-hook UserPromptSubmit", () => {
       ownerFilePath(fixture),
       `${JSON.stringify(
         {
-          delivered: { ids: ["00000000-0000-4000-8000-000000000000"], promptId: PROMPT_ID },
+          delivered: {
+            ids: ["00000000-0000-4000-8000-000000000000"],
+            phase: "delivered",
+            promptId: PROMPT_ID,
+          },
           leaseToken: "bogus-token",
           ownerSessionRefJson: real.ownerSessionRefJson,
           profileId: "driffs",
@@ -619,6 +645,176 @@ describe("claude-hook Stop", () => {
     const { code, stdout } = await runHook(fixture, stopPayload({ stop_hook_active: true }));
     expect(code).toBe(0);
     expect(stdout).toBe("");
+  });
+});
+
+describe("claude-hook owner-record crash consistency", () => {
+  test("a record stranded at phase leased by a crash is never acked; the outcome is re-delivered after expiry and acked only once seen", async () => {
+    const fixture = await openHookServer();
+    projectOutcome(fixture, "hook-crash", "crash window outcome");
+
+    // Simulate a hook process killed in the window between inbox.lease and
+    // inbox.delivered: claim + lease through the raw client, persist exactly
+    // the record the hook writes at phase "leased", then "die".
+    const client = new ObservabilityRpcClient({ socketPath: fixture.socketPath });
+    const claim = (await client.request("profile.claim", hookClaimParams())) as {
+      result?: { kind?: string; leaseToken?: string };
+    };
+    const crashToken = claim.result?.leaseToken;
+    expect(crashToken).toBeTruthy();
+    const lease = (await client.request("inbox.lease", {
+      leaseToken: crashToken ?? "",
+      maxBatch: 20,
+      profileId: "driffs",
+    })) as { obligations?: Array<{ id: string }> };
+    const crashIds = (lease.obligations ?? []).map((obligation) => obligation.id);
+    expect(crashIds).toHaveLength(1);
+    mkdirSync(dirname(ownerFilePath(fixture)), { recursive: true });
+    writeFileSync(
+      ownerFilePath(fixture),
+      `${JSON.stringify(
+        {
+          delivered: { ids: crashIds, phase: "leased", promptId: PROMPT_ID },
+          leaseToken: crashToken,
+          ownerSessionRefJson: hookClaimParams().harnessSessionRefJson,
+          profileId: "driffs",
+        },
+        null,
+        2,
+      )}\n`,
+      { mode: 0o600 },
+    );
+    client.close();
+
+    // The rows were only ever leased: never delivered, never seen, never acked.
+    expect(fixture.delivery.inboxList({ profileId: "driffs", state: "acked" })).toHaveLength(0);
+
+    // The next prompt runs after the 2-minute lease has expired. It must
+    // DISCARD the stranded leased-phase record (never ack it) and re-deliver
+    // the outcome — duplicate delivery is the correct failure mode, not loss.
+    const realLease = fixture.delivery.inboxLease.bind(fixture.delivery);
+    fixture.delivery.inboxLease = (input) => realLease({ ...input, now: Date.now() + 3 * 60_000 });
+    const next = await runHook(fixture, promptPayload({ prompt_id: "prompt-2" }));
+    fixture.delivery.inboxLease = realLease;
+    expect(next.code).toBe(0);
+    const context =
+      (JSON.parse(next.stdout) as { hookSpecificOutput?: { additionalContext?: string } })
+        .hookSpecificOutput?.additionalContext ?? "";
+    expect(context).toContain("crash window outcome");
+    expect(fixture.delivery.inboxList({ profileId: "driffs", state: "acked" })).toHaveLength(0);
+    const redelivered = fixture.delivery.inboxList({ profileId: "driffs", state: "delivered" });
+    expect(redelivered.map((row) => row.id).sort()).toEqual(crashIds);
+    // Leased by the killed process (attempt 1) and re-leased here (attempt 2).
+    expect(redelivered[0]?.attemptCount).toBe(2);
+    const file = readOwnerFile(fixture);
+    expect(file.delivered?.phase).toBe("delivered");
+    expect(file.delivered?.ids).toEqual(crashIds);
+
+    // Only the NEXT prompt — after the model actually saw the injection
+    // above — retires the rows to acked.
+    const after = await runHook(fixture, promptPayload({ prompt_id: "prompt-3" }));
+    expect(after.code).toBe(0);
+    expect(after.stdout).toBe("");
+    const acked = fixture.delivery.inboxList({ profileId: "driffs", state: "acked" });
+    expect(acked.map((row) => row.id).sort()).toEqual(crashIds);
+  });
+
+  test("the phase-leased record is persisted before inbox.delivered is attempted", async () => {
+    const fixture = await openHookServer();
+    projectOutcome(fixture, "hook-order", "ordering outcome");
+
+    // Capture the owner file at the exact moment the daemon handles
+    // inbox.delivered: the record must already exist, at phase "leased" —
+    // a crash in the RPC window has to leave a record that says "never seen",
+    // not one that says "seen" (or no record at all to reason about).
+    const realDelivered = fixture.delivery.inboxDelivered.bind(fixture.delivery);
+    const midWindowFiles: Array<{ delivered: unknown } | null> = [];
+    fixture.delivery.inboxDelivered = (input) => {
+      midWindowFiles.push(
+        existsSync(ownerFilePath(fixture))
+          ? (JSON.parse(readFileSync(ownerFilePath(fixture), "utf8")) as { delivered: unknown })
+          : null,
+      );
+      return realDelivered(input);
+    };
+
+    const { code } = await runHook(fixture, promptPayload());
+    expect(code).toBe(0);
+    expect(midWindowFiles).toHaveLength(1);
+    const midWindow = midWindowFiles[0];
+    expect(midWindow).not.toBeNull();
+    expect((midWindow as { delivered: { phase?: string } | null }).delivered?.phase).toBe("leased");
+    const file = readOwnerFile(fixture);
+    expect(file.delivered?.phase).toBe("delivered");
+  });
+
+  test("when inbox.delivered fails the record is reverted so the next prompt cannot ack unseen rows", async () => {
+    const fixture = await openHookServer();
+    projectOutcome(fixture, "hook-revert", "revert outcome");
+    fixture.delivery.inboxDelivered = () => {
+      throw new Error("simulated daemon failure");
+    };
+
+    const { code } = await runHook(fixture, promptPayload());
+    expect(code).toBe(0);
+    // The batch stays leased server-side: never delivered, never acked.
+    expect(fixture.delivery.inboxList({ profileId: "driffs", state: "leased" })).toHaveLength(1);
+    expect(fixture.delivery.inboxList({ profileId: "driffs", state: "delivered" })).toHaveLength(0);
+    expect(fixture.delivery.inboxList({ profileId: "driffs", state: "acked" })).toHaveLength(0);
+    // And the in-process revert cleared the record right away — cheaper than
+    // waiting for the lease to expire.
+    expect(readOwnerFile(fixture).delivered).toBeNull();
+  });
+
+  test("when inbox.delivered fails on Stop the record is reverted so the batch is not acked unseen", async () => {
+    const fixture = await openHookServer();
+    projectOutcome(fixture, "hook-stop-revert", "stop revert outcome");
+    await runHook(fixture, promptPayload());
+    projectOutcome(fixture, "hook-stop-revert-2", "stop revert outcome 2");
+
+    fixture.delivery.inboxDelivered = () => {
+      throw new Error("simulated daemon failure");
+    };
+    const { code } = await runHook(fixture, stopPayload({ prompt_id: "stop-1" }));
+    expect(code).toBe(0);
+    // Stop's ack of the prompt's own delivery succeeded before the failure;
+    // the stranded Stop batch stays leased (not delivered, not acked) and
+    // the record was reverted instead of left pointing at unseen rows.
+    expect(fixture.delivery.inboxList({ profileId: "driffs", state: "leased" })).toHaveLength(1);
+    expect(fixture.delivery.inboxList({ profileId: "driffs", state: "acked" })).toHaveLength(1);
+    expect(readOwnerFile(fixture).delivered).toBeNull();
+  });
+
+  test("a round-2 owner file without a phase field is discarded without acking", async () => {
+    const fixture = await openHookServer();
+    projectOutcome(fixture, "hook-v2", "round two outcome");
+    await runHook(fixture, promptPayload());
+    const real = readOwnerFile(fixture);
+
+    // Rewrite the record exactly as the previous round wrote it: no phase.
+    // The schema must reject that shape and the hook must treat it as
+    // unknown: discard without acking — never silently read it as delivered.
+    writeFileSync(
+      ownerFilePath(fixture),
+      `${JSON.stringify(
+        {
+          delivered: { ids: real.delivered?.ids, promptId: real.delivered?.promptId },
+          leaseToken: real.leaseToken,
+          ownerSessionRefJson: real.ownerSessionRefJson,
+          profileId: "driffs",
+        },
+        null,
+        2,
+      )}\n`,
+      { mode: 0o600 },
+    );
+
+    const { code } = await runHook(fixture, promptPayload({ prompt_id: "prompt-2" }));
+    expect(code).toBe(0);
+    expect(fixture.delivery.inboxList({ profileId: "driffs", state: "acked" })).toHaveLength(0);
+    // The rows stay delivered server-side; after lease expiry they come back
+    // as a duplicate — the accepted failure mode for an unknown record.
+    expect(fixture.delivery.inboxList({ profileId: "driffs", state: "delivered" })).toHaveLength(1);
   });
 });
 

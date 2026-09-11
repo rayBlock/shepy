@@ -21,14 +21,23 @@ import { ObservabilityRpcClient } from "@/daemon/client.js";
  * the conversation as Stop hook feedback). This bridge makes a Claude pane a
  * Shepy profile owner anyway. Every UserPromptSubmit re-claims the profile (a
  * same-subscriber re-claim always succeeds and returns a fresh token — that
- * is what makes a stateless hook viable), acknowledges the previous turn's
- * delivery from the persisted owner-file record, then leases the inbox once,
- * marks the batch delivered under the current prompt id, and emits a bounded
- * outcome summary as additionalContext. When worker outcomes arrive mid-turn,
- * the Stop hook delivers the same bounded summary — which continues the turn —
- * and also acknowledges the recorded delivery. Stop still acks earlier when it
- * runs, but nothing depends on it alone: a user interrupt skips Stop entirely,
+ * is what makes a stateless hook viable), settles the previous turn's
+ * owner-file record, then leases the inbox once, marks the batch delivered
+ * under the current prompt id, and emits a bounded outcome summary as
+ * additionalContext. When worker outcomes arrive mid-turn, the Stop hook
+ * delivers the same bounded summary — which continues the turn — and also
+ * settles the recorded delivery. Stop still settles earlier when it runs,
+ * but nothing depends on it alone: a user interrupt skips Stop entirely,
  * and the next UserPromptSubmit settles whatever is recorded.
+ *
+ * The owner-file record is a two-phase commit marker: it is written as
+ * phase "leased" before inbox.delivered is attempted and rewritten as
+ * phase "delivered" after it succeeds. Only a "delivered" record is ever
+ * acked. A crash between the two phases strands a "leased" record, which
+ * the next turn discards without acking — the rows stay leased server-side,
+ * expire, and are re-delivered. A duplicate delivery is the accepted cost;
+ * acking rows nobody ever saw (the round-2 single-phase record) destroyed
+ * them.
  *
  * Hard rules:
  *  - Exit 0 on every expected condition. The hook runs inside the user's turn
@@ -78,6 +87,15 @@ const ownerFileSchema = Type.Object(
       Type.Object(
         {
           ids: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
+          // Two-phase commit marker. "leased" = the batch was leased and this
+          // record written, but inbox.delivered has NOT committed: nobody has
+          // seen these outcomes. "delivered" = the daemon accepted the batch
+          // and the hook injected it: safe to ack. `phase` is REQUIRED on
+          // purpose — a record written by the previous round (no phase) fails
+          // this schema, reads back as null, and is discarded WITHOUT acking,
+          // which is the only safe reading of an unknown record. Never
+          // "upgrade" a phase-less record to delivered.
+          phase: Type.Union([Type.Literal("leased"), Type.Literal("delivered")]),
           promptId: Type.Union([Type.Null(), Type.String({ minLength: 1 })]),
         },
         { additionalProperties: false },
@@ -98,7 +116,11 @@ type HookPayload = {
 };
 
 type OwnerFile = {
-  delivered: { ids: string[]; promptId: string | null } | null;
+  delivered: {
+    ids: string[];
+    phase: "leased" | "delivered";
+    promptId: string | null;
+  } | null;
   leaseToken: string;
   ownerSessionRefJson: string;
   profileId: string;
@@ -229,27 +251,32 @@ async function handlePromptSubmit(payload: HookPayload, input: ClaudeHookInput):
     }
     const leaseToken = result.leaseToken;
 
-    // Ack the PREVIOUS turn's delivery from the persisted owner-file record
-    // before leasing anything new. This is the primary ack surface: Stop
-    // still acks earlier when it runs, but nothing may depend on it — a user
-    // interrupt skips Stop entirely, and older Claude Code builds omit
-    // prompt_id, which the old Stop-only correlation required.
+    // Settle the PREVIOUS turn's record before leasing anything new. This is
+    // the primary ack surface: Stop still acks earlier when it runs, but
+    // nothing may depend on it — a user interrupt skips Stop entirely, and
+    // older Claude Code builds omit prompt_id, which the old Stop-only
+    // correlation required. A "leased"-phase record is discarded, never
+    // acked: its process died before inbox.delivered committed, so nobody
+    // ever saw those rows.
     const previous = readOwnerFile(input.homeDir, payload.session_id, input.profileId);
     if (previous?.delivered) {
-      try {
-        await request("inbox.ack", {
-          ids: previous.delivered.ids,
-          leaseToken: previous.leaseToken,
-          profileId: input.profileId,
-        });
-      } catch (error) {
-        // Propagate: the record survives untouched and the next prompt
-        // retries the ack before anything new is delivered.
-        throw new ExpectedHookError(`inbox ack failed: ${describe(error)}`);
+      if (previous.delivered.phase === "delivered") {
+        try {
+          await request("inbox.ack", {
+            ids: previous.delivered.ids,
+            leaseToken: previous.leaseToken,
+            profileId: input.profileId,
+          });
+        } catch (error) {
+          // Propagate: the record survives untouched and the next prompt
+          // retries the ack before anything new is delivered.
+          throw new ExpectedHookError(`inbox ack failed: ${describe(error)}`);
+        }
       }
-      // A successful RPC settles the record either way: acked ids are done,
-      // and rejected ids are permanently fenced away from this token (their
-      // lease moved on), so keeping them would only block the next record.
+      // A successful ack settles the record either way (acked ids are done,
+      // rejected ids are permanently fenced away from this token), and a
+      // leased-phase record is discarded outright. Keeping either would only
+      // block the next record.
       previous.delivered = null;
     }
 
@@ -276,11 +303,20 @@ async function handlePromptSubmit(payload: HookPayload, input: ClaudeHookInput):
     }
 
     const ids = obligations.map((obligation) => obligation.id);
-    // Persist the record BEFORE committing inbox.delivered: a failed write
-    // must never leave rows marked delivered with no local ack record.
+    // Two-phase record, phase 1: persist the LEASED record BEFORE committing
+    // inbox.delivered. If the process dies inside the RPC round trip, the
+    // stranded record says "leased" — the next prompt discards it without
+    // acking, the rows expire server-side, and the outcome is re-delivered.
+    // Duplicate delivery is the correct failure mode here; acking an unseen
+    // batch would destroy it.
+    const record: NonNullable<OwnerFile["delivered"]> = {
+      ids,
+      phase: "leased",
+      promptId: payload.prompt_id ?? null,
+    };
     writeOwnerFile(input.homeDir, payload.session_id, input.profileId, {
       ...cleared,
-      delivered: { ids, promptId: payload.prompt_id ?? null },
+      delivered: record,
     });
     try {
       await request("inbox.delivered", {
@@ -290,12 +326,19 @@ async function handlePromptSubmit(payload: HookPayload, input: ClaudeHookInput):
         ownerSessionRefJson,
       });
     } catch (error) {
-      // The rows stay leased and expire back to pending server-side; drop the
-      // record so the next prompt's ack cannot retire outcomes the model
-      // never saw.
+      // In-process failure, not a kill: revert immediately so the next
+      // prompt's ack cannot retire outcomes the model never saw. The rows
+      // stay leased and expire back to pending server-side.
       writeOwnerFile(input.homeDir, payload.session_id, input.profileId, cleared);
       throw new ExpectedHookError(`inbox delivered failed: ${describe(error)}`);
     }
+    // Phase 2: the daemon committed the batch and the injection is about to
+    // reach the model — promote the record to "delivered", the only phase a
+    // later turn may ack.
+    writeOwnerFile(input.homeDir, payload.session_id, input.profileId, {
+      ...cleared,
+      delivered: { ...record, phase: "delivered" },
+    });
     input.writeStdout(
       JSON.stringify({
         hookSpecificOutput: {
@@ -313,25 +356,26 @@ async function handleStop(payload: HookPayload, input: ClaudeHookInput): Promise
   const client = new ObservabilityRpcClient({ socketPath: input.socketPath });
   try {
     const request = requestWithDeadline(client);
-    // Ack exactly what the owner file records as delivered and not yet
-    // settled. Fencing is per obligation (id + lease token), so the token
-    // from this turn's claim still acks even though Stop never re-claims.
-    // The record is keyed per session and profile, so no prompt_id
-    // correlation is needed — a user interrupt or an older Claude Code
-    // without prompt_id leaves nothing for the next prompt to clean up.
+    // Settle exactly what the owner file records. Fencing is per obligation
+    // (id + lease token), so the token from this turn's claim still acks even
+    // though Stop never re-claims. A "leased"-phase record — its process died
+    // before inbox.delivered committed — is discarded without acking, exactly
+    // like on UserPromptSubmit.
     const file = readOwnerFile(input.homeDir, payload.session_id, input.profileId);
     if (file && file.profileId === input.profileId && file.delivered) {
-      try {
-        await request("inbox.ack", {
-          ids: file.delivered.ids,
-          leaseToken: file.leaseToken,
-          profileId: input.profileId,
-        });
-        file.delivered = null;
-        writeOwnerFile(input.homeDir, payload.session_id, input.profileId, file);
-      } catch (error) {
-        throw new ExpectedHookError(`inbox ack failed: ${describe(error)}`);
+      if (file.delivered.phase === "delivered") {
+        try {
+          await request("inbox.ack", {
+            ids: file.delivered.ids,
+            leaseToken: file.leaseToken,
+            profileId: input.profileId,
+          });
+        } catch (error) {
+          throw new ExpectedHookError(`inbox ack failed: ${describe(error)}`);
+        }
       }
+      file.delivered = null;
+      writeOwnerFile(input.homeDir, payload.session_id, input.profileId, file);
     }
 
     // stop_hook_active guards the loop a Stop injection creates: injecting
@@ -351,9 +395,16 @@ async function handleStop(payload: HookPayload, input: ClaudeHookInput): Promise
     const obligations = lease.obligations ?? [];
     if (obligations.length === 0) return;
     const ids = obligations.map((obligation) => obligation.id);
+    // Two-phase record, same as UserPromptSubmit: persist "leased" before
+    // the commit, promote to "delivered" only after inbox.delivered succeeds.
+    const record: NonNullable<OwnerFile["delivered"]> = {
+      ids,
+      phase: "leased",
+      promptId: payload.prompt_id ?? null,
+    };
     writeOwnerFile(input.homeDir, payload.session_id, input.profileId, {
       ...file,
-      delivered: { ids, promptId: payload.prompt_id ?? null },
+      delivered: record,
     });
     try {
       await request("inbox.delivered", {
@@ -369,6 +420,10 @@ async function handleStop(payload: HookPayload, input: ClaudeHookInput): Promise
       });
       throw new ExpectedHookError(`inbox delivered failed: ${describe(error)}`);
     }
+    writeOwnerFile(input.homeDir, payload.session_id, input.profileId, {
+      ...file,
+      delivered: { ...record, phase: "delivered" },
+    });
     input.writeStdout(
       JSON.stringify({
         hookSpecificOutput: {
