@@ -7,6 +7,15 @@ import type { DatabaseSync } from "node:sqlite";
  * claim by a new terminal replaces it and invalidates the old lease token.
  */
 
+/**
+ * Lease defaults shared by claim and renew (vault §8.2). Renew MUST derive
+ * its expiry judgement from the same grace claim uses — the two paths decide
+ * "is this lease alive" at the same instants, or a heartbeat could revive a
+ * lease a claimant was entitled to take.
+ */
+const DEFAULT_LEASE_MS = 5 * 60_000;
+const DEFAULT_LEASE_GRACE_MS = 30_000;
+
 export type OwnerRow = {
   claimed_at: number;
   harness_kind: string;
@@ -37,10 +46,34 @@ export type ProfileOwner = {
   workspaceId: string | null;
 };
 
+/** A ProfileOwner with every capability stripped — the shape that may leave
+ * the daemon. The lease token authenticates release/renew/lease on its own,
+ * so anyone it is handed to could act as (or evict) the owner; only the
+ * holder it was minted for may ever see it. The subscriberId and the
+ * harness session ref are stripped too — NOT because they authenticate
+ * anything any more (they do not: the re-claim proof is the daemon-minted
+ * lease token, which no public surface serves), but because they are the
+ * owner's private session identity and no reader needs them. Callers
+ * display paneId/harnessKind/workspaceId; nothing else leaves the store. */
+export type PublicProfileOwner = Omit<
+  ProfileOwner,
+  "harnessSessionRefJson" | "leaseToken" | "subscriberId"
+>;
+
+export function toPublicProfileOwner(owner: ProfileOwner): PublicProfileOwner {
+  const {
+    harnessSessionRefJson: _harnessSessionRefJson,
+    leaseToken: _leaseToken,
+    subscriberId: _subscriberId,
+    ...publicOwner
+  } = owner;
+  return publicOwner;
+}
+
 export type ClaimResult =
   | { kind: "claimed"; leaseToken: string; owner: ProfileOwner }
   | { kind: "reclaimed"; leaseToken: string; owner: ProfileOwner }
-  | { kind: "rejected"; reason: "lease_active"; owner: ProfileOwner };
+  | { kind: "rejected"; reason: "lease_active"; owner: PublicProfileOwner };
 
 export class ProfileOwnerStore {
   readonly #sqlite: DatabaseSync;
@@ -52,13 +85,22 @@ export class ProfileOwnerStore {
   }
 
   /**
-   * Claim ownership. Rules (§8.2):
-   *  - same subscriber re-claiming (reconnect) → new lease token, grace preserved;
-   *  - a different subscriber may claim only after the current lease expired
-   *    (the reconnect grace) — otherwise rejected with the active owner;
+   * Claim ownership. Rules (§8.2, as of the F3-1 fix):
+   *  - a claim presenting the CURRENT lease token takes the fast path:
+   *    proof of possession — the daemon minted that token and only gave it
+   *    to the holder, so no amount of public metadata helps a rival;
+   *  - any claim without the current token waits out the lease: rejected
+   *    while `lease_expires_at + grace` is in the future, allowed once it
+   *    has lapsed. Identity equality (subscriberId, session ref) proves
+   *    NOTHING on its own — both halves are public or reconstructible from
+   *    public RPC (the F3-1 takeover chain), so they authenticate nobody.
    *  - any successful claim invalidates the previous lease token.
    */
   claim(input: {
+    /** The lease token the claimant currently holds, if any. MUST equal the
+     * live owner's token to take the fast path; omitted or stale means the
+     * expiry rule applies. This is the re-claim proof of possession. */
+    currentLeaseToken?: string;
     graceMs?: number;
     harnessKind: string;
     harnessSessionRefJson: string;
@@ -71,14 +113,27 @@ export class ProfileOwnerStore {
     workspaceId?: string | null;
   }): ClaimResult {
     const now = this.#now();
-    const leaseMs = input.leaseMs ?? 5 * 60_000;
-    const graceMs = input.graceMs ?? 30_000;
+    const leaseMs = input.leaseMs ?? DEFAULT_LEASE_MS;
+    const graceMs = input.graceMs ?? DEFAULT_LEASE_GRACE_MS;
     const existing = this.get(input.profileId);
     if (existing) {
-      const sameSubscriber = existing.subscriberId === input.subscriberId;
+      // Proof of possession, not proof of identity: the subscriber id and
+      // the harness session ref are deliberately excluded from this check
+      // because both are public by design (agent rows serve session refs;
+      // the reviewer reconstructed the whole credential from two
+      // unauthenticated reads). Only the token the daemon minted for the
+      // current holder authenticates a same-lease re-claim. Identity is
+      // not even an additional requirement: a holder that legitimately
+      // lost its identity halves (e.g. a hook whose persisted token
+      // outlives its session id) must still take the fast path.
+      const holdsLease =
+        input.currentLeaseToken !== undefined && input.currentLeaseToken === existing.leaseToken;
       const leaseAlive = existing.leaseExpiresAt + graceMs > now;
-      if (!sameSubscriber && leaseAlive) {
-        return { kind: "rejected", owner: existing, reason: "lease_active" };
+      if (!holdsLease && leaseAlive) {
+        // The active owner's identity is public; its token is not. A
+        // rejected claimant must never receive the capability that
+        // release() authenticates on.
+        return { kind: "rejected", owner: toPublicProfileOwner(existing), reason: "lease_active" };
       }
     }
     const leaseToken = randomUUID();
@@ -128,7 +183,13 @@ export class ProfileOwnerStore {
   renew(input: { leaseToken: string; profileId: string; leaseMs?: number }): boolean {
     const owner = this.get(input.profileId);
     if (!owner || owner.leaseToken !== input.leaseToken) return false;
-    const expiresAt = this.#now() + (input.leaseMs ?? 5 * 60_000);
+    // A lease that already lapsed past lease + grace is dead even when
+    // nobody contested the lapse: claim would hand the profile to the next
+    // claimant at exactly this instant, so a returning owner's heartbeat
+    // must fail closed — token equality alone would silently resurrect an
+    // expired lease no sweeper ever removes.
+    if (owner.leaseExpiresAt + DEFAULT_LEASE_GRACE_MS <= this.#now()) return false;
+    const expiresAt = this.#now() + (input.leaseMs ?? DEFAULT_LEASE_MS);
     this.#sqlite
       .prepare(
         "update profile_owners set lease_expires_at = ?, last_seen_at = ? where profile_id = ?",

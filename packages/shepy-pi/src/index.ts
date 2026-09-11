@@ -1,3 +1,6 @@
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { createHash } from "node:crypto";
+import { Type } from "typebox";
 import { agentIdentityLabel } from "./agent-display.js";
 import {
   type AgentContextListItem,
@@ -148,6 +151,42 @@ type CommandOptions = {
   handler(args: string, ctx: PiContext): Promise<void>;
 };
 
+/** Transcript-facing results for the shepy_profile tool. The claim's lease
+ * token is a capability and must NEVER ride in these — tool content lands in
+ * the model's transcript. */
+export type ShepyProfileClaimResult =
+  | { kind: "claimed"; profileId: string }
+  | { kind: "reclaimed"; profileId: string }
+  | {
+      kind: "rejected";
+      owner: { harnessKind: string; paneId: string } | undefined;
+      profileId: string;
+    }
+  | { kind: "blocked"; profileId: string; reason: string };
+
+export type ShepyProfileReleaseResult =
+  | { kind: "released"; profileId: string }
+  | { kind: "not_owned" };
+
+export type ShepyProfileStatusResult = {
+  connected: boolean;
+  kind: "status";
+  owned: boolean;
+  pendingCount?: number | undefined;
+  profileId?: string | undefined;
+};
+
+/** The context the profile-owner path actually touches. Both the command
+ * handler's PiContext and a tool execute()'s ExtensionContext satisfy it, so
+ * /shepy on and shepy_profile share the claim logic without casts. */
+type ProfileActionContext = {
+  isIdle?: () => boolean;
+  ui: {
+    notify?: (message: string, level?: "error" | "info" | "warning") => void;
+    setStatus?: (key: string, value?: string) => void;
+  };
+};
+
 type PiApi = {
   appendEntry?: (customType: string, data: unknown) => void;
   on: (eventName: string, handler: (...args: any[]) => unknown) => void;
@@ -156,7 +195,7 @@ type PiApi = {
     customType: string,
     renderer: typeof renderAgentUpdateMessage,
   ) => void;
-  registerTool?: (tool: unknown) => void;
+  registerTool?: (tool: ToolDefinition) => void;
   sendMessage?: (
     message: { content: string; customType: string; details?: unknown; display: boolean },
     options?: { deliverAs?: "steer" | "followUp" | "nextTurn"; triggerTurn?: boolean },
@@ -214,7 +253,7 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
     let activeContext: PiContext | undefined;
     let wakeGeneration = 0;
 
-    const setShepyUi = (ctx: PiContext | undefined) => {
+    const setShepyUi = (ctx: ProfileActionContext | undefined) => {
       if (!ctx) return;
       const footerState: ShepyFooterState = state.reconnectingFromOn
         ? { kind: "reconnecting" }
@@ -432,7 +471,9 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
       state.profileTimer = undefined;
     };
 
-    const releaseProfile = async (ctx: PiContext | undefined) => {
+    const releaseProfile = async (
+      ctx: ProfileActionContext | undefined,
+    ): Promise<ShepyProfileReleaseResult> => {
       const mode = state.profileMode;
       stopProfileTimer();
       state.profileMode = undefined;
@@ -446,17 +487,52 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
         }
       }
       setShepyUi(ctx);
+      if (!mode) return { kind: "not_owned" };
+      return { kind: "released", profileId: mode.profileId };
     };
 
-    const startProfilePump = (ctx: PiContext | undefined) => {
+    const startProfilePump = (ctx: ProfileActionContext | undefined) => {
       stopProfileTimer();
       state.profileTimer = setInterval(() => void pumpProfile(activeContext ?? ctx), 10_000);
       void pumpProfile(ctx);
     };
 
-    const pumpProfile = async (ctx: PiContext | undefined) => {
+    const pumpProfile = async (ctx: ProfileActionContext | undefined) => {
       const mode = state.profileMode;
       if (!mode || !state.client || !state.connected) return;
+      // Heartbeat FIRST, before every work gate: a busy owner (wake in
+      // flight, user run active) must keep renewing, or any run longer than
+      // the lease would let another subscriber claim a perfectly alive
+      // owner's profile. `renewed:false` is final — ownership was moved on
+      // or forfeited: stop the timer, clear profile mode, notify once. No
+      // retry, no automatic re-claim; reclaiming is an explicit act. The
+      // cleanup revalidates first: this tick's captured mode may already be
+      // STALE — a same-profile re-claim (env re-claim on reconnect, /shepy
+      // on, the tool) can install a new lease while our renew is in flight,
+      // and the FIFO daemon then answers the stale renew renewed:false AFTER
+      // the newer claim — and two overlapping stale ticks must not clean up
+      // (or notify) twice.
+      try {
+        const renew = (await state.client.request("profile.renew", {
+          leaseToken: mode.leaseToken,
+          profileId: mode.profileId,
+        })) as { renewed?: boolean };
+        if (renew.renewed === false) {
+          if (
+            state.profileMode?.profileId === mode.profileId &&
+            state.profileMode.leaseToken === mode.leaseToken
+          ) {
+            stopProfileTimer();
+            state.profileMode = undefined;
+            if (state.profileBatch) state.profileBatch.invalidated = true;
+            ctx?.ui.notify?.(`Shepy · profile ${mode.profileId} ownership lost`, "warning");
+            setShepyUi(ctx);
+          }
+          return;
+        }
+      } catch {
+        // transient daemon error: the timer retries; the lease stays as-is
+      }
       if (state.profileBatch || state.deliveredBatch) return;
       if (state.runActive || ctx?.isIdle?.() === false) return;
       // Serialize ticks per (profile, lease): while one lease RPC is in
@@ -505,7 +581,7 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
      */
     const pumpProfileOwned = async (
       mode: { leaseToken: string; pendingCount: number; profileId: string },
-      ctx: PiContext | undefined,
+      ctx: ProfileActionContext | undefined,
     ) => {
       const client = state.client;
       if (!client) return;
@@ -630,9 +706,19 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
           triggerQueued: true,
           wakeConsumed: false,
         };
+        // Correlation id for the daemon's own bookkeeping. NEVER the
+        // subscriber id: deliveredHarnessTurnId rides on inbox.list rows
+        // (unauthenticated), and the subscriber id is a re-claim credential
+        // half — the F3-1 shorter chain read it straight off the listing.
+        // A digest of the batch's obligation ids identifies this delivery
+        // turn without identifying the subscriber.
+        const harnessTurnId = createHash("sha256")
+          .update([...ids].sort().join("\n"))
+          .digest("hex")
+          .slice(0, 24);
         try {
           await client.request("inbox.delivered", {
-            harnessTurnId: state.subscriberId ?? "pi",
+            harnessTurnId,
             ids,
             leaseToken: mode.leaseToken,
             ownerSessionRefJson: JSON.stringify(state.sessionRef ?? {}),
@@ -814,18 +900,30 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
       return registration;
     };
 
-    const handleProfileOn = async (profileId: string, ctx: PiContext) => {
+    const handleProfileOn = async (
+      profileId: string,
+      ctx: ProfileActionContext,
+    ): Promise<ShepyProfileClaimResult> => {
       if (!state.launchIdentity || !state.sessionRef || !state.subscriberId) {
         ctx.ui.notify?.(HERDR_REQUIRED_MESSAGE, "error");
-        return;
+        return { kind: "blocked", profileId, reason: HERDR_REQUIRED_MESSAGE };
       }
       if (!state.client || !state.connected) {
         ctx.ui.notify?.(RECONNECTING_MESSAGE, "warning");
-        return;
+        return { kind: "blocked", profileId, reason: RECONNECTING_MESSAGE };
       }
       try {
         state.roleMutationInFlight = true;
+        // Proof of possession: a re-claim of the profile this pane already
+        // owns presents the daemon-minted token it is still holding. Only
+        // the exact current token takes the fast path — identity halves are
+        // public by design and authenticate nothing — so a pane whose token
+        // was lost (fresh process, evicted row) simply waits out the lease
+        // like any rival instead of impersonating the owner.
+        const currentLeaseToken =
+          state.profileMode?.profileId === profileId ? state.profileMode.leaseToken : undefined;
         const claim = (await state.client.request("profile.claim", {
+          ...(currentLeaseToken !== undefined ? { currentLeaseToken } : {}),
           harnessKind: "pi",
           harnessSessionRefJson: JSON.stringify(state.sessionRef),
           herdrSessionName: state.currentScope?.herdrSessionName ?? "default",
@@ -834,18 +932,29 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
           subscriberId: state.subscriberId,
           terminalId: state.launchIdentity.paneId,
           workspaceId: state.launchIdentity.workspaceId,
-        })) as { result?: { kind?: string; leaseToken?: string } };
+        })) as {
+          result?: {
+            kind?: string;
+            leaseToken?: string;
+            owner?: { harnessKind?: string; paneId?: string };
+          };
+        };
         const result = claim.result ?? {};
         if (result.kind !== "claimed" && result.kind !== "reclaimed") {
+          const owner =
+            result.owner?.paneId && result.owner.harnessKind
+              ? { harnessKind: result.owner.harnessKind, paneId: result.owner.paneId }
+              : undefined;
           ctx.ui.notify?.(
             `Shepy profile claim rejected (${result.kind ?? "unknown"}) — the active owner's lease must expire first`,
             "error",
           );
-          return;
+          return { kind: "rejected", owner, profileId };
         }
         if (!result.leaseToken) {
-          ctx.ui.notify?.("Shepy profile claim returned no lease token", "error");
-          return;
+          const reason = "Shepy profile claim returned no lease token";
+          ctx.ui.notify?.(reason, "error");
+          return { kind: "blocked", profileId, reason };
         }
         if (state.profileMode && state.profileMode.profileId !== profileId) {
           await releaseProfile(ctx);
@@ -853,8 +962,11 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
         state.profileMode = { leaseToken: result.leaseToken, pendingCount: 0, profileId };
         ctx.ui.notify?.(`Shepy · profile ${profileId} claimed`, "info");
         startProfilePump(ctx);
+        return { kind: result.kind, profileId };
       } catch (error) {
-        ctx.ui.notify?.(error instanceof Error ? error.message : String(error), "error");
+        const reason = error instanceof Error ? error.message : String(error);
+        ctx.ui.notify?.(reason, "error");
+        return { kind: "blocked", profileId, reason };
       } finally {
         state.roleMutationInFlight = false;
       }
@@ -876,7 +988,10 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
           ctx.ui.notify?.(COMMAND_USAGE, "warning");
           return;
         }
-        if (action === "on" && profileArg) return handleProfileOn(profileArg, ctx);
+        if (action === "on" && profileArg) {
+          await handleProfileOn(profileArg, ctx);
+          return;
+        }
         if (action === "off" && state.profileMode) {
           void releaseProfile(ctx);
           ctx.ui.notify?.("Shepy profile released", "info");
@@ -914,6 +1029,70 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
       },
     });
 
+    // The model's claim surface: /shepy on <profile> without the keyboard.
+    // Shares handleProfileOn/releaseProfile with the command path — the claim
+    // RPC exists in exactly one place. The tool result NEVER carries the
+    // lease token: tool content lands in the model's transcript, and the
+    // token is a capability.
+    const shepyProfileParameters = Type.Object({
+      action: Type.Union([Type.Literal("claim"), Type.Literal("release"), Type.Literal("status")]),
+      profileId: Type.Optional(Type.String({ description: "Required when action is claim" })),
+    });
+
+    const shepyProfileTool: ToolDefinition<typeof shepyProfileParameters> = {
+      description:
+        "Claim, release, or report Shepy profile ownership for this agent. Claiming never takes a profile away from a live owner.",
+      label: "Shepy profile",
+      name: "shepy_profile",
+      parameters: shepyProfileParameters,
+      promptGuidelines: [
+        "Call shepy_profile with action 'claim' and the profileId named in your instructions when you are told which Shepy profile you own.",
+        "A shepy_profile claim rejection names the current owner and is final — do not retry shepy_profile in a loop.",
+        "Call shepy_profile with action 'release' when you no longer need the Shepy profile, or action 'status' to check current ownership.",
+      ],
+      promptSnippet: "shepy_profile — claim or release Shepy profile ownership for this agent",
+      async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+        const text = (value: string) => ({
+          content: [{ type: "text" as const, text: value }],
+          details: {},
+        });
+        const action = resolveShepyProfileToolAction(params);
+        if (!action.ok) return text(action.message);
+        if (action.action === "claim") {
+          return text(formatShepyProfileToolText(await handleProfileOn(action.profileId, ctx)));
+        }
+        if (action.action === "release") {
+          return text(formatShepyProfileToolText(await releaseProfile(ctx)));
+        }
+        return text(
+          formatShepyProfileToolText({
+            connected: state.connected,
+            kind: "status",
+            owned: state.profileMode !== undefined,
+            ...(state.profileMode
+              ? {
+                  pendingCount: state.profileMode.pendingCount,
+                  profileId: state.profileMode.profileId,
+                }
+              : {}),
+          }),
+        );
+      },
+    };
+    pi.registerTool?.(shepyProfileTool);
+
+    const claimFromEnvironment = async (ctx: PiContext) => {
+      const profileId = stringValue(process.env.SHEPY_PROFILE)?.trim() ?? "";
+      if (!profileId) return;
+      // Dispatched panes own their profile without anyone typing. The claim
+      // path notifies exactly like /shepy on <profile>; a rejection leaves
+      // the pane unowned and is never retried on a timer — the only later
+      // attempt is the next presence registration (reconnect) or an
+      // explicit /shepy on / shepy_profile claim. handleProfileOn swallows
+      // transport errors into its result, so this never rejects the socket.
+      await handleProfileOn(profileId, ctx);
+    };
+
     pi.on("session_start", (_event: unknown, ctx: PiContext) => {
       activeContext = ctx;
       state.subscriberId = ctx.sessionManager.getSessionId();
@@ -932,7 +1111,7 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
       state.client?.close();
       const client = options.clientFactory?.() ?? new ReconnectingDaemonClient({ socketPath: defaultSocketPath() });
       state.client = client;
-      client.onConnected = () => registerPresence(ctx);
+      client.onConnected = () => registerPresence(ctx).then(() => claimFromEnvironment(ctx));
       client.onDisconnected = () => {
         state.connected = false;
         markDisconnected(activeContext);
@@ -1136,6 +1315,62 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
 }
 
 export default createShepyPiExtension();
+
+// ── shepy_profile tool: pure validation + transcript-facing mapping ────
+// execute() is a thin shell over these; they touch no extension state, so
+// the tool's argument contract and result text are unit-testable as-is.
+
+export function resolveShepyProfileToolAction(params: {
+  action: string;
+  profileId?: string | undefined;
+}):
+  | { ok: false; message: string }
+  | { ok: true; action: "claim"; profileId: string }
+  | { ok: true; action: "release" | "status" } {
+  if (params.action === "claim") {
+    const profileId = params.profileId?.trim() ?? "";
+    if (!profileId) {
+      return {
+        message: "shepy_profile claim requires profileId — the profile your instructions name as yours",
+        ok: false,
+      };
+    }
+    return { action: "claim", ok: true, profileId };
+  }
+  if (params.action === "release" || params.action === "status") {
+    return { action: params.action, ok: true };
+  }
+  return { message: `shepy_profile: unknown action ${params.action}`, ok: false };
+}
+
+export function formatShepyProfileToolText(
+  result: ShepyProfileClaimResult | ShepyProfileReleaseResult | ShepyProfileStatusResult,
+): string {
+  switch (result.kind) {
+    case "claimed":
+      return `Shepy profile ${result.profileId} claimed — this pane now owns it and receives its worker outcomes.`;
+    case "reclaimed":
+      return `Shepy profile ${result.profileId} reclaimed — this pane already owned it; ownership refreshed.`;
+    case "rejected": {
+      const owner = result.owner
+        ? `It is held by pane ${result.owner.paneId} (${result.owner.harnessKind}). `
+        : "";
+      return `Shepy profile ${result.profileId} was not claimed — an active owner holds it. ${owner}Ownership is never taken from a live owner. Do not retry; tell the user if you expected to own it.`;
+    }
+    case "blocked":
+      return `Shepy profile ${result.profileId} was not claimed: ${result.reason}.`;
+    case "released":
+      return `Shepy profile ${result.profileId} released — this pane no longer owns it.`;
+    case "not_owned":
+      return "This pane owns no Shepy profile.";
+    case "status": {
+      const connection = result.connected ? "daemon connected" : "daemon disconnected";
+      if (!result.owned) return `Shepy profile: none · ${connection}`;
+      const pending = result.pendingCount ? ` · ${result.pendingCount} pending` : "";
+      return `Shepy profile: ${result.profileId}${pending} · ${connection}`;
+    }
+  }
+}
 
 export function formatHiddenAgentContext(input: {
   agents: AgentContextListItem[];

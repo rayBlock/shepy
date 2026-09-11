@@ -164,6 +164,12 @@ export const agentOrchestratorAckInputSchema = Type.Object(
 
 export const profileClaimInputSchema = Type.Object(
   {
+    // Proof of possession for a same-lease re-claim: the daemon-minted
+    // token the claimant currently holds. Only an exact match against the
+    // live owner's token takes the fast path; omitted or stale, the claim
+    // waits out the lease. Identity fields are public by design and
+    // authenticate nothing.
+    currentLeaseToken: Type.Optional(Type.String({ minLength: 1 })),
     harnessKind: Type.String({ minLength: 1 }),
     harnessSessionRefJson: Type.String({ minLength: 1 }),
     herdrSessionName: Type.String({ minLength: 1 }),

@@ -4,6 +4,7 @@ import type { AgentStore } from "@/db/agents.js";
 import type { DeliveryObligationStore, Obligation } from "@/db/delivery-obligations.js";
 import type { OrchestratorProfileStore } from "@/db/orchestrator-profiles.js";
 import type { ProfileOwnerStore } from "@/db/profile-owners.js";
+import { type PublicProfileOwner, toPublicProfileOwner } from "@/db/profile-owners.js";
 import type { AgentEventRecord, AgentEventType } from "./contracts.js";
 import {
   parseAgentSelector,
@@ -221,17 +222,38 @@ export class ProfileDeliveryService {
     return this.#owners.release(input);
   }
 
-  owner(profileId: string) {
-    return this.#owners.get(profileId);
+  /** The active owner's public identity — never its lease token, which is
+   * a capability only the holder may hold. Served over profile.owner. */
+  owner(profileId: string): PublicProfileOwner | undefined {
+    const owner = this.#owners.get(profileId);
+    return owner ? toPublicProfileOwner(owner) : undefined;
   }
 
   // ── Inbox surface (the Phase 4 bridge consumes exactly this) ──────────
 
-  /** Expire stranded leases, then lease the oldest pending batch. */
+  /**
+   * Expire stranded leases, then lease the oldest pending batch.
+   *
+   * Leasing is a mutation — it stamps rows, increments attempts and removes
+   * the batch from every other harness's reach — so it is fenced to the
+   * token that currently owns the profile. A stale token (superseded by a
+   * re-claim) or an arbitrary string is refused outright; before this fence
+   * any presented token could pull a profile's pending batch under itself,
+   * double-delivering it beside the legitimate owner's pump. Ack/delivered/
+   * nack need no such fence: they can only touch rows already stamped with
+   * the presented token, so their authority is the stamp, not live
+   * ownership (inboxAck documents the superseded-token decision).
+   */
   inboxLease(input: { leaseToken: string; maxBatch?: number; now?: number; profileId: string }): {
     expired: number;
     obligations: Array<Obligation & { outcome: InboxOutcomeSnapshot | null }>;
   } {
+    const owner = this.#owners.get(input.profileId);
+    if (!owner || owner.leaseToken !== input.leaseToken) {
+      throw new Error(
+        `inbox.lease refused: the presented lease token is not the active owner of profile ${input.profileId}`,
+      );
+    }
     const sweep = this.#obligations.sweepExpired({
       ...(input.now !== undefined ? { now: input.now } : {}),
       profileId: input.profileId,
@@ -305,8 +327,23 @@ export class ProfileDeliveryService {
     return this.#obligations.nack(input);
   }
 
+  /**
+   * Read surface — and the token boundary for every obligation row that
+   * leaves the daemon. inbox.list presents no credential at all, so no row
+   * it serves may carry one: a lease token authenticates release/renew/
+   * lease on its own, and this path is reachable by every daemon client.
+   * deliveredHarnessTurnId is redacted for the same reason: the Pi owner
+   * used to fill it with its subscriberId (F3-1's shorter takeover chain),
+   * and it is the owner's own delivery correlation — no reader needs it.
+   * The only read that may still carry a token is inboxLease, which serves
+   * exclusively rows stamped with the token the caller itself presented.
+   */
   inboxList(input: { limit?: number; profileId: string; state?: Obligation["state"] }) {
-    return this.#obligations.list(input);
+    return this.#obligations.list(input).map((obligation) => ({
+      ...obligation,
+      deliveredHarnessTurnId: null as null,
+      leaseToken: null as null,
+    }));
   }
 
   /** Operator retire — see DeliveryObligationStore.retire. */

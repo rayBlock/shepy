@@ -67,10 +67,15 @@ export async function runObservabilityDaemonService(
     transport: orchestrationTransport,
   });
   const operationWait = new OperationWaitService({ operations: operationStore });
+  const obligations = new DeliveryObligationStore(sqlite);
+  // Upgrade fence (review F3-2): any lease stamp made by the pre-fence,
+  // unfenced inbox.lease dies here, once, before the RPC surface exists —
+  // rows return to pending and are re-delivered, never dropped.
+  obligations.invalidateAllLeases();
   const deliveryService = new ProfileDeliveryService({
     agentEvents,
     agents,
-    obligations: new DeliveryObligationStore(sqlite),
+    obligations,
     owners: new ProfileOwnerStore({ sqlite }),
     profiles: orchestratorProfiles,
   });
