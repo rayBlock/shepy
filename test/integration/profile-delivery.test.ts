@@ -1038,11 +1038,11 @@ describe("profile.renew RPC (owner lease heartbeat)", () => {
       clock += 31_000;
       // A healthy owner must NOT lose the profile just because time passed.
       const contested = (await client.request("profile.claim", CLAIM_PANE_Y)) as {
-        result: { kind: string; owner?: { paneId: string; subscriberId: string }; reason?: string };
+        result: { kind: string; owner?: { paneId: string; harnessKind: string }; reason?: string };
       };
       expect(contested.result).toMatchObject({
         kind: "rejected",
-        owner: { paneId: "wX:p1", subscriberId: "sub-1" },
+        owner: { paneId: "wX:p1", harnessKind: "pi" },
         reason: "lease_active",
       });
     } finally {
@@ -1189,7 +1189,6 @@ describe("profile.renew RPC (owner lease heartbeat)", () => {
         owner: {
           paneId: "wX:p1",
           harnessKind: "pi",
-          subscriberId: "sub-1",
           terminalId: "tX",
         },
       });
@@ -1198,7 +1197,88 @@ describe("profile.renew RPC (owner lease heartbeat)", () => {
         owner: unknown;
       };
       expect(JSON.stringify(owner)).not.toContain(ownerToken);
-      expect(owner.owner).toMatchObject({ paneId: "wX:p1", subscriberId: "sub-1" });
+      expect(owner.owner).toMatchObject({ paneId: "wX:p1", harnessKind: "pi" });
+    } finally {
+      client.close();
+      await server.stop();
+      built.sqlite.close();
+    }
+  });
+
+  test("the A2-2 attack: the leaked subscriberId must not mint a token one step removed", async () => {
+    let clock = 1_000_000;
+    const { built, client, server } = await rpcFixture({ now: () => clock });
+    try {
+      const claim = (await client.request("profile.claim", CLAIM_PANE_X)) as {
+        result: { kind: string; leaseToken: string };
+      };
+      expect(claim.result.kind).toBe("claimed");
+
+      // The public owner row is the disclosure round 2 stopped at: a rival
+      // reads profile.owner, takes its subscriberId, and re-presents it with
+      // its OWN pane, terminal and session ref. subscriberId equality alone
+      // must not authenticate a re-claim — the harness session ref is the
+      // second half of the credential, and it cannot be guessed from the
+      // public row.
+      const spoof = (await client.request("profile.claim", {
+        ...CLAIM_PANE_Y,
+        subscriberId: CLAIM_PANE_X.subscriberId,
+        harnessSessionRefJson: '{"steal":true}',
+      })) as { result: { kind: string; leaseToken?: string } };
+      expect(spoof.result).toMatchObject({ kind: "rejected", reason: "lease_active" });
+      expect(spoof.result.leaseToken).toBeUndefined();
+      // ...and the owner was not evicted: its own heartbeat still works.
+      await expect(
+        client.request("profile.renew", {
+          leaseToken: claim.result.leaseToken,
+          profileId: "driffs",
+        }),
+      ).resolves.toEqual({ renewed: true });
+
+      // The legitimate reconnect path (same subscriber, same harness session
+      // ref) must keep working.
+      clock += 60_000;
+      const reconnect = (await client.request("profile.claim", CLAIM_PANE_X)) as {
+        result: { kind: string; leaseToken: string };
+      };
+      expect(reconnect.result.kind).toBe("reclaimed");
+      expect(reconnect.result.leaseToken).toBeTruthy();
+    } finally {
+      client.close();
+      await server.stop();
+      built.sqlite.close();
+    }
+  });
+
+  test("profile.owner and a rejected claim never disclose the owner's subscriberId", async () => {
+    const clock = 1_000_000;
+    const { built, client, server } = await rpcFixture({ now: () => clock });
+    try {
+      const claim = (await client.request("profile.claim", CLAIM_PANE_X)) as {
+        result: { kind: string; leaseToken: string };
+      };
+      expect(claim.result.kind).toBe("claimed");
+      const rejected = (await client.request("profile.claim", CLAIM_PANE_Y)) as {
+        result: { kind: string; owner?: Record<string, unknown> };
+      };
+      expect(rejected.result).toMatchObject({
+        kind: "rejected",
+        reason: "lease_active",
+        owner: { paneId: "wX:p1", harnessKind: "pi", terminalId: "tX" },
+      });
+      // The subscriberId and the harness session ref together are the
+      // re-claim credential (A2-2); neither is display data the extension
+      // reads, and neither is public surface.
+      expect(JSON.stringify(rejected)).not.toContain(CLAIM_PANE_X.subscriberId);
+      expect(rejected.result.owner).not.toHaveProperty("subscriberId");
+      expect(rejected.result.owner).not.toHaveProperty("harnessSessionRefJson");
+      const owner = (await client.request("profile.owner", { profileId: "driffs" })) as {
+        owner: Record<string, unknown> | null;
+      };
+      expect(JSON.stringify(owner)).not.toContain(CLAIM_PANE_X.subscriberId);
+      expect(JSON.stringify(owner)).not.toContain("harnessSessionRefJson");
+      expect(owner.owner).toMatchObject({ paneId: "wX:p1", harnessKind: "pi" });
+      expect(owner.owner).not.toHaveProperty("subscriberId");
     } finally {
       client.close();
       await server.stop();

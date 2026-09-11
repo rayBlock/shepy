@@ -46,14 +46,27 @@ export type ProfileOwner = {
   workspaceId: string | null;
 };
 
-/** A ProfileOwner with the lease token stripped — the shape that may leave
- * the daemon. The token authenticates release/renew/lease on its own, so
- * anyone it is handed to could act as (or evict) the owner; only the holder
- * it was minted for may ever see it. */
-export type PublicProfileOwner = Omit<ProfileOwner, "leaseToken">;
+/** A ProfileOwner with every capability stripped — the shape that may leave
+ * the daemon. The lease token authenticates release/renew/lease on its own,
+ * so anyone it is handed to could act as (or evict) the owner; only the
+ * holder it was minted for may ever see it. The subscriberId and the
+ * harness session ref are stripped too: together they are the re-claim
+ * credential (see claim), so publishing either half on the public row
+ * hands a rejected claimant part of what it would need to mint a fresh
+ * token. Callers display paneId/harnessKind/workspaceId; nothing else
+ * leaves the store. */
+export type PublicProfileOwner = Omit<
+  ProfileOwner,
+  "harnessSessionRefJson" | "leaseToken" | "subscriberId"
+>;
 
 export function toPublicProfileOwner(owner: ProfileOwner): PublicProfileOwner {
-  const { leaseToken: _leaseToken, ...publicOwner } = owner;
+  const {
+    harnessSessionRefJson: _harnessSessionRefJson,
+    leaseToken: _leaseToken,
+    subscriberId: _subscriberId,
+    ...publicOwner
+  } = owner;
   return publicOwner;
 }
 
@@ -95,12 +108,22 @@ export class ProfileOwnerStore {
     const graceMs = input.graceMs ?? DEFAULT_LEASE_GRACE_MS;
     const existing = this.get(input.profileId);
     if (existing) {
-      const sameSubscriber = existing.subscriberId === input.subscriberId;
+      // A re-claim is authenticated by BOTH halves of the credential: the
+      // subscriber identity AND the harness session ref (stable for the
+      // life of the claiming session). subscriberId equality alone was
+      // spoofable — the public owner row used to disclose it, handing a
+      // rejected claimant the ability to mint a fresh lease token. A
+      // claimant that knows the subscriber but not the session ref is just
+      // a rival: it waits out the lease like any other.
+      const sameOwner =
+        existing.subscriberId === input.subscriberId &&
+        existing.harnessSessionRefJson === input.harnessSessionRefJson;
       const leaseAlive = existing.leaseExpiresAt + graceMs > now;
-      if (!sameSubscriber && leaseAlive) {
-        // The active owner's identity is public; its token is not. A
-        // rejected claimant must never receive the capability that
-        // release() authenticates on.
+      if (!sameOwner && leaseAlive) {
+        // The active owner's identity is public; its token and subscriber
+        // are not. A rejected claimant must never receive the capability
+        // that release() authenticates on — nor the credential that could
+        // mint one.
         return { kind: "rejected", owner: toPublicProfileOwner(existing), reason: "lease_active" };
       }
     }
