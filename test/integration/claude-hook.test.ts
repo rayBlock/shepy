@@ -74,6 +74,7 @@ type Fixture = {
   agents: AgentStore;
   delivery: ProfileDeliveryService;
   dir: string;
+  obligations: DeliveryObligationStore;
   owners: ProfileOwnerStore;
   profiles: OrchestratorProfileStore;
   socketPath: string;
@@ -132,10 +133,11 @@ async function openHookServer(): Promise<Fixture> {
 
   const history = createAgentHistoryService({ cache: new AgentHistoryCacheStore(sqlite) });
   const owners = new ProfileOwnerStore({ sqlite });
+  const obligations = new DeliveryObligationStore(sqlite);
   const delivery = new ProfileDeliveryService({
     agentEvents: stores.agentEvents,
     agents: stores.agents,
-    obligations: new DeliveryObligationStore(sqlite),
+    obligations,
     owners,
     profiles,
   });
@@ -165,6 +167,7 @@ async function openHookServer(): Promise<Fixture> {
     agents: stores.agents,
     delivery,
     dir,
+    obligations,
     owners,
     profiles,
     socketPath,
@@ -351,7 +354,20 @@ describe("claude-hook UserPromptSubmit", () => {
       firstEventId,
       firstEventId + 1,
     ]);
-    for (const row of delivered) expect(row.deliveredHarnessTurnId).toBe(PROMPT_ID);
+    // inbox.list is the public read and deliberately redacts the delivery
+    // correlation: deliveredHarnessTurnId used to carry the Pi owner's own
+    // subscriber id, completing a credential an attacker could mint a lease
+    // token from (F3-1), so the service nulls it on every row it serves —
+    // a security boundary that must hold even against this test's own
+    // fixture. The daemon-side stamp is therefore verified against the
+    // store, the write-side of the same boundary: the hook passed
+    // harnessTurnId=PROMPT_ID to inbox.delivered and each persisted row
+    // carries exactly that. The owner file's promptId cannot prove this —
+    // the hook writes it from its own memory regardless of what reached
+    // the daemon — and the redacted public read proves nothing either.
+    for (const row of fixture.obligations.list({ profileId: "driffs", state: "delivered" })) {
+      expect(row.deliveredHarnessTurnId).toBe(PROMPT_ID);
+    }
 
     // The record reached its final phase only after inbox.delivered committed.
     expect(file.delivered?.phase).toBe("delivered");
