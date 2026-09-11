@@ -1,4 +1,5 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { createHash } from "node:crypto";
 import { Type } from "typebox";
 import { agentIdentityLabel } from "./agent-display.js";
 import {
@@ -705,9 +706,19 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
           triggerQueued: true,
           wakeConsumed: false,
         };
+        // Correlation id for the daemon's own bookkeeping. NEVER the
+        // subscriber id: deliveredHarnessTurnId rides on inbox.list rows
+        // (unauthenticated), and the subscriber id is a re-claim credential
+        // half — the F3-1 shorter chain read it straight off the listing.
+        // A digest of the batch's obligation ids identifies this delivery
+        // turn without identifying the subscriber.
+        const harnessTurnId = createHash("sha256")
+          .update([...ids].sort().join("\n"))
+          .digest("hex")
+          .slice(0, 24);
         try {
           await client.request("inbox.delivered", {
-            harnessTurnId: state.subscriberId ?? "pi",
+            harnessTurnId,
             ids,
             leaseToken: mode.leaseToken,
             ownerSessionRefJson: JSON.stringify(state.sessionRef ?? {}),

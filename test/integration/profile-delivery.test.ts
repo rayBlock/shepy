@@ -1642,4 +1642,69 @@ describe("the F3-1 takeover chain (round-3 review)", () => {
       built.sqlite.close();
     }
   });
+
+  test("the inbox.list variant: the delivered turn id must not complete the credential", async () => {
+    // The shorter chain: inbox.list served deliveredHarnessTurnId, which the
+    // Pi extension filled with state.subscriberId — half #1 with no path
+    // parsing. Combined with the agent.list half #2 it minted a token. The
+    // turn id is the owner's own bookkeeping correlation, not reader data.
+    const { built, client, server } = await rpcFixture();
+    try {
+      const claim = (await client.request("profile.claim", {
+        harnessKind: "pi",
+        harnessSessionRefJson: JSON.stringify(PI_SESSION_REF),
+        herdrSessionName: "default",
+        paneId: "wB:p1",
+        profileId: "driffs",
+        subscriberId: OWNER_SUBSCRIBER_ID,
+        terminalId: "tB",
+      })) as { result: { kind: string; leaseToken: string } };
+      const ownerToken = claim.result.leaseToken;
+      const worker = built.agents.list().find((row) => row.name === "driffs-worker");
+      if (!worker) throw new Error("fixture: driffs-worker missing");
+      built.delivery.projectAgentEvent({
+        ...eventFor({ eventId: 81, worker: "driffs" }),
+        agentId: worker.id,
+      });
+      const lease = (await client.request("inbox.lease", {
+        leaseToken: ownerToken,
+        profileId: "driffs",
+      })) as { obligations: Array<{ id: string }> };
+      const leasedId = lease.obligations[0]?.id;
+      if (!leasedId) throw new Error("fixture: lease returned no rows");
+      await client.request("inbox.delivered", {
+        harnessTurnId: OWNER_SUBSCRIBER_ID,
+        ids: [leasedId],
+        leaseToken: ownerToken,
+        ownerSessionRefJson: JSON.stringify(PI_SESSION_REF),
+      });
+
+      const list = (await client.request("inbox.list", { profileId: "driffs" })) as {
+        obligations: Array<{ deliveredHarnessTurnId: string | null }>;
+      };
+      // No row the tokenless read serves may carry the owner's correlation.
+      for (const obligation of list.obligations) {
+        expect(obligation.deliveredHarnessTurnId ?? null).toBeNull();
+      }
+      expect(JSON.stringify(list)).not.toContain(OWNER_SUBSCRIBER_ID);
+
+      // Even the old unredacted wire value would no longer complete the
+      // credential: half #1 plus the public half #2 must not mint a token.
+      const takeover = (await client.request("profile.claim", {
+        harnessKind: "pi",
+        harnessSessionRefJson: JSON.stringify(PI_SESSION_REF),
+        herdrSessionName: "default",
+        paneId: "wE:p9",
+        profileId: "driffs",
+        subscriberId: OWNER_SUBSCRIBER_ID,
+        terminalId: "tE",
+      })) as { result: { kind: string; leaseToken?: string } };
+      expect(takeover.result).toMatchObject({ kind: "rejected", reason: "lease_active" });
+      expect(takeover.result.leaseToken).toBeUndefined();
+    } finally {
+      client.close();
+      await server.stop();
+      built.sqlite.close();
+    }
+  });
 });

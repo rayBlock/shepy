@@ -332,13 +332,17 @@ export class ProfileDeliveryService {
    * leaves the daemon. inbox.list presents no credential at all, so no row
    * it serves may carry one: a lease token authenticates release/renew/
    * lease on its own, and this path is reachable by every daemon client.
+   * deliveredHarnessTurnId is redacted for the same reason: the Pi owner
+   * used to fill it with its subscriberId (F3-1's shorter takeover chain),
+   * and it is the owner's own delivery correlation — no reader needs it.
    * The only read that may still carry a token is inboxLease, which serves
    * exclusively rows stamped with the token the caller itself presented.
    */
   inboxList(input: { limit?: number; profileId: string; state?: Obligation["state"] }) {
     return this.#obligations.list(input).map((obligation) => ({
       ...obligation,
-      leaseToken: null,
+      deliveredHarnessTurnId: null as null,
+      leaseToken: null as null,
     }));
   }
 
