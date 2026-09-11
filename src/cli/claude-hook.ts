@@ -47,11 +47,17 @@ export const CLAUDE_HOOK_DEADLINE_MS = 5_000;
 /** Mirrors the Pi pump's lease size (pumpProfileOwned in packages/shepy-pi). */
 const LEASE_MAX_BATCH = 20;
 /**
- * Total bound on the injected context. Per-outcome excerpts are already
- * bounded server-side (INBOX_OUTCOME_EXCERPT_CHARS, the same 2 000-char bound
- * the Pi wake card applies); this bounds the whole payload on top.
+ * Claude Code caps a hook's additionalContext at 8 000 chars AND 200 lines;
+ * overflow is saved to a file and replaced with a preview, cutting the tail
+ * first. The budget sits at 6 000/120 — ~25% headroom on both axes — so
+ * header growth, a longer truncation note, or JSON escaping can never push
+ * the payload past the platform limit. If you raise these numbers,
+ * re-verify the caps against the installed Claude Code binary first: the
+ * previous 12 000-char cap shipped above the real limit and silently
+ * clipped busy payloads (verify-b report F4).
  */
-const CONTEXT_MAX_CHARS = 12_000;
+export const CONTEXT_MAX_CHARS = 6_000;
+export const CONTEXT_MAX_LINES = 120;
 
 type RpcClient = Pick<ObservabilityRpcClient, "close" | "request">;
 
@@ -110,7 +116,7 @@ type OutcomeSnapshot = {
   type: string;
 };
 
-type LeasedObligation = {
+export type LeasedObligation = {
   agentEventId: number;
   id: string;
   outcome?: OutcomeSnapshot | null;
@@ -228,7 +234,7 @@ async function handlePromptSubmit(payload: HookPayload, input: ClaudeHookInput):
     // still acks earlier when it runs, but nothing may depend on it — a user
     // interrupt skips Stop entirely, and older Claude Code builds omit
     // prompt_id, which the old Stop-only correlation required.
-    const previous = readOwnerFile(input.homeDir, payload.session_id);
+    const previous = readOwnerFile(input.homeDir, payload.session_id, input.profileId);
     if (previous?.delivered) {
       try {
         await request("inbox.ack", {
@@ -263,7 +269,7 @@ async function handlePromptSubmit(payload: HookPayload, input: ClaudeHookInput):
       // Persist even with nothing to deliver: this clears a stale delivered
       // record (an interrupted turn never ran Stop to clear it) and parks the
       // fresh token so Stop can ack and lease without another prompt first.
-      writeOwnerFile(input.homeDir, payload.session_id, cleared);
+      writeOwnerFile(input.homeDir, payload.session_id, input.profileId, cleared);
       // Ownership held, nothing to deliver: stay silent so Claude Code adds
       // no context to the turn.
       return;
@@ -272,7 +278,7 @@ async function handlePromptSubmit(payload: HookPayload, input: ClaudeHookInput):
     const ids = obligations.map((obligation) => obligation.id);
     // Persist the record BEFORE committing inbox.delivered: a failed write
     // must never leave rows marked delivered with no local ack record.
-    writeOwnerFile(input.homeDir, payload.session_id, {
+    writeOwnerFile(input.homeDir, payload.session_id, input.profileId, {
       ...cleared,
       delivered: { ids, promptId: payload.prompt_id ?? null },
     });
@@ -287,7 +293,7 @@ async function handlePromptSubmit(payload: HookPayload, input: ClaudeHookInput):
       // The rows stay leased and expire back to pending server-side; drop the
       // record so the next prompt's ack cannot retire outcomes the model
       // never saw.
-      writeOwnerFile(input.homeDir, payload.session_id, cleared);
+      writeOwnerFile(input.homeDir, payload.session_id, input.profileId, cleared);
       throw new ExpectedHookError(`inbox delivered failed: ${describe(error)}`);
     }
     input.writeStdout(
@@ -313,7 +319,7 @@ async function handleStop(payload: HookPayload, input: ClaudeHookInput): Promise
     // The record is keyed per session and profile, so no prompt_id
     // correlation is needed — a user interrupt or an older Claude Code
     // without prompt_id leaves nothing for the next prompt to clean up.
-    const file = readOwnerFile(input.homeDir, payload.session_id);
+    const file = readOwnerFile(input.homeDir, payload.session_id, input.profileId);
     if (file && file.profileId === input.profileId && file.delivered) {
       try {
         await request("inbox.ack", {
@@ -322,7 +328,7 @@ async function handleStop(payload: HookPayload, input: ClaudeHookInput): Promise
           profileId: input.profileId,
         });
         file.delivered = null;
-        writeOwnerFile(input.homeDir, payload.session_id, file);
+        writeOwnerFile(input.homeDir, payload.session_id, input.profileId, file);
       } catch (error) {
         throw new ExpectedHookError(`inbox ack failed: ${describe(error)}`);
       }
@@ -345,7 +351,7 @@ async function handleStop(payload: HookPayload, input: ClaudeHookInput): Promise
     const obligations = lease.obligations ?? [];
     if (obligations.length === 0) return;
     const ids = obligations.map((obligation) => obligation.id);
-    writeOwnerFile(input.homeDir, payload.session_id, {
+    writeOwnerFile(input.homeDir, payload.session_id, input.profileId, {
       ...file,
       delivered: { ids, promptId: payload.prompt_id ?? null },
     });
@@ -357,7 +363,10 @@ async function handleStop(payload: HookPayload, input: ClaudeHookInput): Promise
         ownerSessionRefJson: file.ownerSessionRefJson,
       });
     } catch (error) {
-      writeOwnerFile(input.homeDir, payload.session_id, { ...file, delivered: null });
+      writeOwnerFile(input.homeDir, payload.session_id, input.profileId, {
+        ...file,
+        delivered: null,
+      });
       throw new ExpectedHookError(`inbox delivered failed: ${describe(error)}`);
     }
     input.writeStdout(
@@ -427,15 +436,23 @@ async function resolveHerdrSessionName(
   }
 }
 
-function ownerFilePath(homeDir: string, sessionId: string): string {
-  // The session id comes from the hook payload (untrusted input); keep it
-  // from escaping the owners directory.
-  const safe = sessionId.replace(/[^A-Za-z0-9_-]/g, "_");
-  return join(homeDir, "owners", `claude-${safe}.json`);
+function ownerFilePath(homeDir: string, sessionId: string, profileId: string): string {
+  // Both ids come from untrusted input (hook payload / CLI argv); keep them
+  // from escaping the owners directory. Keying on profile too keeps one
+  // Claude session that owns several profiles from clobbering records —
+  // each profile gets its own delivered record and lease token.
+  const safeSession = sessionId.replace(/[^A-Za-z0-9_-]/g, "_");
+  const safeProfile = profileId.replace(/[^A-Za-z0-9_-]/g, "_");
+  return join(homeDir, "owners", `claude-${safeSession}-${safeProfile}.json`);
 }
 
-function writeOwnerFile(homeDir: string, sessionId: string, file: OwnerFile): void {
-  const path = ownerFilePath(homeDir, sessionId);
+function writeOwnerFile(
+  homeDir: string,
+  sessionId: string,
+  profileId: string,
+  file: OwnerFile,
+): void {
+  const path = ownerFilePath(homeDir, sessionId, profileId);
   const payload = `${JSON.stringify(file, null, 2)}\n`;
   try {
     mkdirSync(dirname(path), { mode: 0o700, recursive: true });
@@ -460,10 +477,10 @@ function writeOwnerFile(homeDir: string, sessionId: string, file: OwnerFile): vo
   }
 }
 
-function readOwnerFile(homeDir: string, sessionId: string): OwnerFile | null {
+function readOwnerFile(homeDir: string, sessionId: string, profileId: string): OwnerFile | null {
   let raw: string;
   try {
-    raw = readFileSync(ownerFilePath(homeDir, sessionId), "utf8");
+    raw = readFileSync(ownerFilePath(homeDir, sessionId, profileId), "utf8");
   } catch {
     // Missing or unreadable — the next claim recovers, never an error.
     return null;
@@ -490,20 +507,32 @@ Do not start unrelated work or expand the requested scope.
 If no update is actionable, summarize the result briefly and stop.
 If an excerpt is marked truncated, use shepy agent read for that exact pane before acting.`;
 
-function formatHookContext(profileId: string, obligations: LeasedObligation[]): string {
+export function formatHookContext(profileId: string, obligations: LeasedObligation[]): string {
   const header = `${WAKE_POLICY}\n\n[SHEPY PROFILE OUTCOMES]\n`;
+  // Reserve the note's worst-case space up front: Claude Code truncates an
+  // over-budget additionalContext from the tail, so a note appended after
+  // the lines is the first thing cut — precisely when it matters. Reserving
+  // the full-batch note (the longest variant) keeps every real note inside
+  // the budget.
+  const printableProfileId = profileId.replace(/[^ -~]/g, "");
+  const reservedNote = `… [${obligations.length} more outcome(s); run shepy inbox list ${printableProfileId}]`;
+  const charBudget = CONTEXT_MAX_CHARS - reservedNote.length - 1;
+  const lineBudget = CONTEXT_MAX_LINES - 1;
   const lines: string[] = [];
   let used = header.length;
+  let lineCount = header.split("\n").length - 1;
+  let dropped = obligations.length;
   for (const obligation of obligations) {
     const line = outcomeLine(obligation);
-    if (used + line.length + 1 > CONTEXT_MAX_CHARS) {
-      const remaining = obligations.length - lines.length;
-      const note = `… [${remaining} more outcome(s); run shepy inbox list ${profileId}]`;
-      if (used + note.length + 1 <= CONTEXT_MAX_CHARS) lines.push(note);
-      break;
-    }
+    const lineLines = line.split("\n").length;
+    if (used + line.length + 1 > charBudget || lineCount + lineLines > lineBudget) break;
     lines.push(line);
     used += line.length + 1;
+    lineCount += lineLines;
+    dropped -= 1;
+  }
+  if (dropped > 0) {
+    lines.push(`… [${dropped} more outcome(s); run shepy inbox list ${printableProfileId}]`);
   }
   return `${header}${lines.join("\n")}`;
 }

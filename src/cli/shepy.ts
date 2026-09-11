@@ -1215,6 +1215,9 @@ Options:
 
 function helpInvocation(topic: HelpTopic): string {
   if (topic === "root") return "shepy --help";
+  // Hyphenated top-level commands are real command names, not nested topics:
+  // no dash-to-space substitution.
+  if (topic === "claude-hook") return "shepy claude-hook --help";
   return `shepy ${topic.replaceAll("-", " ")} --help`;
 }
 

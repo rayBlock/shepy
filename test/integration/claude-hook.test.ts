@@ -13,8 +13,14 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { createAgentHistoryService } from "@/agent-history/service.js";
-import { runClaudeHook } from "@/cli/claude-hook.js";
-import { helpText, parseCliArgs } from "@/cli/shepy.js";
+import {
+  CONTEXT_MAX_CHARS,
+  CONTEXT_MAX_LINES,
+  formatHookContext,
+  type LeasedObligation,
+  runClaudeHook,
+} from "@/cli/claude-hook.js";
+import { formatCliError, helpText, parseCliArgs } from "@/cli/shepy.js";
 import { ObservabilityRpcServer } from "@/daemon/observability-server.js";
 import { AgentContextSnapshotStore } from "@/db/agent-context-snapshots.js";
 import { AgentEventStore } from "@/db/agent-events.js";
@@ -64,6 +70,7 @@ type Fixture = {
   delivery: ProfileDeliveryService;
   dir: string;
   owners: ProfileOwnerStore;
+  profiles: OrchestratorProfileStore;
   socketPath: string;
 };
 
@@ -154,6 +161,7 @@ async function openHookServer(): Promise<Fixture> {
     delivery,
     dir,
     owners,
+    profiles,
     socketPath,
   };
 }
@@ -241,17 +249,22 @@ function stopPayload(overrides: Record<string, unknown> = {}): Record<string, un
   };
 }
 
-function ownerFilePath(fixture: Fixture): string {
-  return join(fixture.dir, "owners", `claude-${SESSION_ID}.json`);
+function ownerFilePath(fixture: Fixture, profileId = "driffs"): string {
+  return join(fixture.dir, "owners", `claude-${SESSION_ID}-${profileId}.json`);
 }
 
-function readOwnerFile(fixture: Fixture): {
-  delivered: { ids: string[]; promptId: string } | null;
+function readOwnerFile(
+  fixture: Fixture,
+  profileId = "driffs",
+): {
+  delivered: { ids: string[]; promptId: string | null } | null;
   leaseToken: string;
+  ownerSessionRefJson: string;
 } {
-  return JSON.parse(readFileSync(ownerFilePath(fixture), "utf8")) as {
-    delivered: { ids: string[]; promptId: string } | null;
+  return JSON.parse(readFileSync(ownerFilePath(fixture, profileId), "utf8")) as {
+    delivered: { ids: string[]; promptId: string | null } | null;
     leaseToken: string;
+    ownerSessionRefJson: string;
   };
 }
 
@@ -267,6 +280,14 @@ describe("claude-hook CLI surface", () => {
     });
     expect(helpText("claude-hook")).toContain("--profile <profileId>");
     expect(() => parseCliArgs(["claude-hook"])).toThrow("--profile");
+    // The usage hint must name the real command, not a dash-mangled one.
+    try {
+      parseCliArgs(["claude-hook"]);
+      throw new Error("expected parseCliArgs to throw");
+    } catch (error) {
+      expect(formatCliError(error)).toContain("shepy claude-hook --help");
+      expect(formatCliError(error)).not.toContain("claude hook");
+    }
   });
 });
 
@@ -431,6 +452,79 @@ describe("claude-hook UserPromptSubmit", () => {
     expect(lstatSync(ownerFilePath(fixture)).isSymbolicLink()).toBe(true);
   });
 
+  test("one session owning two profiles keeps separate owner records", async () => {
+    const fixture = await openHookServer();
+    fixture.profiles.createProfile({
+      displayName: "Arena",
+      profileId: "arena",
+      projectRoots: [],
+    });
+    fixture.profiles.addSubscription({
+      agentSelectorJson: JSON.stringify({ kind: "name", value: "builder" }),
+      herdrSessionName: "lane-b",
+      profileId: "arena",
+      workspaceSelectorJson: JSON.stringify({ herdrSession: "lane-b", workspaceId: "w2" }),
+    });
+    projectOutcome(fixture, "hook-multi", "shared outcome");
+
+    // One hook invocation per profile: each claims, leases, and persists its
+    // own record for the same Claude session.
+    const first = await runHook(fixture, promptPayload());
+    expect(first.code).toBe(0);
+    const second = await runHook(fixture, promptPayload({ prompt_id: "prompt-2" }), {
+      profileId: "arena",
+    });
+    expect(second.code).toBe(0);
+    // Both profiles have obligations for the same event; each gets its own
+    // owner file, and neither record clobbers the other.
+    const driffsFile = readOwnerFile(fixture, "driffs");
+    const arenaFile = readOwnerFile(fixture, "arena");
+    expect(driffsFile.delivered?.ids).toHaveLength(1);
+    expect(arenaFile.delivered?.ids).toHaveLength(1);
+    expect(driffsFile.delivered?.ids).not.toEqual(arenaFile.delivered?.ids);
+
+    // A Stop for driffs acks only driffs' record; arena's delivery survives.
+    const stop = await runHook(fixture, stopPayload());
+    expect(stop.code).toBe(0);
+    const driffsAcked = fixture.delivery.inboxList({ profileId: "driffs", state: "acked" });
+    expect(driffsAcked).toHaveLength(1);
+    expect(driffsAcked[0]?.id).toBe(driffsFile.delivered?.ids[0]);
+    expect(fixture.delivery.inboxList({ profileId: "arena", state: "delivered" })).toHaveLength(1);
+    expect(readOwnerFile(fixture, "driffs").delivered).toBeNull();
+    expect(readOwnerFile(fixture, "arena").delivered).not.toBeNull();
+  });
+
+  test("acks are fenced by the persisted record: a mismatched record acks nothing", async () => {
+    const fixture = await openHookServer();
+    projectOutcome(fixture, "hook-fence", "fenced outcome");
+    await runHook(fixture, promptPayload());
+    const real = readOwnerFile(fixture);
+
+    // A record pointing at someone else's id and token must not retire the
+    // real delivery: ack matching is obligation id + lease token. This pins
+    // the ack correlation — an ack that ignores the record fails here.
+    writeFileSync(
+      ownerFilePath(fixture),
+      `${JSON.stringify(
+        {
+          delivered: { ids: ["00000000-0000-4000-8000-000000000000"], promptId: PROMPT_ID },
+          leaseToken: "bogus-token",
+          ownerSessionRefJson: real.ownerSessionRefJson,
+          profileId: "driffs",
+        },
+        null,
+        2,
+      )}\n`,
+      { mode: 0o600 },
+    );
+
+    const { code } = await runHook(fixture, promptPayload({ prompt_id: "prompt-2" }));
+    expect(code).toBe(0);
+    const delivered = fixture.delivery.inboxList({ profileId: "driffs", state: "delivered" });
+    expect(delivered).toHaveLength(1);
+    expect(readOwnerFile(fixture).delivered).toBeNull();
+  });
+
   test("a claim held by another subscriber exits 0 silently and never steals", async () => {
     const fixture = await openHookServer();
     const claim = fixture.delivery.claim({
@@ -525,6 +619,73 @@ describe("claude-hook Stop", () => {
     const { code, stdout } = await runHook(fixture, stopPayload({ stop_hook_active: true }));
     expect(code).toBe(0);
     expect(stdout).toBe("");
+  });
+});
+
+describe("claude-hook injected-context budget", () => {
+  test("the budget stays under Claude Code's 8 000-char / 200-line caps", () => {
+    // Claude Code truncates additionalContext at 8 000 chars AND 200 lines.
+    // These pins exist because the first cap (12 000) shipped above the real
+    // platform limit and nobody noticed: raising these numbers requires
+    // re-verifying the caps against the installed Claude Code binary.
+    expect(CONTEXT_MAX_CHARS).toBe(6_000);
+    expect(CONTEXT_MAX_LINES).toBe(120);
+    expect(CONTEXT_MAX_CHARS).toBeLessThanOrEqual(8_000);
+    expect(CONTEXT_MAX_LINES).toBeLessThanOrEqual(200);
+  });
+
+  test("a full lease batch overflows only the char budget and keeps the truncation note inside it", async () => {
+    const fixture = await openHookServer();
+    // 20 obligations (the lease batch cap) with near-cap 400-char excerpts:
+    // far past 6 000 chars, so lines must be dropped.
+    for (let i = 0; i < 20; i += 1) {
+      projectOutcome(fixture, `hook-fat-${i}`, "x".repeat(400));
+    }
+
+    const { code, stdout } = await runHook(fixture, promptPayload());
+    expect(code).toBe(0);
+    const context =
+      (JSON.parse(stdout) as { hookSpecificOutput?: { additionalContext?: string } })
+        .hookSpecificOutput?.additionalContext ?? "";
+    expect(context.length).toBeLessThanOrEqual(CONTEXT_MAX_CHARS);
+    expect(context.split("\n").length).toBeLessThanOrEqual(CONTEXT_MAX_LINES);
+
+    // The escape hatch must survive the overflow — and it is only useful if
+    // it is actually inside the emitted budget, not past it.
+    expect(context).toContain("run shepy inbox list driffs");
+    const noteIndex = context.indexOf("… [");
+    expect(noteIndex).toBeGreaterThan(0);
+    expect(noteIndex + context.slice(noteIndex).indexOf("\n")).toBeLessThanOrEqual(
+      CONTEXT_MAX_CHARS,
+    );
+
+    // Some outcomes rendered, the rest dropped and counted honestly.
+    const bullets = context.split("\n").filter((line) => line.startsWith("- ")).length;
+    expect(bullets).toBeGreaterThanOrEqual(1);
+    expect(bullets).toBeLessThan(20);
+    expect(context).toContain("more outcome(s)");
+  });
+
+  test("the line budget is enforced even when every line is short", () => {
+    const obligations: LeasedObligation[] = Array.from({ length: 100 }, (_, i) => ({
+      agentEventId: i + 1,
+      id: "00000000-0000-4000-8000-000000000000",
+      outcome: {
+        agent: "hermes",
+        eventId: i + 1,
+        excerpt: { text: "ok", truncated: false },
+        from: "working",
+        lastAssistantRef: null,
+        name: "builder",
+        paneId: "w2:p1",
+        to: "idle",
+        type: "agent.idle",
+      },
+    }));
+    const context = formatHookContext("driffs", obligations);
+    expect(context.length).toBeLessThanOrEqual(CONTEXT_MAX_CHARS);
+    expect(context.split("\n").length).toBeLessThanOrEqual(CONTEXT_MAX_LINES);
+    expect(context).toContain("run shepy inbox list driffs");
   });
 });
 
