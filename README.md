@@ -87,6 +87,17 @@ Add the official Herdr skill when an agent needs to control workspaces, tabs, pa
 npx skills add ogulcancelik/herdr --skill herdr -g
 ```
 
+### Claude Code
+
+Claude Code reads skills from `~/.claude/skills/<name>/SKILL.md`. Link the repository skill so it stays current with the checkout:
+
+```bash
+mkdir -p ~/.claude/skills/shepy
+ln -sfn "$PWD/SKILL.md" ~/.claude/skills/shepy/SKILL.md
+```
+
+Claude Code loads skills at startup, so start a fresh session after installing or updating the link.
+
 ### Orchi orchestration skill
 
 [Orchi](skills/orchi/SKILL.md) is an explicitly invoked lead-agent playbook for
