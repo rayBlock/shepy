@@ -3,6 +3,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { argv, exit } from "node:process";
 import { fileURLToPath } from "node:url";
+import { CLAUDE_HOOK_STDIN_MAX_CHARS, runClaudeHook } from "@/cli/claude-hook.js";
 import { resolveRuntime, runtimePathsFromRecordOrDefault } from "@/config/runtime.js";
 import { ObservabilityRpcClient } from "@/daemon/client.js";
 import {
@@ -21,6 +22,7 @@ type HelpTopic =
   | "agent-get"
   | "agent-list"
   | "agent-read"
+  | "claude-hook"
   | `daemon-${DaemonAction}`
   | "daemon"
   | "dispatch"
@@ -91,6 +93,7 @@ export type CliCommand =
   | { command: "operation-wait"; json: boolean; operationId: string; timeoutMs?: number }
   | { command: "operation-get"; json: boolean; operationId: string }
   | { command: "operation-list"; json: boolean; profileId: string }
+  | { command: "claude-hook"; profileId: string }
   | { command: "help"; topic: HelpTopic }
   | { command: "version" };
 
@@ -121,8 +124,19 @@ export function parseCliArgs(
   if (command === "dispatch") return parseDispatchCommand(rest);
   if (command === "wait") return parseWaitCommand(rest);
   if (command === "operation") return parseOperationCommand(rest);
+  if (command === "claude-hook") return parseClaudeHookCommand(rest);
 
   throw new CliUsageError(`Unknown command: ${command}`, "root");
+}
+
+function parseClaudeHookCommand(args: string[]): CliCommand {
+  if (args.some(isHelpFlag)) return { command: "help", topic: "claude-hook" };
+  const profileId = takeOption(args, "--profile", "claude-hook");
+  if (!profileId) {
+    throw new CliUsageError("claude-hook requires --profile <profileId>", "claude-hook");
+  }
+  rejectExtra(args, "claude-hook");
+  return { command: "claude-hook", profileId };
 }
 
 function parseDispatchCommand(args: string[]): CliCommand {
@@ -436,6 +450,7 @@ Commands:
   dispatch  Send a prompt to a profile's agent
   wait      Wait for an operation's completion
   operation Inspect orchestration operations
+  claude-hook Handle a Claude Code hook event from stdin
 
 Options:
   -h, --help       Show help
@@ -714,6 +729,23 @@ Options:
   --json         Print JSON
   -h, --help     Show help
 `;
+    case "claude-hook":
+      return `Handle one Claude Code hook event from stdin.
+
+Reads the hook event JSON Claude Code pipes to stdin, claims the profile for
+this pane (re-claiming as the same subscriber always succeeds), and writes
+hook JSON to stdout. UserPromptSubmit delivers pending worker outcomes as
+injected context; Stop keeps the turn open while fresh obligations are
+pending. Exits 0 on every expected condition so Shepy never degrades the
+coding session, and never prints the lease token.
+
+Usage:
+  shepy claude-hook --profile <profileId>
+
+Options:
+  --profile <id>    Profile this pane owns (required)
+  -h, --help        Show help
+`;
   }
 }
 
@@ -757,6 +789,7 @@ export async function runCliCommand(command: CliCommand, deps: RunCliDeps): Prom
     }
     return;
   }
+  if (command.command === "claude-hook") throw new Error("claude-hook command is handled by main");
   if (command.command === "daemon") throw new Error("daemon command is handled by main");
   const client = await deps.connect(deps.socketPath);
   try {
@@ -770,7 +803,15 @@ export async function runCliCommand(command: CliCommand, deps: RunCliDeps): Prom
 async function dispatchRpcCommand(
   command: Exclude<
     CliCommand,
-    { command: "daemon" | "help" | "version" | "operation-dispatch" | "operation-wait" }
+    {
+      command:
+        | "daemon"
+        | "help"
+        | "version"
+        | "claude-hook"
+        | "operation-dispatch"
+        | "operation-wait";
+    }
   >,
   client: RpcClientLike,
 ) {
@@ -972,6 +1013,30 @@ async function main(): Promise<void> {
     console.log(versionText());
     return;
   }
+  if (command.command === "claude-hook") {
+    // The hook runs inside the user's turn latency path: an unresolvable
+    // Shepy runtime (broken config, missing home) must degrade to a silent
+    // no-op, never a failed turn.
+    let runtime: ReturnType<typeof resolveRuntimeForCommand>;
+    try {
+      runtime = resolveRuntimeForCommand();
+    } catch (error: unknown) {
+      console.error(formatCliError(error));
+      exit(0);
+      return;
+    }
+    exit(
+      await runClaudeHook({
+        environment: process.env,
+        homeDir: runtime.homeDir,
+        profileId: command.profileId,
+        readStdin: readStdinPayload,
+        socketPath: runtime.paths.socketPath,
+        writeStdout: (text) => process.stdout.write(text),
+      }),
+    );
+    return;
+  }
   const runtime = resolveRuntimeForCommand();
   if (command.command === "daemon") {
     await runDaemonCommand(command, runtime);
@@ -1045,6 +1110,28 @@ function resolveRuntimeForCommand() {
         paths: runtimePathsFromRecordOrDefault({ environment: process.env }),
       }
     : resolveRuntime({ environment: process.env });
+}
+
+function readStdinPayload(): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    let text = "";
+    let settled = false;
+    const finish = (settle: () => void) => {
+      if (settled) return;
+      settled = true;
+      settle();
+    };
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk: string) => {
+      text += chunk;
+      if (text.length > CLAUDE_HOOK_STDIN_MAX_CHARS) {
+        process.stdin.destroy();
+        finish(() => resolve(text));
+      }
+    });
+    process.stdin.on("end", () => finish(() => resolve(text)));
+    process.stdin.on("error", (error: Error) => finish(() => reject(error)));
+  });
 }
 
 function takeFlag(args: string[], name: string): boolean {
