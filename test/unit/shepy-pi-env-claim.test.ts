@@ -161,7 +161,12 @@ async function startSession(client: FakeClient, profile: string | undefined) {
   try {
     await pi.emit("session_start", {}, ctx);
     await client.connect();
-    await vi.advanceTimersByTimeAsync(20);
+    // Advance INSIDE the env scope, before restoring it: a rejected claim
+    // must never be retried on a timer. A retry implementation that re-reads
+    // process.env.SHEPY_PROFILE on each fire would disarm itself if the env
+    // were restored before this advance — so the window in which a retry
+    // could observe the variable is exactly the window this advance covers.
+    await vi.advanceTimersByTimeAsync(60_000);
   } finally {
     restoreEnv(previous);
   }
@@ -202,6 +207,8 @@ describe("shepy-pi env claim (SHEPY_PROFILE)", () => {
     });
     try {
       const { ctx } = await startSession(client, "driffs");
+      // startSession already advanced 60 s while SHEPY_PROFILE was still set,
+      // so a retry that re-reads the environment cannot hide from this count.
       const claims = client.calls.filter(([method]) => method === "profile.claim");
       expect(claims).toHaveLength(1);
       expect(
@@ -217,11 +224,13 @@ describe("shepy-pi env claim (SHEPY_PROFILE)", () => {
     }
   });
 
-  test("unset or empty SHEPY_PROFILE keeps today's behaviour", async () => {
+  test("unset, empty, or whitespace-only SHEPY_PROFILE keeps today's behaviour", async () => {
     vi.useFakeTimers();
     const client = envClaimClient();
     try {
       await startSession(client, undefined);
+      expect(client.calls.some(([method]) => method === "profile.claim")).toBe(false);
+      await startSession(client, "");
       expect(client.calls.some(([method]) => method === "profile.claim")).toBe(false);
       await startSession(client, "   ");
       expect(client.calls.some(([method]) => method === "profile.claim")).toBe(false);

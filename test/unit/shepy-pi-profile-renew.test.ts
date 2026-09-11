@@ -343,4 +343,62 @@ describe("shepy-pi profile pump heartbeat", () => {
       vi.useRealTimers();
     }
   });
+
+  test("a busy owner with a user run active still renews on the claim pump and every tick", async () => {
+    vi.useFakeTimers();
+    const client = renewingClient(() => ({ renewed: true }));
+    const { ctx, pi } = await renewHarness(client);
+    try {
+      ctx.setIdle(false); // a user run is active — the busiest an owner can be
+      await pi.command("on driffs", ctx);
+      await vi.advanceTimersByTimeAsync(20);
+      // The heartbeat sits BEFORE the busy gate: the tick renewed, then
+      // returned without leasing (a busy owner must not lease a wake it
+      // cannot witness).
+      expect(client.calls.map(([method]) => method)).toEqual(["profile.claim", "profile.renew"]);
+      client.calls.length = 0;
+      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(client.calls.map(([method]) => method)).toEqual(["profile.renew", "profile.renew"]);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  test("an owner with a wake batch in flight still renews on every tick", async () => {
+    vi.useFakeTimers();
+    const client = createFakeClient();
+    client.response = (method) => {
+      if (method === "profile.claim") return { result: { kind: "claimed", leaseToken: "lease-1" } };
+      if (method === "profile.renew") return { renewed: true };
+      if (method === "inbox.lease") {
+        return { obligations: [{ agentEventId: 7, id: "ob-1", outcome: null }] };
+      }
+      if (method === "inbox.delivered") return { delivered: 1 };
+      return connectionResponse();
+    };
+    const { ctx, pi } = await renewHarness(client);
+    try {
+      await pi.command("on driffs", ctx);
+      await vi.advanceTimersByTimeAsync(20);
+      // The first tick leased a batch: the wake follow-ups were queued and
+      // marked delivered, and the batch stays unacked (no settle runs here).
+      expect(client.calls.map(([method]) => method)).toEqual([
+        "profile.claim",
+        "profile.renew",
+        "inbox.lease",
+        "inbox.delivered",
+      ]);
+      client.calls.length = 0;
+      // While that batch is in flight, every tick must STILL renew first —
+      // the batch gate may then skip the lease, but never the heartbeat.
+      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(client.calls.map(([method]) => method)).toEqual(["profile.renew", "profile.renew"]);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
 });
