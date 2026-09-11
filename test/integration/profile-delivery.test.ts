@@ -987,6 +987,62 @@ describe("profile.renew RPC (owner lease heartbeat)", () => {
     }
   });
 
+  test("renew never resurrects a lease that lapsed uncontested past lease + grace", async () => {
+    let clock = 1_000_000;
+    const { built, client, server } = await rpcFixture({ now: () => clock });
+    try {
+      const claim = (await client.request("profile.claim", CLAIM_PANE_X)) as {
+        result: { kind: string; leaseToken: string };
+      };
+      expect(claim.result.kind).toBe("claimed");
+      // The lease lapses with nobody contesting: no rival claim ever lands.
+      clock += LEASE_MS + GRACE_MS + 1_000;
+      // The owner returns from the outage and heartbeats. The claim path
+      // treats this exact instant as claimable, so the heartbeat must fail
+      // closed too — renewing the row would otherwise hand the returner a
+      // lease that a claimant could have taken a millisecond earlier.
+      await expect(
+        client.request("profile.renew", {
+          leaseToken: claim.result.leaseToken,
+          profileId: "driffs",
+        }),
+      ).resolves.toEqual({ renewed: false });
+    } finally {
+      client.close();
+      await server.stop();
+      built.sqlite.close();
+    }
+  });
+
+  test("renew and claim agree just inside the expiry boundary", async () => {
+    let clock = 1_000_000;
+    const { built, client, server } = await rpcFixture({ now: () => clock });
+    try {
+      const claim = (await client.request("profile.claim", CLAIM_PANE_X)) as {
+        result: { kind: string; leaseToken: string };
+      };
+      expect(claim.result.kind).toBe("claimed");
+      clock += LEASE_MS + GRACE_MS - 1_000;
+      // One second before the boundary both paths still call the lease live:
+      // a rival claim is rejected…
+      await expect(client.request("profile.claim", CLAIM_PANE_Y)).resolves.toMatchObject({
+        result: { kind: "rejected", reason: "lease_active" },
+      });
+      // …and the holder's heartbeat still renews (this also extends the
+      // lease, so the steal assertion below must not depend on it).
+      await expect(
+        client.request("profile.renew", {
+          leaseToken: claim.result.leaseToken,
+          profileId: "driffs",
+        }),
+      ).resolves.toEqual({ renewed: true });
+    } finally {
+      client.close();
+      await server.stop();
+      built.sqlite.close();
+    }
+  });
+
   test("without renewal the lease lapses: a working owner is stealable after 5m30s", async () => {
     // Documents the pre-renewal window the pump used to run in: nothing ever
     // renewed, so every owner — actively pumping or not — forfeited the

@@ -7,6 +7,15 @@ import type { DatabaseSync } from "node:sqlite";
  * claim by a new terminal replaces it and invalidates the old lease token.
  */
 
+/**
+ * Lease defaults shared by claim and renew (vault §8.2). Renew MUST derive
+ * its expiry judgement from the same grace claim uses — the two paths decide
+ * "is this lease alive" at the same instants, or a heartbeat could revive a
+ * lease a claimant was entitled to take.
+ */
+const DEFAULT_LEASE_MS = 5 * 60_000;
+const DEFAULT_LEASE_GRACE_MS = 30_000;
+
 export type OwnerRow = {
   claimed_at: number;
   harness_kind: string;
@@ -71,8 +80,8 @@ export class ProfileOwnerStore {
     workspaceId?: string | null;
   }): ClaimResult {
     const now = this.#now();
-    const leaseMs = input.leaseMs ?? 5 * 60_000;
-    const graceMs = input.graceMs ?? 30_000;
+    const leaseMs = input.leaseMs ?? DEFAULT_LEASE_MS;
+    const graceMs = input.graceMs ?? DEFAULT_LEASE_GRACE_MS;
     const existing = this.get(input.profileId);
     if (existing) {
       const sameSubscriber = existing.subscriberId === input.subscriberId;
@@ -128,7 +137,13 @@ export class ProfileOwnerStore {
   renew(input: { leaseToken: string; profileId: string; leaseMs?: number }): boolean {
     const owner = this.get(input.profileId);
     if (!owner || owner.leaseToken !== input.leaseToken) return false;
-    const expiresAt = this.#now() + (input.leaseMs ?? 5 * 60_000);
+    // A lease that already lapsed past lease + grace is dead even when
+    // nobody contested the lapse: claim would hand the profile to the next
+    // claimant at exactly this instant, so a returning owner's heartbeat
+    // must fail closed — token equality alone would silently resurrect an
+    // expired lease no sweeper ever removes.
+    if (owner.leaseExpiresAt + DEFAULT_LEASE_GRACE_MS <= this.#now()) return false;
+    const expiresAt = this.#now() + (input.leaseMs ?? DEFAULT_LEASE_MS);
     this.#sqlite
       .prepare(
         "update profile_owners set lease_expires_at = ?, last_seen_at = ? where profile_id = ?",
