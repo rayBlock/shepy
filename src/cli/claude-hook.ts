@@ -8,16 +8,16 @@ import { ObservabilityRpcClient } from "@/daemon/client.js";
  * Claude Code hook bridge (`shepy claude-hook`).
  *
  * Claude Code has no extension host: it runs short-lived hook commands at turn
- * boundaries, and only UserPromptSubmit can inject text the model acts on.
- * This bridge makes a Claude pane a Shepy profile owner anyway. Every
- * UserPromptSubmit re-claims the profile (a same-subscriber re-claim always
- * succeeds and returns a fresh token — that is what makes a stateless hook
- * viable), leases the inbox once, marks the batch delivered under the current
- * prompt id, and emits a bounded outcome summary as additionalContext. A Stop
- * hook CANNOT inject text, so it never tries: it only returns
- * decision "continue" while fresh obligations are pending and acknowledges
- * exactly what this prompt's delivery recorded. The agent-side half of that
- * contract (pull the inbox when continued) lives in SKILL.md.
+ * boundaries. UserPromptSubmit and Stop can both inject text the model acts
+ * on, via hookSpecificOutput.additionalContext (a Stop injection continues
+ * the conversation as Stop hook feedback). This bridge makes a Claude pane a
+ * Shepy profile owner anyway. Every UserPromptSubmit re-claims the profile (a
+ * same-subscriber re-claim always succeeds and returns a fresh token — that
+ * is what makes a stateless hook viable), leases the inbox once, marks the
+ * batch delivered under the current prompt id, and emits a bounded outcome
+ * summary as additionalContext. When worker outcomes arrive mid-turn, the
+ * Stop hook delivers the same bounded summary — which continues the turn —
+ * and acknowledges exactly what this prompt's delivery recorded.
  *
  * Hard rules:
  *  - Exit 0 on every expected condition. The hook runs inside the user's turn
@@ -254,13 +254,6 @@ async function handleStop(payload: HookPayload, input: ClaudeHookInput): Promise
   const client = new ObservabilityRpcClient({ socketPath: input.socketPath });
   try {
     const request = requestWithDeadline(client);
-    const pending = await request<{ obligations?: unknown[] }>("inbox.list", {
-      limit: 1,
-      profileId: input.profileId,
-      state: "pending",
-    });
-    const hasPending = (pending.obligations ?? []).length > 0;
-
     // Ack exactly what this prompt's delivery recorded. Fencing is per
     // obligation (id + lease token), so the token from this turn's claim
     // still acks even though Stop never re-claims. Lease expiry recovers a
@@ -284,18 +277,43 @@ async function handleStop(payload: HookPayload, input: ClaudeHookInput): Promise
       }
     }
 
-    // Stop cannot inject text the model acts on, so continuing is only worth
-    // it while the agent still has a chance to pull the inbox (SKILL.md
-    // carries that instruction). stop_hook_active guards the loop: this Stop
-    // already continued once, so never continue again.
+    // stop_hook_active guards the loop a Stop injection creates: injecting
+    // continues the conversation, which produces another Stop. This Stop has
+    // already continued once, so it only acks and never injects again.
     if (payload.stop_hook_active === true) return;
-    if (!hasPending) return;
+    if (!file || file.profileId !== input.profileId) return;
+
+    // Deliver fresh mid-turn outcomes the same way UserPromptSubmit does:
+    // lease, mark delivered under this prompt id, inject the same bounded
+    // summary. The injection is what continues the conversation.
+    const lease = await request<{ obligations?: LeasedObligation[] }>("inbox.lease", {
+      leaseToken: file.leaseToken,
+      maxBatch: LEASE_MAX_BATCH,
+      profileId: input.profileId,
+    });
+    const obligations = lease.obligations ?? [];
+    if (obligations.length === 0) return;
+    const ids = obligations.map((obligation) => obligation.id);
+    writeOwnerFile(input.homeDir, payload.session_id, {
+      ...file,
+      delivered: payload.prompt_id ? { ids, promptId: payload.prompt_id } : null,
+    });
+    try {
+      await request("inbox.delivered", {
+        ...(payload.prompt_id ? { harnessTurnId: payload.prompt_id } : {}),
+        ids,
+        leaseToken: file.leaseToken,
+        ownerSessionRefJson: file.ownerSessionRefJson,
+      });
+    } catch (error) {
+      writeOwnerFile(input.homeDir, payload.session_id, { ...file, delivered: null });
+      throw new ExpectedHookError(`inbox delivered failed: ${describe(error)}`);
+    }
     input.writeStdout(
       JSON.stringify({
         hookSpecificOutput: {
-          decision: "continue",
+          additionalContext: formatHookContext(input.profileId, obligations),
           hookEventName: "Stop",
-          reason: `Shepy has pending worker outcomes for profile ${input.profileId}; run shepy inbox list ${input.profileId} and report them`,
         },
       }),
     );

@@ -100,7 +100,7 @@ Claude Code loads skills at startup, so start a fresh session after installing o
 
 ### Claude Code hook bridge
 
-`shepy claude-hook --profile <profileId>` lets a Claude Code pane own a Shepy profile. The hook claims the profile at every turn, delivers pending worker outcomes as injected context on `UserPromptSubmit`, and acknowledges what each prompt consumed on `Stop`. Register it in `.claude/settings.json` yourself — Shepy never edits that file:
+`shepy claude-hook --profile <profileId>` lets a Claude Code pane own a Shepy profile. The hook claims the profile at every turn, delivers pending worker outcomes as injected context on `UserPromptSubmit` (and on `Stop`, when outcomes arrive mid-turn), and acknowledges what each prompt consumed on `Stop`. Register it in `.claude/settings.json` yourself — Shepy never edits that file:
 
 ```json
 {"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"shepy claude-hook --profile <profileId>"}]}]}}

@@ -29,8 +29,9 @@ import { ProfileService } from "@/observability/profile-service.js";
  * must be able to own a profile across turn boundaries: claim on every
  * UserPromptSubmit (a same-subscriber re-claim always succeeds), lease, mark
  * delivered under the prompt id, and inject a bounded outcome summary. Stop
- * cannot inject text, so it only holds the turn open while fresh obligations
- * are pending and acks what this prompt consumed. The hook exits 0 on every
+ * injects the same bounded summary via hookSpecificOutput.additionalContext
+ * when fresh obligations arrived mid-turn (that injection continues the
+ * conversation) and acks what this prompt consumed. The hook exits 0 on every
  * expected condition and never prints the lease token.
  */
 
@@ -347,30 +348,43 @@ describe("claude-hook UserPromptSubmit", () => {
 });
 
 describe("claude-hook Stop", () => {
-  test("pending obligations continue the turn; this prompt's delivery is acked", async () => {
+  test("pending obligations are delivered as Stop additionalContext; this prompt's delivery is acked", async () => {
     const fixture = await openHookServer();
     projectOutcome(fixture, "hook-first", "first outcome");
     await runHook(fixture, promptPayload());
     const consumedIds = readOwnerFile(fixture).delivered?.ids ?? [];
 
-    // A worker finishes mid-turn: a fresh pending obligation must not park.
+    // A worker finishes mid-turn: Stop injects the outcome summary itself —
+    // the real Claude Code contract (hookSpecificOutput.additionalContext,
+    // which continues the conversation). No decision/reason fields: for Stop
+    // those are not how text reaches the model.
     const secondEventId = projectOutcome(fixture, "hook-second", "second outcome");
     const { code, stdout } = await runHook(fixture, stopPayload());
     expect(code).toBe(0);
 
     const parsed = JSON.parse(stdout) as {
-      hookSpecificOutput?: { decision?: string; hookEventName?: string; reason?: string };
+      hookSpecificOutput?: { additionalContext?: string; hookEventName?: string };
     };
     expect(parsed.hookSpecificOutput?.hookEventName).toBe("Stop");
-    expect(parsed.hookSpecificOutput?.decision).toBe("continue");
-    expect(parsed.hookSpecificOutput?.reason).toContain("driffs");
+    const context = parsed.hookSpecificOutput?.additionalContext ?? "";
+    expect(context).toContain("[SHEPY PROFILE OUTCOMES]");
+    expect(context).toContain("second outcome");
+    expect(Object.keys(parsed)).toEqual(["hookSpecificOutput"]);
+    expect(Object.keys(parsed.hookSpecificOutput ?? {}).sort()).toEqual([
+      "additionalContext",
+      "hookEventName",
+    ]);
+    expect(stdout).not.toContain('"decision"');
+    expect(stdout).not.toContain('"reason"');
 
-    // What this prompt consumed is retired; the fresh outcome stays pending.
+    // What this prompt consumed is retired; the fresh outcome is delivered
+    // into this very injection (not left pending, not lost).
     const acked = fixture.delivery.inboxList({ profileId: "driffs", state: "acked" });
     expect(acked.map((row) => row.id).sort()).toEqual([...consumedIds].sort());
-    const pending = fixture.delivery.inboxList({ profileId: "driffs", state: "pending" });
-    expect(pending).toHaveLength(1);
-    expect(pending[0]?.agentEventId).toBe(secondEventId);
+    const delivered = fixture.delivery.inboxList({ profileId: "driffs", state: "delivered" });
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]?.agentEventId).toBe(secondEventId);
+    expect(readOwnerFile(fixture).delivered?.ids).toEqual([delivered[0]?.id]);
   });
 
   test("nothing pending is silent and acks this prompt's delivery", async () => {
