@@ -93,7 +93,8 @@ function fakeCtx(options: { idle?: boolean } = {}) {
   return ctx;
 }
 
-function withHerdrEnv() {
+/** Full Herdr identity plus the dispatch-provided SHEPY_PROFILE. */
+function withHerdrEnv(profile: string | undefined) {
   const previous = {
     HERDR_ENV: process.env.HERDR_ENV,
     HERDR_PANE_ID: process.env.HERDR_PANE_ID,
@@ -105,7 +106,8 @@ function withHerdrEnv() {
   process.env.HERDR_PANE_ID = "wA:p1";
   process.env.HERDR_SOCKET_PATH = "/tmp/herdr.sock";
   process.env.HERDR_WORKSPACE_ID = "wA";
-  delete process.env.SHEPY_PROFILE;
+  if (profile === undefined) delete process.env.SHEPY_PROFILE;
+  else process.env.SHEPY_PROFILE = profile;
   return previous;
 }
 
@@ -137,93 +139,92 @@ function connectionResponse() {
   };
 }
 
-async function renewHarness(client: FakeClient) {
-  const pi = createFakePi();
-  const ctx = fakeCtx({ idle: true });
-  const { createShepyPiExtension } = (await import(extensionModuleUrl)) as Module;
-  createShepyPiExtension({ clientFactory: () => client })(pi);
-  const previous = withHerdrEnv();
-  try {
-    await pi.emit("session_start", {}, ctx);
-    await client.connect();
-  } finally {
-    restoreEnv(previous);
-  }
-  client.calls.length = 0; // observe only the profile pump's own traffic
-  return { ctx, pi };
-}
-
-function renewingClient(renew: (method: string, params: unknown) => unknown) {
+function envClaimClient(
+  claimResponse: unknown = { result: { kind: "claimed", leaseToken: "lease-1" } },
+) {
   const client = createFakeClient();
-  client.response = (method, params) => {
-    if (method === "profile.claim") return { result: { kind: "claimed", leaseToken: "lease-1" } };
-    if (method === "profile.renew") return renew(method, params);
+  client.response = (method) => {
+    if (method === "profile.claim") return claimResponse;
+    if (method === "profile.renew") return { renewed: true };
     if (method === "inbox.lease") return { obligations: [] };
     return connectionResponse();
   };
   return client;
 }
 
-describe("shepy-pi profile pump heartbeat", () => {
-  test("the pump renews the lease before leasing, on the claim pump and every tick", async () => {
-    vi.useFakeTimers();
-    const client = renewingClient(() => ({ renewed: true }));
-    const { ctx, pi } = await renewHarness(client);
-    try {
-      await pi.command("on driffs", ctx);
-      await vi.advanceTimersByTimeAsync(20);
-      const methods = client.calls.map(([method]) => method);
-      expect(methods).toContain("profile.renew");
-      expect(methods.indexOf("profile.renew")).toBeLessThan(methods.indexOf("inbox.lease"));
-      client.calls.length = 0;
-      await vi.advanceTimersByTimeAsync(10_000); // one pump tick
-      expect(client.calls.map(([method]) => method)).toEqual(["profile.renew", "inbox.lease"]);
-    } finally {
-      vi.clearAllTimers();
-      vi.useRealTimers();
-    }
-  });
+async function startSession(client: FakeClient, profile: string | undefined) {
+  const pi = createFakePi();
+  const ctx = fakeCtx({ idle: true });
+  const { createShepyPiExtension } = (await import(extensionModuleUrl)) as Module;
+  createShepyPiExtension({ clientFactory: () => client })(pi);
+  const previous = withHerdrEnv(profile);
+  try {
+    await pi.emit("session_start", {}, ctx);
+    await client.connect();
+    await vi.advanceTimersByTimeAsync(20);
+  } finally {
+    restoreEnv(previous);
+  }
+  return { ctx, pi };
+}
 
-  test("renewed:false ends ownership once: timer stops, mode clears, no re-claim", async () => {
+describe("shepy-pi env claim (SHEPY_PROFILE)", () => {
+  test("a dispatched pane owns its profile before its first token", async () => {
     vi.useFakeTimers();
-    const client = renewingClient(() => ({ renewed: false }));
-    const { ctx, pi } = await renewHarness(client);
+    const client = envClaimClient();
     try {
-      await pi.command("on driffs", ctx);
-      await vi.advanceTimersByTimeAsync(20);
-      const losses = ctx.notifications.filter(([message]) => message.includes("ownership lost"));
-      expect(losses).toHaveLength(1);
-      expect(losses[0]).toEqual(["Shepy · profile driffs ownership lost", "warning"]);
-      // Profile mode cleared: the footer falls back to plain orchestrator state.
-      expect(ctx.statuses.get("shepy")).toBe("◆ Shepy");
-      client.calls.length = 0;
-      // Two more ticks: the timer is stopped — no renew retry, no auto re-claim.
-      await vi.advanceTimersByTimeAsync(21_000);
-      expect(client.calls).toEqual([]);
-    } finally {
-      vi.clearAllTimers();
-      vi.useRealTimers();
-    }
-  });
-
-  test("a renew transport failure is transient: the tick still leases", async () => {
-    vi.useFakeTimers();
-    const client = renewingClient(() => {
-      throw new Error("socket hiccup");
-    });
-    const { ctx, pi } = await renewHarness(client);
-    try {
-      await pi.command("on driffs", ctx);
-      await vi.advanceTimersByTimeAsync(20);
-      // claim, then the immediate pump: renew fails transiently, lease proceeds.
-      expect(client.calls.map(([method]) => method)).toEqual([
+      const { ctx } = await startSession(client, "driffs");
+      expect(client.calls).toContainEqual([
         "profile.claim",
-        "profile.renew",
-        "inbox.lease",
+        expect.objectContaining({
+          paneId: "wA:p1",
+          profileId: "driffs",
+          subscriberId: "pi-session",
+          workspaceId: "wA",
+        }),
       ]);
+      // Notified exactly like the /shepy on <profile> command path.
+      expect(ctx.notifications).toContainEqual(["Shepy · profile driffs claimed", "info"]);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  test("a rejected env claim notifies, leaves the pane unowned, and never retries", async () => {
+    vi.useFakeTimers();
+    const client = envClaimClient({
+      result: {
+        kind: "rejected",
+        owner: { harnessKind: "pi", paneId: "wB:p9" },
+        reason: "lease_active",
+      },
+    });
+    try {
+      const { ctx } = await startSession(client, "driffs");
+      const claims = client.calls.filter(([method]) => method === "profile.claim");
+      expect(claims).toHaveLength(1);
       expect(
-        ctx.notifications.filter(([message]) => message.includes("ownership lost")),
-      ).toHaveLength(0);
+        ctx.notifications.filter(([message]) => message.includes("claim rejected")),
+      ).toHaveLength(1);
+      // No pump, no timer: a much later tick must produce no further traffic.
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(client.calls.filter(([method]) => method === "profile.claim")).toHaveLength(1);
+      expect(client.calls.some(([method]) => method === "inbox.lease")).toBe(false);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  test("unset or empty SHEPY_PROFILE keeps today's behaviour", async () => {
+    vi.useFakeTimers();
+    const client = envClaimClient();
+    try {
+      await startSession(client, undefined);
+      expect(client.calls.some(([method]) => method === "profile.claim")).toBe(false);
+      await startSession(client, "   ");
+      expect(client.calls.some(([method]) => method === "profile.claim")).toBe(false);
     } finally {
       vi.clearAllTimers();
       vi.useRealTimers();

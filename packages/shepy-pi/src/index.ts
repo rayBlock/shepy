@@ -1050,6 +1050,18 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
     };
     pi.registerTool?.(shepyProfileTool);
 
+    const claimFromEnvironment = async (ctx: PiContext) => {
+      const profileId = stringValue(process.env.SHEPY_PROFILE)?.trim() ?? "";
+      if (!profileId) return;
+      // Dispatched panes own their profile without anyone typing. The claim
+      // path notifies exactly like /shepy on <profile>; a rejection leaves
+      // the pane unowned and is never retried on a timer — the only later
+      // attempt is the next presence registration (reconnect) or an
+      // explicit /shepy on / shepy_profile claim. handleProfileOn swallows
+      // transport errors into its result, so this never rejects the socket.
+      await handleProfileOn(profileId, ctx);
+    };
+
     pi.on("session_start", (_event: unknown, ctx: PiContext) => {
       activeContext = ctx;
       state.subscriberId = ctx.sessionManager.getSessionId();
@@ -1068,7 +1080,7 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
       state.client?.close();
       const client = options.clientFactory?.() ?? new ReconnectingDaemonClient({ socketPath: defaultSocketPath() });
       state.client = client;
-      client.onConnected = () => registerPresence(ctx);
+      client.onConnected = () => registerPresence(ctx).then(() => claimFromEnvironment(ctx));
       client.onDisconnected = () => {
         state.connected = false;
         markDisconnected(activeContext);
