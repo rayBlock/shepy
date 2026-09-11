@@ -11,6 +11,7 @@ import { dirname, join } from "node:path";
 import { Type } from "@sinclair/typebox";
 import { Value } from "@sinclair/typebox/value";
 import { ObservabilityRpcClient } from "@/daemon/client.js";
+import { profileClaimInputSchema } from "@/observability/schemas.js";
 
 /**
  * Claude Code hook bridge (`shepy claude-hook`).
@@ -19,9 +20,12 @@ import { ObservabilityRpcClient } from "@/daemon/client.js";
  * boundaries. UserPromptSubmit and Stop can both inject text the model acts
  * on, via hookSpecificOutput.additionalContext (a Stop injection continues
  * the conversation as Stop hook feedback). This bridge makes a Claude pane a
- * Shepy profile owner anyway. Every UserPromptSubmit re-claims the profile (a
- * same-subscriber re-claim always succeeds and returns a fresh token — that
- * is what makes a stateless hook viable), settles the previous turn's
+ * Shepy profile owner anyway. Every UserPromptSubmit re-claims the profile,
+ * presenting the persisted lease token as proof of possession — a matching
+ * token re-claims immediately with a fresh token (that is what makes a
+ * stateless hook viable), while a stale token falls back to the expiry rule,
+ * which is rejected while the lease is alive and succeeds once it lapses —
+ * settles the previous turn's
  * owner-file record, then leases the inbox once, marks the batch delivered
  * under the current prompt id, and emits a bounded outcome summary as
  * additionalContext. When worker outcomes arrive mid-turn, the Stop hook
@@ -54,6 +58,18 @@ import { ObservabilityRpcClient } from "@/daemon/client.js";
  *    transcript; it lives in <home>/owners/claude-<session_id>-<profile>.json,
  *    mode 0600. A missing file is recovered by the next claim, never an error.
  */
+
+/**
+ * Whether THIS build's profile.claim schema accepts the proof-of-possession
+ * field (currentLeaseToken). The hook binary and the daemon ship from the
+ * same package, so this is the build-time truth of what the paired daemon
+ * accepts: where it is false, the daemon rejects ANY unknown field
+ * (additionalProperties:false errors the whole claim), so the field must be
+ * omitted or every re-claim would be refused. Where it is true — any build
+ * that carries the lease-token re-claim — the hook presents the persisted
+ * token whenever the owner file has one.
+ */
+const schemaAcceptsCurrentLeaseToken = "currentLeaseToken" in profileClaimInputSchema.properties;
 
 /** Hook payloads are small JSON documents; anything larger is malformed. */
 export const CLAUDE_HOOK_STDIN_MAX_CHARS = 1_000_000;
@@ -360,6 +376,28 @@ function requireHerdrIdentity(
   return { paneId, workspaceId };
 }
 
+/**
+ * The claim-rejection systemMessage line. Two distinct operator situations
+ * share one daemon outcome ("rejected"): a pane with no persisted token is
+ * genuinely locked out by another owner, while a pane whose PRESENTED token
+ * was rejected holds a stale bridge credential — its token was superseded
+ * (another pane re-claimed, or the daemon lost the row), the current lease
+ * is still alive, and the next prompt re-claims by itself once the lease
+ * lapses. Keeping the texts distinct lets an operator tell "wait a few
+ * minutes" from "coordinate with whoever owns the profile". Both stay one
+ * short line inside the systemMessage budget.
+ */
+export function claimRejectionWarning(input: {
+  owner?: { harnessKind?: string; paneId?: string } | undefined;
+  presentedLeaseToken: string | undefined;
+  profileId: string;
+}): string {
+  if (input.presentedLeaseToken !== undefined) {
+    return `shepy: profile ${plainText(input.profileId)} rejected this pane's persisted lease token (stale or superseded; the current lease is still alive) — this pane recovers automatically once the lease lapses (lease + grace, 5 min + 30 s at defaults) and will not receive worker outcomes until then`;
+  }
+  return `shepy: profile ${plainText(input.profileId)} is owned by pane ${plainText(input.owner?.paneId)} (${plainText(input.owner?.harnessKind, 24)}); this pane will not receive worker outcomes`;
+}
+
 async function handlePromptSubmit(
   payload: HookPayload,
   input: ClaudeHookInput,
@@ -380,10 +418,7 @@ async function handlePromptSubmit(
     const herdrSessionName = await resolveHerdrSessionName(request, paneId, workspaceId);
     // The owner-file read sits ABOVE the claim on purpose: the persisted
     // record (and its lease token) must be in scope at the profile.claim
-    // call site below. That is the single insertion point for the upcoming
-    // proof-of-possession parameter (same-subscriber re-claims will have to
-    // present the current lease token): one conditional line inside the
-    // params object, fed from `previous`.
+    // call site below, where the token is presented as proof of possession.
     const previous = readOwnerFile(input.homeDir, payload.session_id, input.profileId, warnings);
     const previousFailedDelivery = previous?.failedDelivery;
     const claim = await request<{
@@ -393,6 +428,20 @@ async function handlePromptSubmit(
         owner?: { harnessKind?: string; paneId?: string };
       };
     }>("profile.claim", {
+      // Proof of possession: the exact token from this hook's previous
+      // successful claim for this profile, presented whenever the owner
+      // file has one and this build's paired daemon accepts the field (see
+      // schemaAcceptsCurrentLeaseToken). Omitted entirely when there is
+      // none — an empty string or null would fail the schema's minLength
+      // and error the whole claim. A wrong or stale token is NOT an error:
+      // the daemon falls back to the expiry rule and rejects with
+      // lease_active while the lease is alive (reported below as an
+      // expected, self-recovering condition). A successful re-claim
+      // invalidates the presented token and returns a fresh one, which the
+      // owner-file write below persists as before.
+      ...(previous?.leaseToken !== undefined && schemaAcceptsCurrentLeaseToken
+        ? { currentLeaseToken: previous.leaseToken }
+        : {}),
       harnessKind: "claude",
       harnessSessionRefJson: ownerSessionRefJson,
       herdrSessionName,
@@ -406,10 +455,16 @@ async function handlePromptSubmit(
     if ((result.kind !== "claimed" && result.kind !== "reclaimed") || !result.leaseToken) {
       if (result.kind === "rejected") {
         // Another owner (typically a Pi lead) holds this profile. Without
-        // this line the pane is deaf forever and nobody says so.
-        warnings.push(
-          `shepy: profile ${plainText(input.profileId)} is owned by pane ${plainText(result.owner?.paneId)} (${plainText(result.owner?.harnessKind, 24)}); this pane will not receive worker outcomes`,
-        );
+        // this line the pane is deaf forever and nobody says so. A pane
+        // that PRESENTED a persisted token gets a distinct line instead:
+        // its bridge credential is stale, the lease is still alive, and it
+        // recovers by itself once the lease lapses — no operator action.
+        const warning = claimRejectionWarning({
+          owner: result.owner,
+          presentedLeaseToken: previous?.leaseToken,
+          profileId: input.profileId,
+        });
+        if (warning !== undefined) warnings.push(warning);
       }
       throw new ExpectedHookError(`profile claim rejected (${result.kind ?? "unknown"})`);
     }

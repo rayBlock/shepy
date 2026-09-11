@@ -100,7 +100,7 @@ Claude Code loads skills at startup, so start a fresh session after installing o
 
 ### Claude Code hook bridge
 
-`shepy claude-hook --profile <profileId>` lets a Claude Code pane own a Shepy profile. The hook claims the profile at every turn, delivers pending worker outcomes as injected context on `UserPromptSubmit` (and on `Stop`, when outcomes arrive mid-turn), and acknowledges what each prompt consumed at the next turn boundary — on the following `UserPromptSubmit`, or on `Stop` when it runs. Register it in `.claude/settings.json` yourself — Shepy never edits that file:
+`shepy claude-hook --profile <profileId>` lets a Claude Code pane own a Shepy profile. The hook claims the profile at every turn, delivers pending worker outcomes as injected context on `UserPromptSubmit` (and on `Stop`, when outcomes arrive mid-turn), and acknowledges what each prompt consumed at the next turn boundary — on the following `UserPromptSubmit`, or on `Stop` when it runs. Each re-claim presents the lease token persisted in the owner file as proof of possession: a matching token re-claims immediately with a fresh token, while a stale one is refused only while the current lease is alive and the bridge recovers by itself once it lapses (lease + grace, 5 min + 30 s at defaults) — no operator action. When a claim is refused the hook says which situation applies through a `systemMessage`: a stale persisted token (wait for the lease to lapse) is a different line from another pane owning the profile (coordinate with the owner). Register it in `.claude/settings.json` yourself — Shepy never edits that file:
 
 ```json
 {"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"shepy claude-hook --profile <profileId>"}]}]}}

@@ -17,9 +17,11 @@ import { createAgentHistoryService } from "@/agent-history/service.js";
 import {
   CONTEXT_MAX_CHARS,
   CONTEXT_MAX_LINES,
+  claimRejectionWarning,
   formatHookContext,
   type LeasedObligation,
   runClaudeHook,
+  SYSTEM_MESSAGE_MAX_CHARS,
 } from "@/cli/claude-hook.js";
 import { formatCliError, helpText, parseCliArgs } from "@/cli/shepy.js";
 import { ObservabilityRpcClient } from "@/daemon/client.js";
@@ -40,6 +42,7 @@ import { AgentContextService } from "@/observability/agent-context-service.js";
 import { AgentOrchestratorService } from "@/observability/agent-orchestrator-service.js";
 import { ProfileDeliveryService } from "@/observability/profile-delivery-service.js";
 import { ProfileService } from "@/observability/profile-service.js";
+import { profileClaimInputSchema } from "@/observability/schemas.js";
 
 /**
  * Task B2 gate — `shepy claude-hook` end to end against a REAL daemon socket,
@@ -637,6 +640,255 @@ describe("claude-hook UserPromptSubmit", () => {
       ).toHaveLength(0);
     } finally {
       chmodSync(dirname(ownerFilePath(fixture)), 0o700);
+    }
+  });
+});
+
+describe("claude-hook lease-token re-claim (proof of possession)", () => {
+  // The re-claim proof (currentLeaseToken) is accepted only by the other
+  // lane's daemon change, which is NOT in this worktree yet: the claim
+  // schema here still has additionalProperties:false WITHOUT the field, so
+  // any test that puts it on the wire can only pass once the branches
+  // merge. The gate below flips those tests on automatically when the
+  // schema lands — no manual unskip — while `pnpm check` stays green here.
+  const schemaAcceptsCurrentLeaseToken = "currentLeaseToken" in profileClaimInputSchema.properties;
+
+  test("a first-ever claim omits currentLeaseToken entirely and still succeeds", async () => {
+    const fixture = await openHookServer();
+    // Pass-through spy: the claim still runs against the real server, real
+    // schema, real SQLite — the spy only records what went over the wire.
+    const claims: Array<{ method: string; params: Record<string, unknown> }> = [];
+    const realRequest = ObservabilityRpcClient.prototype.request;
+    vi.spyOn(ObservabilityRpcClient.prototype, "request").mockImplementation(function (
+      this: ObservabilityRpcClient,
+      method: string,
+      params: unknown,
+    ) {
+      if (method === "profile.claim") {
+        claims.push({ method, params: params as Record<string, unknown> });
+      }
+      return realRequest.call(this, method, params);
+    });
+
+    const { code } = await runHook(fixture, promptPayload());
+    expect(code).toBe(0);
+
+    const claim = claims[claims.length - 1];
+    expect(claim, "the hook must claim on the first prompt").toBeDefined();
+    if (claim === undefined) throw new Error("unreachable: profile.claim was not captured");
+    // Byte-level absence, asserted on the exact object handed to the RPC
+    // client: no key at all. An empty string or null would fail the
+    // schema's minLength and error the whole claim, so only true absence
+    // is correct for a first-ever claim.
+    expect(Object.hasOwn(claim.params, "currentLeaseToken")).toBe(false);
+    // Success against the real daemon doubles as a tripwire: this
+    // worktree's claim schema rejects ANY unknown field
+    // (additionalProperties:false), so a claim that succeeds here proves
+    // nothing extra went out under any name.
+    const record = readOwnerFile(fixture);
+    expect(record.leaseToken).toBeTruthy();
+    expect(fixture.owners.get("driffs")?.subscriberId).toBe(SESSION_ID);
+  });
+
+  test.runIf(schemaAcceptsCurrentLeaseToken)(
+    "a re-claim presents the persisted token, is reclaimed, and persists the NEW token",
+    async () => {
+      const fixture = await openHookServer();
+      // Turn 1: fresh claim; the owner file holds token T1.
+      const first = await runHook(fixture, promptPayload({ prompt_id: "reclaim-p1" }));
+      expect(first.code).toBe(0);
+      const firstToken = readOwnerFile(fixture).leaseToken;
+      expect(firstToken).toBeTruthy();
+
+      // Turn 2 re-claims presenting T1.
+      const wire: Array<{ method: string; params: unknown; result: unknown }> = [];
+      const realRequest = ObservabilityRpcClient.prototype.request;
+      vi.spyOn(ObservabilityRpcClient.prototype, "request").mockImplementation(function (
+        this: ObservabilityRpcClient,
+        method: string,
+        params: unknown,
+      ) {
+        return realRequest.call(this, method, params).then((result) => {
+          if (method === "profile.claim") wire.push({ method, params, result });
+          return result;
+        });
+      });
+      const second = await runHook(fixture, promptPayload({ prompt_id: "reclaim-p2" }));
+      expect(second.code).toBe(0);
+
+      const claim = wire[wire.length - 1];
+      expect(claim, "the hook must re-claim on the second prompt").toBeDefined();
+      if (claim === undefined) throw new Error("unreachable: profile.claim was not captured");
+      // THE REGRESSION THAT MATTERS: the field name is byte-correct against
+      // the real schema. The claim schema is additionalProperties:false — a
+      // misspelled name fails validation and the whole claim errors, so a
+      // "reclaimed" answer with a fresh token is reachable ONLY when the
+      // exact key currentLeaseToken was accepted by the real server.
+      expect(claim.params).toMatchObject({ currentLeaseToken: firstToken });
+      const claimResult = claim.result as { kind?: string; leaseToken?: string };
+      expect(claimResult.kind).toBe("reclaimed");
+      expect(claimResult.leaseToken).toBeTruthy();
+      // A re-claim invalidates the presented token and mints a fresh one.
+      expect(claimResult.leaseToken).not.toBe(firstToken);
+      // The hook persists the NEW token (not the presented one) — the old
+      // token is dead the moment the re-claim lands.
+      const record = readOwnerFile(fixture);
+      expect(record.leaseToken).toBe(claimResult.leaseToken);
+      expect(record.leaseToken).not.toBe(firstToken);
+      expect(fixture.owners.get("driffs")?.leaseToken).toBe(claimResult.leaseToken);
+    },
+  );
+
+  test("a pane whose persisted token was superseded by another owner is refused with the distinct stale-token line", async () => {
+    const fixture = await openHookServer();
+    // Turn 1: the hook claims and delivers; the owner file holds the
+    // token that is about to be superseded.
+    projectOutcome(fixture, "superseded-1", "delivered before the takeover");
+    const first = await runHook(fixture, promptPayload({ prompt_id: "sup-p1" }));
+    expect(first.code).toBe(0);
+    const staleToken = readOwnerFile(fixture).leaseToken;
+    expect(staleToken).toBeTruthy();
+
+    // The hook's lease lapses (lease 5 min + grace 30 s), and a different
+    // subscriber (a Pi lead pane) takes the profile: the hook's persisted
+    // token is now superseded and the NEW lease is alive.
+    const lapsed = openSqlite(join(fixture.dir, "test.sqlite"));
+    openDbs.push(lapsed.sqlite);
+    lapsed.sqlite
+      .prepare(
+        "update profile_owners set lease_expires_at = 0, last_seen_at = 0 where profile_id = ?",
+      )
+      .run("driffs");
+    const takeover = fixture.delivery.claim({
+      harnessKind: "pi",
+      harnessSessionRefJson: "{}",
+      herdrSessionName: "lane-b",
+      paneId: "w9:p9",
+      profileId: "driffs",
+      subscriberId: "other-subscriber",
+      terminalId: "w9:p9",
+      workspaceId: "w9",
+    });
+    expect(takeover.kind).toBe("reclaimed");
+
+    // An outcome lands while the stale bridge is locked out.
+    projectOutcome(fixture, "superseded-2", "must stay pending, never leased");
+
+    const { code, stdout } = await runHook(fixture, promptPayload({ prompt_id: "sup-p2" }));
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdout) as { hookSpecificOutput?: unknown; systemMessage?: string };
+    expect(parsed.hookSpecificOutput).toBeUndefined();
+    // The DISTINCT stale-token line: names the persisted token and the
+    // self-recovery, NOT "owned by pane" — an operator must be able to
+    // tell "wait for the lease to lapse" from "coordinate with the owner".
+    expect(parsed.systemMessage).toContain("driffs");
+    expect(parsed.systemMessage).toContain("persisted lease token");
+    expect(parsed.systemMessage).toContain("recovers automatically");
+    expect(parsed.systemMessage).not.toContain("is owned by pane");
+    // Refused before settling or leasing: the previous turn's delivered
+    // record is untouched, nothing new is leased, nothing is acked. Both
+    // refusal mechanisms land here — a pre-re-claim daemon refuses by
+    // subscriber identity, a re-claim daemon by the superseded token —
+    // and the operator-facing outcome is identical.
+    expect(fixture.delivery.inboxList({ profileId: "driffs", state: "leased" })).toHaveLength(0);
+    expect(fixture.delivery.inboxList({ profileId: "driffs", state: "pending" })).toHaveLength(1);
+    const record = readOwnerFile(fixture);
+    expect(record.leaseToken).toBe(staleToken);
+    expect(fixture.owners.get("driffs")?.subscriberId).toBe("other-subscriber");
+  });
+
+  test.runIf(schemaAcceptsCurrentLeaseToken)(
+    "a stale persisted token is rejected while the lease is alive: exit 0, nothing leased, distinct warning",
+    async () => {
+      const fixture = await openHookServer();
+      // Turn 1: the hook claims and delivers; the owner file holds the
+      // token that is about to go stale.
+      projectOutcome(fixture, "stale-1", "delivered before the takeover");
+      const first = await runHook(fixture, promptPayload({ prompt_id: "stale-p1" }));
+      expect(first.code).toBe(0);
+      const staleToken = readOwnerFile(fixture).leaseToken;
+      expect(staleToken).toBeTruthy();
+
+      // The hook's lease lapses (lease 5 min + grace 30 s), and a different
+      // subscriber (a Pi lead pane) takes the profile: the hook's persisted
+      // token is now superseded and the NEW lease is alive.
+      const lapsed = openSqlite(join(fixture.dir, "test.sqlite"));
+      openDbs.push(lapsed.sqlite);
+      lapsed.sqlite
+        .prepare(
+          "update profile_owners set lease_expires_at = 0, last_seen_at = 0 where profile_id = ?",
+        )
+        .run("driffs");
+      const takeover = fixture.delivery.claim({
+        harnessKind: "pi",
+        harnessSessionRefJson: "{}",
+        herdrSessionName: "lane-b",
+        paneId: "w9:p9",
+        profileId: "driffs",
+        subscriberId: "other-subscriber",
+        terminalId: "w9:p9",
+        workspaceId: "w9",
+      });
+      expect(takeover.kind).toBe("reclaimed");
+
+      // An outcome lands while the stale bridge is locked out.
+      projectOutcome(fixture, "stale-2", "must stay pending, never leased");
+
+      const { code, stdout } = await runHook(fixture, promptPayload({ prompt_id: "stale-p2" }));
+      expect(code).toBe(0);
+      const parsed = JSON.parse(stdout) as { hookSpecificOutput?: unknown; systemMessage?: string };
+      expect(parsed.hookSpecificOutput).toBeUndefined();
+      // The DISTINCT stale-token line: names the persisted token and the
+      // self-recovery, NOT "owned by pane" — an operator must be able to
+      // tell "wait for the lease to lapse" from "coordinate with the owner".
+      expect(parsed.systemMessage).toContain("driffs");
+      expect(parsed.systemMessage).toContain("persisted lease token");
+      expect(parsed.systemMessage).toContain("recovers automatically");
+      expect(parsed.systemMessage).not.toContain("is owned by pane");
+      // Rejected before settling or leasing: the previous turn's delivered
+      // record is untouched, nothing new is leased, nothing is acked.
+      expect(fixture.delivery.inboxList({ profileId: "driffs", state: "leased" })).toHaveLength(0);
+      expect(fixture.delivery.inboxList({ profileId: "driffs", state: "pending" })).toHaveLength(1);
+      const record = readOwnerFile(fixture);
+      expect(record.leaseToken).toBe(staleToken);
+      expect(fixture.owners.get("driffs")?.subscriberId).toBe("other-subscriber");
+    },
+  );
+});
+
+describe("claude-hook claim-rejection warnings", () => {
+  test("a stale presented token gets its own line, distinct from another owner's", () => {
+    const stale = claimRejectionWarning({
+      owner: { harnessKind: "pi", paneId: "w2:p1" },
+      presentedLeaseToken: "superseded-lease-token",
+      profileId: "driffs",
+    });
+    expect(stale).toContain("driffs");
+    expect(stale).toContain("persisted lease token");
+    expect(stale).toContain("recovers automatically");
+    expect(stale).not.toContain("is owned by pane");
+
+    const lockedOut = claimRejectionWarning({
+      owner: { harnessKind: "pi", paneId: "w2:p1" },
+      presentedLeaseToken: undefined,
+      profileId: "driffs",
+    });
+    expect(lockedOut).toContain("driffs");
+    expect(lockedOut).toContain("is owned by pane");
+    expect(lockedOut).toContain("w2:p1");
+    expect(lockedOut).toContain("(pi)");
+    expect(stale).not.toBe(lockedOut);
+  });
+
+  test("both rejection lines stay within the systemMessage budget", () => {
+    for (const presentedLeaseToken of ["superseded-lease-token", undefined]) {
+      const warning = claimRejectionWarning({
+        owner: { harnessKind: "pi", paneId: "w2:p1" },
+        presentedLeaseToken,
+        profileId: "driffs",
+      });
+      expect(warning.length).toBeLessThanOrEqual(SYSTEM_MESSAGE_MAX_CHARS);
+      expect(warning.split("\n")).toHaveLength(1);
     }
   });
 });
