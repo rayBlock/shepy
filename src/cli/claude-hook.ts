@@ -143,6 +143,53 @@ type HookPayload = {
   stop_hook_active?: boolean | undefined;
 };
 
+const nullableString = Type.Union([Type.Null(), Type.String()]);
+
+/**
+ * Runtime shape check for the inbox.lease response — a runtime boundary the
+ * hook sits on across version skew. The daemon of THIS build always produces
+ * this shape (projectInboxOutcome in profile-delivery-service.ts), but a
+ * daemon left running across an upgrade may not; before the check the hook
+ * cast the response unchecked and a missing excerpt.text detonated as a
+ * TypeError in formatHookContext. Unknown extra fields are tolerated (the
+ * response carries whole obligation rows); only the fields the renderer
+ * reads are required.
+ */
+const leaseResponseSchema = Type.Object(
+  {
+    obligations: Type.Array(
+      Type.Object(
+        {
+          agentEventId: Type.Integer(),
+          id: Type.String({ minLength: 1 }),
+          outcome: Type.Union([
+            Type.Null(),
+            Type.Object(
+              {
+                agent: nullableString,
+                eventId: Type.Integer(),
+                excerpt: Type.Union([
+                  Type.Null(),
+                  Type.Object({ text: Type.String(), truncated: Type.Boolean() }),
+                ]),
+                from: nullableString,
+                lastAssistantRef: nullableString,
+                name: nullableString,
+                paneId: nullableString,
+                to: nullableString,
+                type: Type.String(),
+              },
+              { additionalProperties: true },
+            ),
+          ]),
+        },
+        { additionalProperties: true },
+      ),
+    ),
+  },
+  { additionalProperties: true },
+);
+
 type OwnerFile = {
   delivered: {
     ids: string[];
@@ -405,18 +452,35 @@ async function handlePromptSubmit(
       previous.delivered = null;
     }
 
-    const lease = await request<{ obligations?: LeasedObligation[] }>("inbox.lease", {
-      leaseToken,
-      maxBatch: LEASE_MAX_BATCH,
-      profileId: input.profileId,
-    });
-    const obligations = lease.obligations ?? [];
     const cleared: OwnerFile = {
       delivered: null,
       leaseToken,
       ownerSessionRefJson,
       profileId: input.profileId,
     };
+    const lease = await request<unknown>("inbox.lease", {
+      leaseToken,
+      maxBatch: LEASE_MAX_BATCH,
+      profileId: input.profileId,
+    });
+    if (!Value.Check(leaseResponseSchema, lease)) {
+      // The daemon answered, but with a payload this build cannot render
+      // (version skew). Treat it exactly like a rejected inbox.delivered:
+      // the rows stay leased server-side, nothing is recorded as seen, and a
+      // repeat warns. Before this check the skew detonated as a TypeError
+      // AFTER the record had been promoted — exit 1, then a next-turn ack of
+      // an outcome nobody saw.
+      recordHandoffFailure(
+        input,
+        payload.session_id,
+        cleared,
+        handled,
+        previousFailedDelivery,
+        null,
+        "shepy daemon returned an unexpected inbox lease response",
+      );
+    }
+    const obligations = (lease as { obligations: LeasedObligation[] }).obligations;
     if (obligations.length === 0) {
       // Persist even with nothing to deliver: this clears a stale delivered
       // record (an interrupted turn never ran Stop to clear it) and parks the
@@ -488,10 +552,11 @@ async function handlePromptSubmit(
         `inbox delivered failed: ${describe(error)}`,
       );
     }
-    // Phase 2: the daemon committed the batch and the injection is about to
-    // reach the model — promote the record to "delivered", the only phase a
-    // later turn may ack. If a concurrent writer replaced our record in this
-    // second window, leave theirs alone: our batch expires and re-delivers.
+    // Phase 2: the daemon committed the batch. The injection is composed
+    // BEFORE the promotion: once the record says "delivered", the only code
+    // left between it and stdout is object assembly — nothing that can throw
+    // on daemon data. Promotion is the last write, not the first.
+    const context = formatHookContext(input.profileId, obligations);
     writeOwnerFileIfUnchanged(
       input.homeDir,
       payload.session_id,
@@ -500,7 +565,7 @@ async function handlePromptSubmit(
       { ids, leaseToken },
     );
     return {
-      context: formatHookContext(input.profileId, obligations),
+      context,
       event: "UserPromptSubmit",
     };
   } finally {
@@ -556,12 +621,25 @@ async function handleStop(
     // Deliver fresh mid-turn outcomes the same way UserPromptSubmit does:
     // lease, mark delivered under this prompt id, inject the same bounded
     // summary. The injection is what continues the conversation.
-    const lease = await request<{ obligations?: LeasedObligation[] }>("inbox.lease", {
+    const lease = await request<unknown>("inbox.lease", {
       leaseToken: file.leaseToken,
       maxBatch: LEASE_MAX_BATCH,
       profileId: input.profileId,
     });
-    const obligations = lease.obligations ?? [];
+    if (!Value.Check(leaseResponseSchema, lease)) {
+      // Same boundary rule as UserPromptSubmit: an unrenderable lease
+      // response is an expected no-op, never a TypeError after promotion.
+      recordHandoffFailure(
+        input,
+        payload.session_id,
+        file,
+        handled,
+        previousFailedDelivery,
+        null,
+        "shepy daemon returned an unexpected inbox lease response",
+      );
+    }
+    const obligations = (lease as { obligations: LeasedObligation[] }).obligations;
     if (obligations.length === 0) return null;
     const ids = obligations.map((obligation) => obligation.id);
     // Two-phase record, same as UserPromptSubmit: persist "leased" before
@@ -605,6 +683,11 @@ async function handleStop(
     // Phase 2: the daemon committed the batch. A successful delivery clears
     // the failure marker with the promotion (failedDelivery: undefined is
     // dropped by JSON.stringify).
+    // Phase 2, same ordering as UserPromptSubmit: compose the injection
+    // first, promote last. A successful delivery clears the failure marker
+    // with the promotion (failedDelivery: undefined is dropped by
+    // JSON.stringify).
+    const context = formatHookContext(input.profileId, obligations);
     writeOwnerFileIfUnchanged(
       input.homeDir,
       payload.session_id,
@@ -613,7 +696,7 @@ async function handleStop(
       { ids, leaseToken: file.leaseToken },
     );
     return {
-      context: formatHookContext(input.profileId, obligations),
+      context,
       event: "Stop",
     };
   } finally {
@@ -768,6 +851,9 @@ function plainText(value: string | null | undefined, max = 64): string {
  * The record an invocation has already settled (acked or discarded): its
  * lease token and batch ids. Null means the invocation expects no unsettled
  * record on disk at all.
+ *
+ * Note the comment above writeOwnerFileIfUnchanged: the guard compares only
+ * the delivered field, so a failedDelivery marker rides along untouched.
  */
 type HandledRecord = { ids: string[]; leaseToken: string } | null;
 

@@ -1070,6 +1070,63 @@ describe("claude-hook expected-failure surfaces", () => {
     expect(fixture.delivery.inboxList({ profileId: "driffs", state: "pending" })).toHaveLength(1);
   });
 
+  test("a malformed lease response is an expected no-op that warns once it repeats", async () => {
+    const fixture = await openHookServer();
+    projectOutcome(fixture, "hook-skew", "skew outcome");
+    // Version-skew shape this build's daemon cannot produce
+    // (projectInboxOutcome always sets excerpt.text), but the hook must not
+    // trust that: the lease response is a runtime boundary. Before round 4
+    // the hook cast it unchecked, formatHookContext threw a TypeError, the
+    // CLI exited 1 — and the record had already been promoted to
+    // "delivered", so the next turn acked an outcome nobody ever saw.
+    const realLease = fixture.delivery.inboxLease.bind(fixture.delivery);
+    let leaseCalls = 0;
+    fixture.delivery.inboxLease = (input) => {
+      leaseCalls += 1;
+      const leased = realLease({ ...input, now: Date.now() + leaseCalls * 3 * 60_000 });
+      // The excerpt shape is invalid on purpose — the cast exists to let the
+      // test put a wire-level lie past TypeScript, which is exactly the
+      // version skew a real daemon upgrade could produce.
+      const obligations = leased.obligations.map((obligation) => ({
+        ...obligation,
+        outcome:
+          obligation.outcome === null
+            ? null
+            : { ...obligation.outcome, excerpt: { truncated: false } },
+      }));
+      return { expired: leased.expired, obligations } as unknown as ReturnType<typeof realLease>;
+    };
+
+    // First skew response: transient-class silent no-op. The rows were
+    // leased by the RPC before the response failed validation, so they stay
+    // leased — never delivered, never acked, never recorded as seen.
+    const first = await runHook(fixture, promptPayload({ prompt_id: "skew-1" }));
+    expect(first.code).toBe(0);
+    expect(first.stdout).toBe("");
+    expect(fixture.delivery.inboxList({ profileId: "driffs", state: "leased" })).toHaveLength(1);
+    expect(fixture.delivery.inboxList({ profileId: "driffs", state: "delivered" })).toHaveLength(0);
+    expect(fixture.delivery.inboxList({ profileId: "driffs", state: "acked" })).toHaveLength(0);
+    const afterFirst = JSON.parse(readFileSync(ownerFilePath(fixture), "utf8")) as {
+      delivered: unknown;
+      failedDelivery?: { attempts: number };
+    };
+    expect(afterFirst.delivered).toBeNull();
+    expect(afterFirst.failedDelivery?.attempts).toBe(1);
+
+    // Second skew response over the same rows: persistent — the operator
+    // hears about it before the attempt climb retires them to dead_letter.
+    const second = await runHook(fixture, promptPayload({ prompt_id: "skew-2" }));
+    expect(second.code).toBe(0);
+    const parsed = JSON.parse(second.stdout || "{}") as { systemMessage?: string };
+    expect(parsed.systemMessage).toContain("dead_letter");
+    expect(parsed.systemMessage).toContain("driffs");
+    expect(fixture.delivery.inboxList({ profileId: "driffs", state: "delivered" })).toHaveLength(0);
+    expect(fixture.delivery.inboxList({ profileId: "driffs", state: "acked" })).toHaveLength(0);
+    expect(
+      fixture.delivery.inboxList({ profileId: "driffs", state: "leased" })[0]?.attemptCount,
+    ).toBe(2);
+  });
+
   test("a persistent inbox.delivered failure warns every turn before the unseen outcomes dead-letter", async () => {
     const fixture = await openHookServer();
     projectOutcome(fixture, "hook-climb", "never-seen outcome");
