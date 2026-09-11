@@ -1,17 +1,26 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
+import { createAgentHistoryService } from "@/agent-history/service.js";
+import { ObservabilityRpcServer } from "@/daemon/observability-server.js";
+import { AgentContextSnapshotStore } from "@/db/agent-context-snapshots.js";
 import { AgentEventStore } from "@/db/agent-events.js";
+import { AgentHistoryCacheStore } from "@/db/agent-history-cache.js";
+import { AgentOrchestratorScopeStore } from "@/db/agent-orchestrator-scopes.js";
 import { AgentStore } from "@/db/agents.js";
 import { applyMigrations } from "@/db/apply-migrations.js";
 import { openSqlite } from "@/db/client.js";
 import { DeliveryObligationStore, MAX_DELIVERY_ATTEMPTS } from "@/db/delivery-obligations.js";
 import { HerdrSessionStore } from "@/db/herdr-sessions.js";
+import { HerdrWorkspaceStore } from "@/db/herdr-workspaces.js";
 import { OrchestratorProfileStore } from "@/db/orchestrator-profiles.js";
 import { ProfileOwnerStore } from "@/db/profile-owners.js";
+import { AgentContextService } from "@/observability/agent-context-service.js";
+import { AgentOrchestratorService } from "@/observability/agent-orchestrator-service.js";
 import type { AgentEventRecord } from "@/observability/contracts.js";
 import { ProfileDeliveryService } from "@/observability/profile-delivery-service.js";
+import { RpcTestClient } from "./rpc-test-client.js";
 
 /**
  * Phase 3 gate (vault §16): "offline owner reconnect receives every
@@ -96,8 +105,68 @@ function build(path: string, overrides: { now?: () => number } = {}) {
     owners,
     profiles,
   });
-  return { agentEvents, agents, delivery, obligations, owners, profiles, sqlite };
+  return { agentEvents, agents, delivery, obligations, owners, profiles, sessions, sqlite };
 }
+
+/** The profile.* RPC surface against the REAL daemon server, wired to the
+ * REAL delivery service over the fixture's stores. Used to pin the owner
+ * lease lifecycle where the pump actually drives it: over the wire. */
+async function rpcFixture(overrides: { now?: () => number } = {}) {
+  const built = fixture(overrides);
+  const history = createAgentHistoryService({
+    cache: new AgentHistoryCacheStore(built.sqlite),
+    homeDir: dirname(built.path),
+  });
+  const context = new AgentContextService({
+    history,
+    stores: {
+      agentContextSnapshots: new AgentContextSnapshotStore(built.sqlite),
+      agents: built.agents,
+    },
+  });
+  const orchestrator = new AgentOrchestratorService({
+    agentEvents: built.agentEvents,
+    agents: built.agents,
+    scopes: new AgentOrchestratorScopeStore(built.sqlite),
+  });
+  const socketPath = join(dirname(built.path), "rpc.sock");
+  const server = new ObservabilityRpcServer({
+    context,
+    delivery: built.delivery,
+    history,
+    orchestrator,
+    socketPath,
+    stores: {
+      agentEvents: built.agentEvents,
+      agents: built.agents,
+      herdrSessions: built.sessions,
+      herdrWorkspaces: new HerdrWorkspaceStore(built.sqlite),
+    },
+  });
+  await server.start();
+  const client = await RpcTestClient.connect(socketPath);
+  return { built, client, server };
+}
+
+const CLAIM_PANE_X = {
+  harnessKind: "pi",
+  harnessSessionRefJson: "{}",
+  herdrSessionName: "default",
+  paneId: "wX:p1",
+  profileId: "driffs",
+  subscriberId: "sub-1",
+  terminalId: "tX",
+} as const;
+
+const CLAIM_PANE_Y = {
+  harnessKind: "pi",
+  harnessSessionRefJson: "{}",
+  herdrSessionName: "default",
+  paneId: "wY:p1",
+  profileId: "driffs",
+  subscriberId: "sub-2",
+  terminalId: "tY",
+} as const;
 
 function eventFor(input: { eventId: number; worker: "driffs" | "other" }): AgentEventRecord {
   return {
@@ -848,5 +917,105 @@ describe("Phase 3 gate — durable delivery obligations", () => {
     const pending = delivery.inboxList({ profileId: "driffs", state: "pending" });
     expect(pending).toHaveLength(1);
     expect(pending[0]?.lastErrorCode).toBe("harness_interrupted");
+  });
+});
+
+describe("profile.renew RPC (owner lease heartbeat)", () => {
+  const LEASE_MS = 5 * 60_000;
+  const GRACE_MS = 30_000;
+
+  test("profile.renew keeps a pumping owner unstealable past lease + grace", async () => {
+    let clock = 1_000_000;
+    const { built, client, server } = await rpcFixture({ now: () => clock });
+    try {
+      const claim = (await client.request("profile.claim", CLAIM_PANE_X)) as {
+        result: { kind: string; leaseToken: string };
+      };
+      expect(claim.result.kind).toBe("claimed");
+      // The pump heartbeat: still inside the original lease, the owner
+      // renews — the lease now runs from the renewal, not the claim.
+      clock += 5 * 60_000;
+      await expect(
+        client.request("profile.renew", {
+          leaseToken: claim.result.leaseToken,
+          profileId: "driffs",
+        }),
+      ).resolves.toEqual({ renewed: true });
+      // t0 + 5m31s — the moment an UNrenewed lease would have lapsed and
+      // handed the profile to the next claimant. A pumping owner keeps it.
+      clock += 31_000;
+      // A healthy owner must NOT lose the profile just because time passed.
+      const contested = (await client.request("profile.claim", CLAIM_PANE_Y)) as {
+        result: { kind: string; owner?: { paneId: string; subscriberId: string }; reason?: string };
+      };
+      expect(contested.result).toMatchObject({
+        kind: "rejected",
+        owner: { paneId: "wX:p1", subscriberId: "sub-1" },
+        reason: "lease_active",
+      });
+    } finally {
+      client.close();
+      await server.stop();
+      built.sqlite.close();
+    }
+  });
+
+  test("a renew from a token that no longer owns returns renewed:false", async () => {
+    let clock = 1_000_000;
+    const { built, client, server } = await rpcFixture({ now: () => clock });
+    try {
+      const claim = (await client.request("profile.claim", CLAIM_PANE_X)) as {
+        result: { kind: string; leaseToken: string };
+      };
+      expect(claim.result.kind).toBe("claimed");
+      clock += LEASE_MS + GRACE_MS + 1_000;
+      const stolen = (await client.request("profile.claim", CLAIM_PANE_Y)) as {
+        result: { kind: string; leaseToken: string };
+      };
+      expect(stolen.result.kind).toBe("reclaimed"); // row existed → takeover
+      // The displaced owner's token is dead; its heartbeat must not revive it.
+      await expect(
+        client.request("profile.renew", {
+          leaseToken: claim.result.leaseToken,
+          profileId: "driffs",
+        }),
+      ).resolves.toEqual({ renewed: false });
+    } finally {
+      client.close();
+      await server.stop();
+      built.sqlite.close();
+    }
+  });
+
+  test("without renewal the lease lapses: a working owner is stealable after 5m30s", async () => {
+    // Documents the pre-renewal window the pump used to run in: nothing ever
+    // renewed, so every owner — actively pumping or not — forfeited the
+    // profile LEASE_MS + GRACE_MS after its claim. The renew RPC + heartbeat
+    // exist to close exactly this window; this test pins the underlying
+    // lease semantics that make the heartbeat necessary.
+    let clock = 1_000_000;
+    const { built, client, server } = await rpcFixture({ now: () => clock });
+    try {
+      const claim = (await client.request("profile.claim", CLAIM_PANE_X)) as {
+        result: { kind: string; leaseToken: string };
+      };
+      expect(claim.result.kind).toBe("claimed");
+      clock += LEASE_MS + GRACE_MS + 1_000; // no heartbeat exists in this test
+      const steal = (await client.request("profile.claim", CLAIM_PANE_Y)) as {
+        result: { kind: string; leaseToken: string };
+      };
+      expect(steal.result.kind).toBe("reclaimed");
+      // The displaced owner's capability is gone with the row.
+      await expect(
+        client.request("profile.release", {
+          leaseToken: claim.result.leaseToken,
+          profileId: "driffs",
+        }),
+      ).resolves.toEqual({ released: false });
+    } finally {
+      client.close();
+      await server.stop();
+      built.sqlite.close();
+    }
   });
 });

@@ -457,6 +457,28 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
     const pumpProfile = async (ctx: PiContext | undefined) => {
       const mode = state.profileMode;
       if (!mode || !state.client || !state.connected) return;
+      // Heartbeat FIRST, before every work gate: a busy owner (wake in
+      // flight, user run active) must keep renewing, or any run longer than
+      // the lease would let another subscriber claim a perfectly alive
+      // owner's profile. `renewed:false` is final — ownership was moved on
+      // or forfeited: stop the timer, clear profile mode, notify once. No
+      // retry, no automatic re-claim; reclaiming is an explicit act.
+      try {
+        const renew = (await state.client.request("profile.renew", {
+          leaseToken: mode.leaseToken,
+          profileId: mode.profileId,
+        })) as { renewed?: boolean };
+        if (renew.renewed === false) {
+          stopProfileTimer();
+          state.profileMode = undefined;
+          if (state.profileBatch) state.profileBatch.invalidated = true;
+          ctx?.ui.notify?.(`Shepy · profile ${mode.profileId} ownership lost`, "warning");
+          setShepyUi(ctx);
+          return;
+        }
+      } catch {
+        // transient daemon error: the timer retries; the lease stays as-is
+      }
       if (state.profileBatch || state.deliveredBatch) return;
       if (state.runActive || ctx?.isIdle?.() === false) return;
       // Serialize ticks per (profile, lease): while one lease RPC is in

@@ -473,6 +473,13 @@ export class ObservabilityRpcServer {
         const input = params as { leaseToken: string; profileId: string };
         return { released: this.#requireDelivery().release(input) };
       }
+      case "profile.renew": {
+        // Same wire shape as release: the lease token plus the profile it
+        // belongs to. Only the current holder can renew (store-enforced).
+        assertSchema(profileReleaseInputSchema, params);
+        const input = params as { leaseToken: string; profileId: string };
+        return { renewed: this.#requireDelivery().renew(input) };
+      }
       case "inbox.list": {
         assertSchema(inboxListInputSchema, params);
         const input = params as { limit?: number; profileId: string; state?: string };
