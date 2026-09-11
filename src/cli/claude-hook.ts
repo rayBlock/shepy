@@ -43,11 +43,11 @@ import { ObservabilityRpcClient } from "@/daemon/client.js";
  *  - Exit 0 on every expected condition. The hook runs inside the user's turn
  *    latency; Shepy is observability and must never degrade the session.
  *  - Silent is the default; loud is for persistent operator action. A
- *    rejected claim, a profile that cannot receive anything, owner-file
- *    storage failures, and a delivery handoff that keeps failing across
- *    turns surface as a top-level systemMessage — user-facing only, never
- *    model input, one short line each. A first failed handoff and other
- *    transient daemon trouble stay silent.
+ *    rejected claim, a profile that cannot receive anything, a missing Herdr
+ *    pane identity, owner-file storage failures, and a delivery handoff that
+ *    keeps failing across turns surface as a top-level systemMessage —
+ *    user-facing only, never model input, one short line each. A first
+ *    failed handoff and other transient daemon trouble stay silent.
  *  - One claim, one lease, no retries, no sleeps, and a hard per-request
  *    deadline.
  *  - The lease token is a credential. It never reaches stdout or the
@@ -331,14 +331,31 @@ async function parseStdin(read: () => Promise<string>): Promise<HookPayload> {
   return parsed as HookPayload;
 }
 
-function requireHerdrIdentity(environment: NodeJS.ProcessEnv): {
+function requireHerdrIdentity(
+  environment: NodeJS.ProcessEnv,
+  profileId: string,
+): {
   paneId: string;
   workspaceId: string;
 } {
   const paneId = environment.HERDR_PANE_ID?.trim() ?? "";
   const workspaceId = environment.HERDR_WORKSPACE_ID?.trim() ?? "";
   if (!paneId || !workspaceId) {
-    throw new ExpectedHookError("missing HERDR_PANE_ID or HERDR_WORKSPACE_ID");
+    const missing = [
+      ...(paneId ? [] : ["HERDR_PANE_ID"]),
+      ...(workspaceId ? [] : ["HERDR_WORKSPACE_ID"]),
+    ].join(" and ");
+    throw new ExpectedHookError(
+      `missing ${missing}`,
+      // Claude Code normally runs OUTSIDE Herdr and the README snippet is
+      // copy-pasteable into any settings.json, so this is the likeliest real
+      // misconfiguration: the pane is permanently deaf, every turn, forever
+      // (verify-b W3). It is a stall, not a loss — nothing is leased, no
+      // attempts burn — but the operator must hear why nothing ever arrives.
+      // Unlike the shepy.ts runtime-config path (stderr + exit 0), this goes
+      // out as a systemMessage because Claude Code ignores stderr.
+      `shepy: ${missing} not set — this Claude Code session is not running inside Herdr, so profile ${plainText(profileId)} can never receive worker outcomes. Run Claude Code inside a Herdr pane, or remove the shepy claude-hook command from .claude/settings.json`,
+    );
   }
   return { paneId, workspaceId };
 }
@@ -348,7 +365,7 @@ async function handlePromptSubmit(
   input: ClaudeHookInput,
   warnings: string[],
 ): Promise<HookEmission> {
-  const { paneId, workspaceId } = requireHerdrIdentity(input.environment);
+  const { paneId, workspaceId } = requireHerdrIdentity(input.environment, input.profileId);
   const client = new ObservabilityRpcClient({ socketPath: input.socketPath });
   try {
     const request = requestWithDeadline(client);

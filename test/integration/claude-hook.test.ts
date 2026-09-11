@@ -1058,7 +1058,7 @@ describe("claude-hook expected-failure surfaces", () => {
     expect(existsSync(ownerFilePath(fixture))).toBe(false);
   });
 
-  test("missing Herdr pane identity exits 0 silently", async () => {
+  test("missing Herdr pane identity exits 0 and warns the operator via systemMessage", async () => {
     const fixture = await openHookServer();
     projectOutcome(fixture, "hook-noenv", "undelivered outcome");
 
@@ -1066,8 +1066,34 @@ describe("claude-hook expected-failure surfaces", () => {
       environment: { HERDR_PANE_ID: "", HERDR_WORKSPACE_ID: "" },
     });
     expect(code).toBe(0);
-    expect(stdout).toBe("");
+    // A hook registered in a pane without Herdr env is permanently deaf —
+    // the likeliest real-world misconfiguration, because Claude Code normally
+    // runs OUTSIDE Herdr and the README snippet is copy-pasteable into any
+    // settings.json. It must say why it can never receive outcomes instead
+    // of exiting 0 silently every turn forever (verify-b W3). User-facing
+    // only — never model input.
+    const parsed = JSON.parse(stdout) as {
+      hookSpecificOutput?: unknown;
+      systemMessage?: string;
+    };
+    expect(parsed.systemMessage).toContain("HERDR_PANE_ID");
+    expect(parsed.systemMessage).toContain("HERDR_WORKSPACE_ID");
+    expect(parsed.systemMessage).toContain("driffs");
+    expect(parsed.hookSpecificOutput).toBeUndefined();
+    // A stall, not a loss: nothing is leased, so no delivery attempts burn.
     expect(fixture.delivery.inboxList({ profileId: "driffs", state: "pending" })).toHaveLength(1);
+  });
+
+  test("a partially missing Herdr identity names exactly the missing variable", async () => {
+    const fixture = await openHookServer();
+
+    const { code, stdout } = await runHook(fixture, promptPayload(), {
+      environment: { HERDR_PANE_ID: "w1:p1", HERDR_WORKSPACE_ID: "" },
+    });
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdout) as { systemMessage?: string };
+    expect(parsed.systemMessage).toContain("HERDR_WORKSPACE_ID");
+    expect(parsed.systemMessage).not.toContain("HERDR_PANE_ID");
   });
 
   test("a malformed lease response is an expected no-op that warns once it repeats", async () => {
