@@ -920,6 +920,98 @@ describe("Phase 3 gate — durable delivery obligations", () => {
   });
 });
 
+describe("lease tokens never reach a caller that did not present them", () => {
+  test("the A2-1 attack: inbox.list must not disclose the owner's live lease token", async () => {
+    const { built, client, server } = await rpcFixture();
+    try {
+      const claim = (await client.request("profile.claim", CLAIM_PANE_X)) as {
+        result: { kind: string; leaseToken: string };
+      };
+      expect(claim.result.kind).toBe("claimed");
+      const ownerToken = claim.result.leaseToken;
+
+      // The owner's normal working state: one row leased, one row delivered
+      // and awaiting ack, one row still pending.
+      const worker = built.agents.list().find((row) => row.name === "driffs-worker");
+      if (!worker) throw new Error("fixture: driffs-worker missing");
+      for (const eventId of [61, 62, 63]) {
+        built.delivery.projectAgentEvent({
+          ...eventFor({ eventId, worker: "driffs" }),
+          agentId: worker.id,
+        });
+      }
+      const lease = (await client.request("inbox.lease", {
+        leaseToken: ownerToken,
+        profileId: "driffs",
+      })) as { obligations: Array<{ id: string }> };
+      expect(lease.obligations.length).toBe(3);
+      const deliveredId = lease.obligations[0]?.id;
+      if (!deliveredId) throw new Error("fixture: lease returned no rows");
+      await client.request("inbox.delivered", {
+        ids: [deliveredId],
+        leaseToken: ownerToken,
+        ownerSessionRefJson: "{}",
+      });
+
+      // The read surface requires no token at all — so it must carry none.
+      // The reviewer's chain was: list → read the token → profile.release →
+      // owner evicted. Every state, and the unfiltered default, is probed.
+      const states = [undefined, "pending", "leased", "delivered", "acked", "dead_letter"] as const;
+      for (const state of states) {
+        const list = (await client.request(
+          "inbox.list",
+          state === undefined ? { profileId: "driffs" } : { profileId: "driffs", state },
+        )) as {
+          obligations: Array<{ id: string; leaseToken: string | null; state: string }>;
+        };
+        expect(JSON.stringify(list)).not.toContain(ownerToken);
+        for (const row of list.obligations) {
+          expect(row.leaseToken ?? null).toBeNull();
+        }
+      }
+
+      // The whole payoff of the leak was evicting the owner with a token
+      // read out of a listing. Nothing else serves one to a tokenless caller.
+      const owner = (await client.request("profile.owner", { profileId: "driffs" })) as {
+        owner: unknown;
+      };
+      expect(JSON.stringify(owner)).not.toContain(ownerToken);
+    } finally {
+      client.close();
+      await server.stop();
+      built.sqlite.close();
+    }
+  });
+
+  test("inbox.lease still returns the caller's own rows under the caller's own token", async () => {
+    const { built, client, server } = await rpcFixture();
+    try {
+      const claim = (await client.request("profile.claim", CLAIM_PANE_X)) as {
+        result: { kind: string; leaseToken: string };
+      };
+      const ownerToken = claim.result.leaseToken;
+      const worker = built.agents.list().find((row) => row.name === "driffs-worker");
+      if (!worker) throw new Error("fixture: driffs-worker missing");
+      built.delivery.projectAgentEvent({
+        ...eventFor({ eventId: 64, worker: "driffs" }),
+        agentId: worker.id,
+      });
+      const lease = (await client.request("inbox.lease", {
+        leaseToken: ownerToken,
+        profileId: "driffs",
+      })) as { obligations: Array<{ id: string; leaseToken: string | null }> };
+      expect(lease.obligations).toHaveLength(1);
+      // The holder may see the token it itself presented and the rows it
+      // itself leased — this is the one read that legitimately carries it.
+      expect(lease.obligations[0]?.leaseToken).toBe(ownerToken);
+    } finally {
+      client.close();
+      await server.stop();
+      built.sqlite.close();
+    }
+  });
+});
+
 describe("profile.renew RPC (owner lease heartbeat)", () => {
   const LEASE_MS = 5 * 60_000;
   const GRACE_MS = 30_000;

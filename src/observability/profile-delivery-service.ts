@@ -309,8 +309,19 @@ export class ProfileDeliveryService {
     return this.#obligations.nack(input);
   }
 
+  /**
+   * Read surface — and the token boundary for every obligation row that
+   * leaves the daemon. inbox.list presents no credential at all, so no row
+   * it serves may carry one: a lease token authenticates release/renew/
+   * lease on its own, and this path is reachable by every daemon client.
+   * The only read that may still carry a token is inboxLease, which serves
+   * exclusively rows stamped with the token the caller itself presented.
+   */
   inboxList(input: { limit?: number; profileId: string; state?: Obligation["state"] }) {
-    return this.#obligations.list(input);
+    return this.#obligations.list(input).map((obligation) => ({
+      ...obligation,
+      leaseToken: null,
+    }));
   }
 
   /** Operator retire — see DeliveryObligationStore.retire. */
