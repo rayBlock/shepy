@@ -1,4 +1,12 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  fchmodSync,
+  constants as fsConstants,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  writeSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { Type } from "@sinclair/typebox";
 import { Value } from "@sinclair/typebox/value";
@@ -428,9 +436,23 @@ function ownerFilePath(homeDir: string, sessionId: string): string {
 
 function writeOwnerFile(homeDir: string, sessionId: string, file: OwnerFile): void {
   const path = ownerFilePath(homeDir, sessionId);
+  const payload = `${JSON.stringify(file, null, 2)}\n`;
   try {
     mkdirSync(dirname(path), { mode: 0o700, recursive: true });
-    writeFileSync(path, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
+    // O_NOFOLLOW refuses to write through a symlink planted at the
+    // predictable path; fchmod re-enforces 0600 on every write, because a
+    // create-time mode does not touch a pre-existing file.
+    const fd = openSync(
+      path,
+      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | fsConstants.O_NOFOLLOW,
+      0o600,
+    );
+    try {
+      writeSync(fd, payload);
+      fchmodSync(fd, 0o600);
+    } finally {
+      closeSync(fd);
+    }
   } catch (error) {
     // The lease and delivery already succeeded server-side; a lost ack
     // record self-heals at lease expiry. Never fail a turn over storage.
@@ -486,26 +508,47 @@ function formatHookContext(profileId: string, obligations: LeasedObligation[]): 
   return `${header}${lines.join("\n")}`;
 }
 
+/**
+ * Untrusted identity policy — mirrors the Pi renderer (safeAgentToken in
+ * packages/shepy-pi/src/agent-display.ts). A pane name comes from Herdr's
+ * pane-title detection, which any program in a pane can set via OSC, so no
+ * snapshot field is interpolated unless it is a plain token; anything else is
+ * dropped ("unknown"), never escaped or trimmed.
+ */
+const HERDR_AGENT_TOKEN = /^[a-z][a-z0-9_-]{0,31}$/;
+const EVENT_TYPE_TOKEN = /^[a-z][a-z0-9_.-]{0,63}$/;
+const PANE_ID_TOKEN = /^[a-z0-9][a-z0-9:_.-]{0,63}$/i;
+const ASSISTANT_REF_TOKEN = /^[a-z0-9][a-z0-9:._/=+-]{0,127}$/i;
+const OBLIGATION_ID_TOKEN = /^[0-9a-f-]{1,64}$/i;
+
+function safeToken(value: string | null | undefined, pattern: RegExp): string | null {
+  if (!value) return null;
+  return pattern.test(value) ? value : null;
+}
+
 function outcomeLine(obligation: LeasedObligation): string {
   const outcome = obligation.outcome ?? null;
+  const id = safeToken(obligation.id, OBLIGATION_ID_TOKEN) ?? "unavailable";
   if (!outcome) {
-    // Honest fallback, as the Pi card does: the lease proves the event and
-    // obligation identity even when the snapshot is gone.
-    return `- event ${obligation.agentEventId} · obligation ${obligation.id} — snapshot unavailable (run shepy agent list to locate the worker)`;
+    // Honest fallback, matching the Pi wake card: the lease proves the event
+    // and obligation identity even when the snapshot is gone.
+    return `- event ${obligation.agentEventId} · obligation ${id} — snapshot unavailable (no pane known; run shepy agent list to locate the worker)`;
   }
-  const identity = outcome.name
-    ? `${outcome.name} · ${outcome.agent ?? "unknown"}`
-    : (outcome.agent ?? "unknown");
-  const transition =
-    outcome.from && outcome.to ? `${outcome.from}→${outcome.to}` : outcome.type || "event";
+  const agent = safeToken(outcome.agent, HERDR_AGENT_TOKEN) ?? "unknown";
+  const name = safeToken(outcome.name, HERDR_AGENT_TOKEN);
+  const identity = name ? `${name} · ${agent}` : agent;
+  const from = safeToken(outcome.from, HERDR_AGENT_TOKEN);
+  const to = safeToken(outcome.to, HERDR_AGENT_TOKEN);
+  const type = safeToken(outcome.type, EVENT_TYPE_TOKEN);
+  const transition = from && to ? `${from}→${to}` : (type ?? "event");
+  const paneId = safeToken(outcome.paneId, PANE_ID_TOKEN) ?? "unknown";
   const excerpt =
     outcome.excerpt && outcome.excerpt.text.length > 0
       ? outcome.excerpt.text
       : "(no assistant message)";
-  const assistantRef = outcome.lastAssistantRef
-    ? ` · assistantRef: ${outcome.lastAssistantRef}`
-    : "";
-  return `- ${outcome.type} ${identity} ${outcome.paneId ?? "unknown"} ${transition}\n  last assistant: ${excerpt}\n  event: ${outcome.eventId} · obligation: ${obligation.id}${assistantRef}`;
+  const assistantRef = safeToken(outcome.lastAssistantRef, ASSISTANT_REF_TOKEN);
+  const ref = assistantRef ? ` · assistantRef: ${assistantRef}` : "";
+  return `- ${type ?? "event"} ${identity} ${paneId} ${transition}\n  last assistant: ${excerpt}\n  event: ${outcome.eventId} · obligation: ${id}${ref}`;
 }
 
 function describe(error: unknown): string {
