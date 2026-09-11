@@ -48,7 +48,7 @@
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "package:check": "node scripts/check-root-package.mjs",
-    "pi-package:check": "pnpm --dir packages/shepy-pi typecheck && (cd packages/shepy-pi && npm pack --dry-run --json > /dev/null)",
+    "pi-package:check": "pnpm --dir packages/shepy-pi typecheck && node scripts/check-pi-package.mjs",
     "pnpm:devPreinstall": "husky",
     "prepack": "pnpm build",
     "test": "vitest run",
