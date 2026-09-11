@@ -98,6 +98,22 @@ ln -sfn "$PWD/SKILL.md" ~/.claude/skills/shepy/SKILL.md
 
 Claude Code loads skills at startup, so start a fresh session after installing or updating the link.
 
+### Claude Code hook bridge
+
+`shepy claude-hook --profile <profileId>` lets a Claude Code pane own a Shepy profile. The hook claims the profile at every turn, delivers pending worker outcomes as injected context on `UserPromptSubmit`, and acknowledges what each prompt consumed on `Stop`. Register it in `.claude/settings.json` yourself — Shepy never edits that file:
+
+```json
+{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"shepy claude-hook --profile <profileId>"}]}]}}
+```
+
+A `Stop` registration is optional but recommended; the same command handles both events:
+
+```json
+{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"shepy claude-hook --profile <profileId>"}]}]}}
+```
+
+Delivery is at turn boundaries only. A Pi extension can interrupt an idle terminal; a hook cannot. If an outcome lands while a Claude pane sits idle with nothing queued, it waits for the next prompt — nothing polls in between.
+
 ### Orchi orchestration skill
 
 [Orchi](skills/orchi/SKILL.md) is an explicitly invoked lead-agent playbook for
