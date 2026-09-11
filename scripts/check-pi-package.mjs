@@ -54,19 +54,50 @@ if (packed?.version !== EXPECTED_VERSION) {
 if (missing.length > 0) errors.push(`missing: ${missing.join(", ")}`);
 if (unexpected.length > 0) errors.push(`unexpected: ${unexpected.join(", ")}`);
 
-// Pi's extension loader aliases typebox (and typebox/compile, typebox/value)
-// to Pi's own bundled copy in every runtime mode, so a runtime dependency
-// would fetch a copy that is never loaded. It must stay a peer requirement
-// the host satisfies, like the Pi packages themselves.
-if (manifest.dependencies?.typebox !== undefined) {
+// The dependency SHAPE is asserted wholesale, not key-by-key — round 3's
+// F3-3: a check that only forbids `typebox` in `dependencies` waves through
+// every OTHER smuggled runtime dependency (the dead-weight class round 1
+// flagged, renamed), and never notices a deleted peer, which silently
+// unenforces the engine-compatibility contract.
+//
+// Pi's extension loader aliases typebox (and typebox/compile, typebox/
+// value) to Pi's own bundled copy in every runtime mode, and the extension
+// otherwise runs strictly inside the Pi host: a runtime dependency would
+// fetch a copy that is never loaded. `dependencies` must be EMPTY — every
+// host package is a peerDependency the host satisfies.
+const declaredDependencies = Object.keys(manifest.dependencies ?? {});
+for (const name of declaredDependencies.sort()) {
   errors.push(
-    `dependencies.typebox: must not be declared (received ${manifest.dependencies.typebox}) — typebox is a peerDependency only`,
+    `dependencies.${name}: no runtime dependency may be declared (received ${JSON.stringify(
+      manifest.dependencies[name],
+    )}) — the extension runs inside the Pi host; move it to peerDependencies`,
   );
 }
-if (manifest.peerDependencies?.typebox !== ">=1.1.38") {
-  errors.push(
-    `peerDependencies.typebox: expected ">=1.1.38", received ${JSON.stringify(manifest.peerDependencies?.typebox)}`,
-  );
+
+// The peer set is the engine-compatibility contract: exact names and exact
+// ranges, asserted as a whole. A deleted, renamed, added or re-ranged peer
+// all fail this comparison.
+const EXPECTED_PEER_DEPENDENCIES = {
+  "@earendil-works/pi-coding-agent": ">=0.80.6",
+  "@earendil-works/pi-tui": ">=0.80.6",
+  typebox: ">=1.1.38",
+};
+const actualPeers = manifest.peerDependencies ?? {};
+for (const name of Object.keys(EXPECTED_PEER_DEPENDENCIES).sort()) {
+  if (actualPeers[name] !== EXPECTED_PEER_DEPENDENCIES[name]) {
+    errors.push(
+      `peerDependencies.${name}: expected ${JSON.stringify(
+        EXPECTED_PEER_DEPENDENCIES[name],
+      )}, received ${JSON.stringify(actualPeers[name])}`,
+    );
+  }
+}
+for (const name of Object.keys(actualPeers).sort()) {
+  if (!(name in EXPECTED_PEER_DEPENDENCIES)) {
+    errors.push(
+      `peerDependencies.${name}: unexpected peer (received ${JSON.stringify(actualPeers[name])})`,
+    );
+  }
 }
 
 if (errors.length > 0) {
