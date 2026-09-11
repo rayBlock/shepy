@@ -71,6 +71,7 @@
     "lint-staged": "^16.4.0",
     "tsc-alias": "^1.8.17",
     "tsx": "^4.22.4",
+    "typebox": "^1.1.38",
     "typescript": "^6.0.3",
     "vitest": "^4.1.9"
   },
