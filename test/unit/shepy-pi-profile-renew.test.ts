@@ -164,6 +164,48 @@ function renewingClient(renew: (method: string, params: unknown) => unknown) {
   return client;
 }
 
+/** A client whose `profile.renew` responses are HELD until the test resolves
+ * them, so a pump tick can be parked mid-renew while a re-claim lands. Every
+ * synchronous fake answers renew in the same tick it was sent, which makes
+ * the daemon's FIFO out-of-order interleaving (stale renew answered AFTER a
+ * newer claim) impossible to express — this one can. */
+function interleavedRenewClient() {
+  const client = createFakeClient();
+  let claimCount = 0;
+  const pending: Array<{ resolve: (value: unknown) => void; token: string }> = [];
+  client.response = (method, params) => {
+    if (method === "profile.claim") {
+      claimCount += 1;
+      return {
+        result: {
+          kind: claimCount === 1 ? "claimed" : "reclaimed",
+          leaseToken: `lease-${claimCount}`,
+        },
+      };
+    }
+    if (method === "profile.renew") {
+      const token = (params as { leaseToken: string }).leaseToken;
+      return new Promise((resolve) => {
+        pending.push({ resolve, token });
+      });
+    }
+    if (method === "inbox.lease") return { obligations: [] };
+    return connectionResponse();
+  };
+  return {
+    client,
+    pendingRenews: () => pending.map((entry) => entry.token),
+    resolveRenew(token: string, value: unknown) {
+      const index = pending.findIndex((entry) => entry.token === token);
+      if (index < 0) throw new Error(`no pending renew for ${token}`);
+      const entry = pending[index];
+      if (!entry) throw new Error(`no pending renew for ${token}`);
+      pending.splice(index, 1);
+      entry.resolve(value);
+    },
+  };
+}
+
 describe("shepy-pi profile pump heartbeat", () => {
   test("the pump renews the lease before leasing, on the claim pump and every tick", async () => {
     vi.useFakeTimers();
@@ -224,6 +266,78 @@ describe("shepy-pi profile pump heartbeat", () => {
       expect(
         ctx.notifications.filter(([message]) => message.includes("ownership lost")),
       ).toHaveLength(0);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  test("a stale renewed:false answered after a same-profile re-claim never clobbers the new ownership", async () => {
+    vi.useFakeTimers();
+    const { client, resolveRenew } = interleavedRenewClient();
+    const { ctx, pi } = await renewHarness(client);
+    try {
+      // Tick 1 captures mode(lease-1) and parks inside its renew call.
+      await pi.command("on driffs", ctx);
+      expect(client.calls).toContainEqual([
+        "profile.renew",
+        { leaseToken: "lease-1", profileId: "driffs" },
+      ]);
+      // While tick 1 is still in flight, a same-profile re-claim — exactly
+      // what the env claim does on every reconnect — installs lease-2 as the
+      // live mode and restarts the pump (tick 2 parks inside its own renew).
+      await pi.command("on driffs", ctx);
+      expect(client.calls).toContainEqual([
+        "profile.renew",
+        { leaseToken: "lease-2", profileId: "driffs" },
+      ]);
+      // FIFO daemon: the stale renew(oldToken) was enqueued before the claim
+      // but answered after it — guaranteed renewed:false — and its response
+      // is read AFTER lease-2 is already the live mode.
+      resolveRenew("lease-1", { renewed: false });
+      await vi.advanceTimersByTimeAsync(1);
+      // The clobber would kill the NEW pump timer, clear lease-2's live mode,
+      // and notify an ownership loss that never happened.
+      expect(
+        ctx.notifications.filter(([message]) => message.includes("ownership lost")),
+      ).toHaveLength(0);
+      // Tick 2's own renew (the live lease) succeeds and the pump keeps
+      // ticking for lease-2 — the new ownership is alive and renewed.
+      resolveRenew("lease-2", { renewed: true });
+      await vi.advanceTimersByTimeAsync(1);
+      client.calls.length = 0;
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(client.calls[0]).toEqual([
+        "profile.renew",
+        { leaseToken: "lease-2", profileId: "driffs" },
+      ]);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  test("two overlapping renewed:false continuations notify exactly once", async () => {
+    vi.useFakeTimers();
+    const { client, pendingRenews, resolveRenew } = interleavedRenewClient();
+    const { ctx, pi } = await renewHarness(client);
+    try {
+      await pi.command("on driffs", ctx); // tick 1 parks inside renew(lease-1)
+      await vi.advanceTimersByTimeAsync(10_000); // tick 2 starts while tick 1 awaits
+      expect(pendingRenews()).toEqual(["lease-1", "lease-1"]);
+      // Both ticks race the same renewal; the daemon answers both false.
+      resolveRenew("lease-1", { renewed: false });
+      await vi.advanceTimersByTimeAsync(1);
+      resolveRenew("lease-1", { renewed: false });
+      await vi.advanceTimersByTimeAsync(1);
+      const losses = ctx.notifications.filter(([message]) => message.includes("ownership lost"));
+      expect(losses).toHaveLength(1);
+      expect(losses[0]).toEqual(["Shepy · profile driffs ownership lost", "warning"]);
+      // The second (stale) continuation must not resurrect anything: timer
+      // stopped, mode cleared, no further traffic.
+      client.calls.length = 0;
+      await vi.advanceTimersByTimeAsync(21_000);
+      expect(client.calls).toEqual([]);
     } finally {
       vi.clearAllTimers();
       vi.useRealTimers();

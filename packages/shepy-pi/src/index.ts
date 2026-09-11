@@ -504,18 +504,29 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
       // the lease would let another subscriber claim a perfectly alive
       // owner's profile. `renewed:false` is final — ownership was moved on
       // or forfeited: stop the timer, clear profile mode, notify once. No
-      // retry, no automatic re-claim; reclaiming is an explicit act.
+      // retry, no automatic re-claim; reclaiming is an explicit act. The
+      // cleanup revalidates first: this tick's captured mode may already be
+      // STALE — a same-profile re-claim (env re-claim on reconnect, /shepy
+      // on, the tool) can install a new lease while our renew is in flight,
+      // and the FIFO daemon then answers the stale renew renewed:false AFTER
+      // the newer claim — and two overlapping stale ticks must not clean up
+      // (or notify) twice.
       try {
         const renew = (await state.client.request("profile.renew", {
           leaseToken: mode.leaseToken,
           profileId: mode.profileId,
         })) as { renewed?: boolean };
         if (renew.renewed === false) {
-          stopProfileTimer();
-          state.profileMode = undefined;
-          if (state.profileBatch) state.profileBatch.invalidated = true;
-          ctx?.ui.notify?.(`Shepy · profile ${mode.profileId} ownership lost`, "warning");
-          setShepyUi(ctx);
+          if (
+            state.profileMode?.profileId === mode.profileId &&
+            state.profileMode.leaseToken === mode.leaseToken
+          ) {
+            stopProfileTimer();
+            state.profileMode = undefined;
+            if (state.profileBatch) state.profileBatch.invalidated = true;
+            ctx?.ui.notify?.(`Shepy · profile ${mode.profileId} ownership lost`, "warning");
+            setShepyUi(ctx);
+          }
           return;
         }
       } catch {
