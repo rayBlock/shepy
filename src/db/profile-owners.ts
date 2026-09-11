@@ -46,10 +46,21 @@ export type ProfileOwner = {
   workspaceId: string | null;
 };
 
+/** A ProfileOwner with the lease token stripped — the shape that may leave
+ * the daemon. The token authenticates release/renew/lease on its own, so
+ * anyone it is handed to could act as (or evict) the owner; only the holder
+ * it was minted for may ever see it. */
+export type PublicProfileOwner = Omit<ProfileOwner, "leaseToken">;
+
+export function toPublicProfileOwner(owner: ProfileOwner): PublicProfileOwner {
+  const { leaseToken: _leaseToken, ...publicOwner } = owner;
+  return publicOwner;
+}
+
 export type ClaimResult =
   | { kind: "claimed"; leaseToken: string; owner: ProfileOwner }
   | { kind: "reclaimed"; leaseToken: string; owner: ProfileOwner }
-  | { kind: "rejected"; reason: "lease_active"; owner: ProfileOwner };
+  | { kind: "rejected"; reason: "lease_active"; owner: PublicProfileOwner };
 
 export class ProfileOwnerStore {
   readonly #sqlite: DatabaseSync;
@@ -87,7 +98,10 @@ export class ProfileOwnerStore {
       const sameSubscriber = existing.subscriberId === input.subscriberId;
       const leaseAlive = existing.leaseExpiresAt + graceMs > now;
       if (!sameSubscriber && leaseAlive) {
-        return { kind: "rejected", owner: existing, reason: "lease_active" };
+        // The active owner's identity is public; its token is not. A
+        // rejected claimant must never receive the capability that
+        // release() authenticates on.
+        return { kind: "rejected", owner: toPublicProfileOwner(existing), reason: "lease_active" };
       }
     }
     const leaseToken = randomUUID();

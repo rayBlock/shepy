@@ -4,6 +4,7 @@ import type { AgentStore } from "@/db/agents.js";
 import type { DeliveryObligationStore, Obligation } from "@/db/delivery-obligations.js";
 import type { OrchestratorProfileStore } from "@/db/orchestrator-profiles.js";
 import type { ProfileOwnerStore } from "@/db/profile-owners.js";
+import { type PublicProfileOwner, toPublicProfileOwner } from "@/db/profile-owners.js";
 import type { AgentEventRecord, AgentEventType } from "./contracts.js";
 import {
   parseAgentSelector,
@@ -221,8 +222,11 @@ export class ProfileDeliveryService {
     return this.#owners.release(input);
   }
 
-  owner(profileId: string) {
-    return this.#owners.get(profileId);
+  /** The active owner's public identity — never its lease token, which is
+   * a capability only the holder may hold. Served over profile.owner. */
+  owner(profileId: string): PublicProfileOwner | undefined {
+    const owner = this.#owners.get(profileId);
+    return owner ? toPublicProfileOwner(owner) : undefined;
   }
 
   // ── Inbox surface (the Phase 4 bridge consumes exactly this) ──────────

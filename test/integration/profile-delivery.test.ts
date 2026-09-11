@@ -1074,4 +1074,68 @@ describe("profile.renew RPC (owner lease heartbeat)", () => {
       built.sqlite.close();
     }
   });
+
+  test("a rejected claim and profile.owner never carry the live owner's lease token", async () => {
+    const clock = 1_000_000;
+    const { built, client, server } = await rpcFixture({ now: () => clock });
+    try {
+      const claim = (await client.request("profile.claim", CLAIM_PANE_X)) as {
+        result: { kind: string; leaseToken: string };
+      };
+      expect(claim.result.kind).toBe("claimed");
+      const ownerToken = claim.result.leaseToken;
+      // A rejected claimant is told WHO owns the profile, never the
+      // capability: release() authenticates on the token alone, so leaking
+      // it to any subscriber would let a rejected claimant evict the owner.
+      const rejected = (await client.request("profile.claim", CLAIM_PANE_Y)) as {
+        result: unknown;
+      };
+      expect(JSON.stringify(rejected)).not.toContain(ownerToken);
+      expect(rejected.result).toMatchObject({
+        kind: "rejected",
+        reason: "lease_active",
+        owner: {
+          paneId: "wX:p1",
+          harnessKind: "pi",
+          subscriberId: "sub-1",
+          terminalId: "tX",
+        },
+      });
+      // The owner query is reachable by every daemon client — same rule.
+      const owner = (await client.request("profile.owner", { profileId: "driffs" })) as {
+        owner: unknown;
+      };
+      expect(JSON.stringify(owner)).not.toContain(ownerToken);
+      expect(owner.owner).toMatchObject({ paneId: "wX:p1", subscriberId: "sub-1" });
+    } finally {
+      client.close();
+      await server.stop();
+      built.sqlite.close();
+    }
+  });
+
+  test("the holder's own claim and re-claim still return a lease token", async () => {
+    let clock = 1_000_000;
+    const { built, client, server } = await rpcFixture({ now: () => clock });
+    try {
+      const claim = (await client.request("profile.claim", CLAIM_PANE_X)) as {
+        result: { kind: string; leaseToken: string };
+      };
+      expect(claim.result.kind).toBe("claimed");
+      expect(claim.result.leaseToken).toBeTruthy();
+      // The re-claim (the reconnect path) rotates the token and hands the
+      // NEW one back: it is the claimer's own credential.
+      clock += 60_000;
+      const reclaimed = (await client.request("profile.claim", CLAIM_PANE_X)) as {
+        result: { kind: string; leaseToken: string };
+      };
+      expect(reclaimed.result.kind).toBe("reclaimed");
+      expect(reclaimed.result.leaseToken).toBeTruthy();
+      expect(reclaimed.result.leaseToken).not.toBe(claim.result.leaseToken);
+    } finally {
+      client.close();
+      await server.stop();
+      built.sqlite.close();
+    }
+  });
 });
