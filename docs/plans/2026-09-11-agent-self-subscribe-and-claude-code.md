@@ -1,6 +1,8 @@
 # Agent Self-Subscribe and Claude Code Support
 
-**Status:** READY (not started)
+**Status:** PHASES A + B LANDED on `shepy` (`85f2488..b469397`, 35 commits, `pnpm check`
+exit 0 at 51 files / 481 tests). **PHASE C (live proof) NOT RUN** — see Next steps.
+Nothing is pushed.
 
 **Goal:** Let a coding agent claim its own profile ownership instead of a human typing `/shepy on <profile>` into the pane, and make Shepy usable from Claude Code — both the pull surface (skill) and a bounded push surface (hooks).
 
@@ -314,13 +316,69 @@ window:
 
 ## Progress
 
-Nothing started. The findings above are the only work done so far.
+Built 2026-09-11 by two parallel `zai/glm-5.3-flash` builders in separate
+worktrees, each round adversarially reviewed in a throwaway worktree before the
+next was scoped. Four build rounds per lane, then one integration round.
+
+Phase A (`selfsub/pi-claim`): A1 `shepy_profile` tool · A2 `SHEPY_PROFILE` claim
+at session start · A3 `profile.renew` RPC + pump heartbeat. Then, from reviews:
+the stale-tick ownership clobber, the four escaped mutations, renew failing
+closed on a lapsed lease, `PublicProfileOwner`, `inbox.list` token redaction,
+the `inbox.lease` owner fence, startup lease invalidation, and **proof-of-possession
+re-claim** (the fix that actually closed the token-disclosure class).
+
+Phase B (`cc/hook-bridge`): B1 skill + README · B2 `shepy claude-hook` · B3 the
+idle gap. Then, from reviews: the real Claude Code Stop contract, ack moved to
+the UserPromptSubmit path, identity sanitizing, `O_NOFOLLOW` + `fchmodSync`,
+per-profile owner files, the two-phase owner record, read-modify-write guards,
+`systemMessage` surfacing, and `currentLeaseToken` on re-claim.
+
+### What the reviews caught that the builders did not
+
+- **The Stop contract in the original packet was wrong.** `decision` is
+  top-level with values `"approve" | "block"`; there is no `"continue"`. And a
+  Stop hook CAN inject via `hookSpecificOutput.additionalContext`. Ground truth
+  was read out of the Claude Code 2.1.257 binary's own validation helper, which
+  also gives the real output budget: `additionalContext` 8 000 chars / 200 lines.
+- **Three rounds of redaction could not close the credential leak.** The
+  re-claim credential was reconstructible from `agent.list` (which serves
+  `agentSession` verbatim — that is the product, not a leak) and from
+  `inbox.list`. Hiding fields kept failing; changing the authentication rule to
+  proof-of-possession ended it.
+- **Persist-before-commit, ordered in a packet to fix one hazard, created a
+  worse one** — a crash between the record write and `inbox.delivered` let the
+  next turn ack rows nobody ever saw. Resolved by the two-phase record, not by
+  re-ordering.
+- **Two lanes green in isolation failed when merged** (3 tests). One was an
+  assertion gated behind `test.runIf` that had never executed in its own
+  worktree; one was a security redaction colliding with a test that read the
+  redacted field; one was a test premise invalidated by the new claim rule.
 
 ## Next steps
 
-1. Ray decides whether A1–A3 go to a worker or he takes them.
-2. A3 before A2 if the steal window matters more than the typing — A2 multiplies
-   claimants, and an unrenewed lease plus more claimants is the one combination
-   that can hand a profile to the wrong pane.
-3. Phase B after A is green; B2 is the only task in this plan that touches a
-   foreign harness's contract, so it reviews last.
+1. **Phase C live proof — the gate this plan still owes.** Nothing above was
+   proven outside tests. Run the five steps in the Phase C section in a
+   worker-quiet window.
+2. **Ray's release call on `typebox`.** It is declared as a `peerDependency`
+   (`>=1.1.38`) on `packages/shepy-pi` because Pi's extension loader aliases
+   `typebox` to its own bundled copy in both Node and Bun modes, so a
+   `dependency` would ship an unused second copy. `docs/releasing.md` is
+   authoritative; one line to change if a hard dependency is preferred.
+   Note `scripts/check-pi-package.mjs` now pins `EXPECTED_VERSION`, so every
+   release must bump it in the same commit.
+3. **Follow-ups, none blocking:**
+   - `ProfileOwnerStore.claim` happily creates an owner row for a profile that
+     does not exist → a ghost owner that can never receive anything.
+   - A post-expiry takeover by a different subscriber is reported as
+     `"reclaimed"`, so an audit trail cannot distinguish it from a reconnect.
+   - U+202E / U+200D survive the daemon's excerpt sanitizer and the Pi
+     renderer (the hook's own charset enforcement holds).
+   - `invalidateAllLeases()` runs on every daemon startup; a persisted fencing
+     generation would narrow it to the first boot after an upgrade. Assessed as
+     correct-as-shipped, duplicate-class not loss-class.
+   - The hook has one irreducible loss window: SIGKILL or a failed stdout
+     between the phase-2 promotion and the bytes reaching Claude Code. A
+     stateless hook cannot close it; it is documented in the README.
+   - A Claude Code owner is still only delivered to at turn boundaries. No hook
+     fires on an idle session, so an outcome landing on an idle pane waits for
+     the next prompt.
