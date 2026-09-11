@@ -50,11 +50,11 @@ export type ProfileOwner = {
  * the daemon. The lease token authenticates release/renew/lease on its own,
  * so anyone it is handed to could act as (or evict) the owner; only the
  * holder it was minted for may ever see it. The subscriberId and the
- * harness session ref are stripped too: together they are the re-claim
- * credential (see claim), so publishing either half on the public row
- * hands a rejected claimant part of what it would need to mint a fresh
- * token. Callers display paneId/harnessKind/workspaceId; nothing else
- * leaves the store. */
+ * harness session ref are stripped too — NOT because they authenticate
+ * anything any more (they do not: the re-claim proof is the daemon-minted
+ * lease token, which no public surface serves), but because they are the
+ * owner's private session identity and no reader needs them. Callers
+ * display paneId/harnessKind/workspaceId; nothing else leaves the store. */
 export type PublicProfileOwner = Omit<
   ProfileOwner,
   "harnessSessionRefJson" | "leaseToken" | "subscriberId"
@@ -85,13 +85,22 @@ export class ProfileOwnerStore {
   }
 
   /**
-   * Claim ownership. Rules (§8.2):
-   *  - same subscriber re-claiming (reconnect) → new lease token, grace preserved;
-   *  - a different subscriber may claim only after the current lease expired
-   *    (the reconnect grace) — otherwise rejected with the active owner;
+   * Claim ownership. Rules (§8.2, as of the F3-1 fix):
+   *  - a claim presenting the CURRENT lease token takes the fast path:
+   *    proof of possession — the daemon minted that token and only gave it
+   *    to the holder, so no amount of public metadata helps a rival;
+   *  - any claim without the current token waits out the lease: rejected
+   *    while `lease_expires_at + grace` is in the future, allowed once it
+   *    has lapsed. Identity equality (subscriberId, session ref) proves
+   *    NOTHING on its own — both halves are public or reconstructible from
+   *    public RPC (the F3-1 takeover chain), so they authenticate nobody.
    *  - any successful claim invalidates the previous lease token.
    */
   claim(input: {
+    /** The lease token the claimant currently holds, if any. MUST equal the
+     * live owner's token to take the fast path; omitted or stale means the
+     * expiry rule applies. This is the re-claim proof of possession. */
+    currentLeaseToken?: string;
     graceMs?: number;
     harnessKind: string;
     harnessSessionRefJson: string;
@@ -108,22 +117,22 @@ export class ProfileOwnerStore {
     const graceMs = input.graceMs ?? DEFAULT_LEASE_GRACE_MS;
     const existing = this.get(input.profileId);
     if (existing) {
-      // A re-claim is authenticated by BOTH halves of the credential: the
-      // subscriber identity AND the harness session ref (stable for the
-      // life of the claiming session). subscriberId equality alone was
-      // spoofable — the public owner row used to disclose it, handing a
-      // rejected claimant the ability to mint a fresh lease token. A
-      // claimant that knows the subscriber but not the session ref is just
-      // a rival: it waits out the lease like any other.
-      const sameOwner =
-        existing.subscriberId === input.subscriberId &&
-        existing.harnessSessionRefJson === input.harnessSessionRefJson;
+      // Proof of possession, not proof of identity: the subscriber id and
+      // the harness session ref are deliberately excluded from this check
+      // because both are public by design (agent rows serve session refs;
+      // the reviewer reconstructed the whole credential from two
+      // unauthenticated reads). Only the token the daemon minted for the
+      // current holder authenticates a same-lease re-claim. Identity is
+      // not even an additional requirement: a holder that legitimately
+      // lost its identity halves (e.g. a hook whose persisted token
+      // outlives its session id) must still take the fast path.
+      const holdsLease =
+        input.currentLeaseToken !== undefined && input.currentLeaseToken === existing.leaseToken;
       const leaseAlive = existing.leaseExpiresAt + graceMs > now;
-      if (!sameOwner && leaseAlive) {
-        // The active owner's identity is public; its token and subscriber
-        // are not. A rejected claimant must never receive the capability
-        // that release() authenticates on — nor the credential that could
-        // mint one.
+      if (!holdsLease && leaseAlive) {
+        // The active owner's identity is public; its token is not. A
+        // rejected claimant must never receive the capability that
+        // release() authenticates on.
         return { kind: "rejected", owner: toPublicProfileOwner(existing), reason: "lease_active" };
       }
     }

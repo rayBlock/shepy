@@ -1007,7 +1007,10 @@ describe("inbox mutates only for the token that currently owns the profile", () 
         result: { kind: string; leaseToken: string };
       };
       clock += 60_000;
-      const second = (await client.request("profile.claim", CLAIM_PANE_X)) as {
+      const second = (await client.request("profile.claim", {
+        ...CLAIM_PANE_X,
+        currentLeaseToken: first.result.leaseToken,
+      })) as {
         result: { kind: string; leaseToken: string };
       };
       expect(second.result.kind).toBe("reclaimed");
@@ -1062,9 +1065,13 @@ describe("inbox mutates only for the token that currently owns the profile", () 
       expect(lease.obligations).toHaveLength(2);
       const stampedIds = lease.obligations.map((row) => row.id);
 
-      // The re-claim between delivery and ack rotates the token.
+      // The re-claim between delivery and ack rotates the token. The
+      // holder presents the token it still holds — the fast path.
       clock += 60_000;
-      const second = (await client.request("profile.claim", CLAIM_PANE_X)) as {
+      const second = (await client.request("profile.claim", {
+        ...CLAIM_PANE_X,
+        currentLeaseToken: staleToken,
+      })) as {
         result: { kind: string; leaseToken: string };
       };
       expect(second.result.kind).toBe("reclaimed");
@@ -1406,12 +1413,12 @@ describe("profile.renew RPC (owner lease heartbeat)", () => {
       };
       expect(claim.result.kind).toBe("claimed");
 
-      // The public owner row is the disclosure round 2 stopped at: a rival
-      // reads profile.owner, takes its subscriberId, and re-presents it with
-      // its OWN pane, terminal and session ref. subscriberId equality alone
-      // must not authenticate a re-claim — the harness session ref is the
-      // second half of the credential, and it cannot be guessed from the
-      // public row.
+      // The public owner row is the disclosure round 2 stopped at; the F3-1
+      // review then showed BOTH halves of the old identity credential are
+      // reconstructible from public RPC (agent.list serves the session ref;
+      // the subscriber is parseable from it). Identity therefore proves
+      // nothing: a claim without the daemon-minted token is a rival claim,
+      // whatever halves it re-presents.
       const spoof = (await client.request("profile.claim", {
         ...CLAIM_PANE_Y,
         subscriberId: CLAIM_PANE_X.subscriberId,
@@ -1427,10 +1434,13 @@ describe("profile.renew RPC (owner lease heartbeat)", () => {
         }),
       ).resolves.toEqual({ renewed: true });
 
-      // The legitimate reconnect path (same subscriber, same harness session
-      // ref) must keep working.
+      // The legitimate reconnect path (the holder presenting the token it
+      // still holds) must keep working mid-lease.
       clock += 60_000;
-      const reconnect = (await client.request("profile.claim", CLAIM_PANE_X)) as {
+      const reconnect = (await client.request("profile.claim", {
+        ...CLAIM_PANE_X,
+        currentLeaseToken: claim.result.leaseToken,
+      })) as {
         result: { kind: string; leaseToken: string };
       };
       expect(reconnect.result.kind).toBe("reclaimed");
@@ -1488,14 +1498,144 @@ describe("profile.renew RPC (owner lease heartbeat)", () => {
       expect(claim.result.kind).toBe("claimed");
       expect(claim.result.leaseToken).toBeTruthy();
       // The re-claim (the reconnect path) rotates the token and hands the
-      // NEW one back: it is the claimer's own credential.
+      // NEW one back: it is the claimer's own credential. The daemon-minted
+      // token is the re-claim proof now — identity halves alone no longer
+      // take the fast path.
       clock += 60_000;
-      const reclaimed = (await client.request("profile.claim", CLAIM_PANE_X)) as {
+      const reclaimed = (await client.request("profile.claim", {
+        ...CLAIM_PANE_X,
+        currentLeaseToken: claim.result.leaseToken,
+      })) as {
         result: { kind: string; leaseToken: string };
       };
       expect(reclaimed.result.kind).toBe("reclaimed");
       expect(reclaimed.result.leaseToken).toBeTruthy();
       expect(reclaimed.result.leaseToken).not.toBe(claim.result.leaseToken);
+    } finally {
+      client.close();
+      await server.stop();
+      built.sqlite.close();
+    }
+  });
+
+  test("a claim presenting a stale lease token is refused while the lease is alive", async () => {
+    // Possession of the CURRENT token is the proof; possession of a
+    // superseded one is evidence of exactly nothing.
+    let clock = 1_000_000;
+    const { built, client, server } = await rpcFixture({ now: () => clock });
+    try {
+      const first = (await client.request("profile.claim", CLAIM_PANE_X)) as {
+        result: { kind: string; leaseToken: string };
+      };
+      clock += 60_000;
+      const second = (await client.request("profile.claim", {
+        ...CLAIM_PANE_X,
+        currentLeaseToken: first.result.leaseToken,
+      })) as {
+        result: { kind: string; leaseToken: string };
+      };
+      expect(second.result.kind).toBe("reclaimed");
+      clock += 60_000;
+      const stale = (await client.request("profile.claim", {
+        ...CLAIM_PANE_X,
+        currentLeaseToken: first.result.leaseToken,
+      })) as { result: { kind: string; leaseToken?: string } };
+      expect(stale.result).toMatchObject({ kind: "rejected", reason: "lease_active" });
+      expect(stale.result.leaseToken).toBeUndefined();
+    } finally {
+      client.close();
+      await server.stop();
+      built.sqlite.close();
+    }
+  });
+});
+
+describe("the F3-1 takeover chain (round-3 review)", () => {
+  // A Pi owner's real re-claim credential: the session ref it registers on
+  // its agent row (agent.orchestrator.register in production), and the
+  // subscriber id embedded in the session file name (a uuidv7 — no
+  // underscores, so parsing is unambiguous).
+  const OWNER_SESSION_PATH =
+    "/home/user/.pi/agent/sessions/2026-09-11T17-36-21-123Z_7c9e667f-2c33-4d0f-9a31-9e44c2f1b7a3.jsonl";
+  const PI_SESSION_REF = {
+    agent: "pi",
+    kind: "path",
+    source: "herdr:pi",
+    value: OWNER_SESSION_PATH,
+  } as const;
+  const OWNER_SUBSCRIBER_ID = "7c9e667f-2c33-4d0f-9a31-9e44c2f1b7a3";
+
+  test("the full attack: both halves reconstructed from public RPC must not mint a token", async () => {
+    const { built, client, server } = await rpcFixture();
+    try {
+      // The owner is a real Pi: its agent row carries its session ref, and
+      // it claims with the matching halves.
+      built.agents.setSessionRefByTerminal({
+        agentSession: PI_SESSION_REF,
+        herdrSessionName: "default",
+        terminalId: "tB",
+      });
+      const claim = (await client.request("profile.claim", {
+        harnessKind: "pi",
+        harnessSessionRefJson: JSON.stringify(PI_SESSION_REF),
+        herdrSessionName: "default",
+        paneId: "wB:p1",
+        profileId: "driffs",
+        subscriberId: OWNER_SUBSCRIBER_ID,
+        terminalId: "tB",
+      })) as { result: { kind: string; leaseToken: string } };
+      expect(claim.result.kind).toBe("claimed");
+      const ownerToken = claim.result.leaseToken;
+
+      // ── The attacker, holding no credential: two unauthenticated reads. ──
+      // Step 1: profile.owner names the owner's pane — the credential-free
+      // pointer that aims the attacker at the right agent row.
+      const owner = (await client.request("profile.owner", { profileId: "driffs" })) as {
+        owner: { paneId: string } | null;
+      };
+      expect(owner.owner?.paneId).toBe("wB:p1");
+      // Step 2: agent.list serves that row's session ref verbatim — half #2.
+      const list = (await client.request("agent.list", { all: true })) as {
+        agents: Array<{
+          agentSession: {
+            agent: string;
+            kind: string;
+            source: string;
+            value: string;
+          } | null;
+          paneId: string;
+        }>;
+      };
+      const row = list.agents.find((agent) => agent.paneId === owner.owner?.paneId);
+      if (!row?.agentSession) throw new Error("attack setup: owner row carried no session ref");
+      const reconstructedRef = JSON.stringify(row.agentSession);
+      expect(reconstructedRef).toBe(JSON.stringify(PI_SESSION_REF));
+      // Step 3: the Pi session file name embeds the session id — half #1.
+      const derived = /([0-9a-f-]{36})\.jsonl$/.exec(row.agentSession.value)?.[1];
+      expect(derived).toBe(OWNER_SUBSCRIBER_ID);
+
+      // Step 4: re-present both halves with the attacker's own pane. Under
+      // identity equality this minted a fresh valid token over the live
+      // lease. Identity is public by design; only the daemon-minted token
+      // the owner holds may take the fast path.
+      const takeover = (await client.request("profile.claim", {
+        harnessKind: "pi",
+        harnessSessionRefJson: reconstructedRef,
+        herdrSessionName: "default",
+        paneId: "wE:p9",
+        profileId: "driffs",
+        subscriberId: derived,
+        terminalId: "tE",
+      })) as { result: { kind: string; leaseToken?: string } };
+      expect(takeover.result).toMatchObject({ kind: "rejected", reason: "lease_active" });
+      expect(takeover.result.leaseToken).toBeUndefined();
+
+      // The payoff that made the chain worth reproducing: the attacker
+      // released the profile with its minted token and evicted the owner.
+      // The real owner's capability must survive untouched.
+      await expect(
+        client.request("profile.renew", { leaseToken: ownerToken, profileId: "driffs" }),
+      ).resolves.toEqual({ renewed: true });
     } finally {
       client.close();
       await server.stop();

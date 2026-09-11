@@ -903,7 +903,16 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
       }
       try {
         state.roleMutationInFlight = true;
+        // Proof of possession: a re-claim of the profile this pane already
+        // owns presents the daemon-minted token it is still holding. Only
+        // the exact current token takes the fast path — identity halves are
+        // public by design and authenticate nothing — so a pane whose token
+        // was lost (fresh process, evicted row) simply waits out the lease
+        // like any rival instead of impersonating the owner.
+        const currentLeaseToken =
+          state.profileMode?.profileId === profileId ? state.profileMode.leaseToken : undefined;
         const claim = (await state.client.request("profile.claim", {
+          ...(currentLeaseToken !== undefined ? { currentLeaseToken } : {}),
           harnessKind: "pi",
           harnessSessionRefJson: JSON.stringify(state.sessionRef),
           herdrSessionName: state.currentScope?.herdrSessionName ?? "default",

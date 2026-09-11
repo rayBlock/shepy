@@ -452,6 +452,7 @@ export class ObservabilityRpcServer {
       case "profile.claim": {
         assertSchema(profileClaimInputSchema, params);
         const input = params as {
+          currentLeaseToken?: string;
           harnessKind: string;
           harnessSessionRefJson: string;
           herdrSessionName: string;
