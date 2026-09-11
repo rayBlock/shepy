@@ -204,6 +204,35 @@ export class DeliveryObligationStore {
   }
 
   /**
+   * One-time startup invalidation of every live lease stamp (review F3-2).
+   *
+   * Per-row ack fencing (ack matches lease_token) only protects stamps made
+   * by the fenced build. Rows stamped by the pre-fence, unfenced inbox.lease
+   * — i.e. every production database at the moment this ships — remain
+   * authoritative for a token that never belonged to any owner until their
+   * 2-minute lease expires, letting it ack undelivered rows away and
+   * suppress the owner's wakes. The daemon calls this ONCE at startup so no
+   * pre-upgrade stamp survives the upgrade: leased and delivered rows return
+   * to pending (attempt_count preserved — the cap still bounds) and are
+   * re-delivered to the legitimate owner, never dropped.
+   */
+  invalidateAllLeases(): { invalidated: number } {
+    return this.#transaction(() => {
+      const invalidated = Number(
+        this.#sqlite
+          .prepare(
+            `update delivery_obligations
+						 set state = 'pending', lease_token = null, lease_expires_at = null,
+						     last_error_code = coalesce(last_error_code, 'lease_invalidated_at_startup')
+						 where state in ('leased', 'delivered')`,
+          )
+          .run().changes,
+      );
+      return { invalidated };
+    });
+  }
+
+  /**
    * Expiry sweep: stranded leased/delivered past their lease → pending
    * (attempt already incremented at lease time); at MAX_DELIVERY_ATTEMPTS →
    * dead_letter with the expiry error recorded.

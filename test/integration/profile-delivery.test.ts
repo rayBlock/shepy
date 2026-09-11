@@ -1708,3 +1708,78 @@ describe("the F3-1 takeover chain (round-3 review)", () => {
     }
   });
 });
+
+describe("startup lease-stamp invalidation (F3-2)", () => {
+  test("pre-upgrade lease stamps die at daemon startup; rows return to pending, never dropped", () => {
+    const { agents, delivery, obligations } = fixture();
+    const worker = agents.list().find((row) => row.name === "driffs-worker");
+    if (!worker) throw new Error("fixture: driffs-worker missing");
+    for (const eventId of [91, 92]) {
+      delivery.projectAgentEvent({
+        ...eventFor({ eventId, worker: "driffs" }),
+        agentId: worker.id,
+      });
+    }
+    const batch = delivery.inboxList({ profileId: "driffs", state: "pending" });
+    const ids = batch.map((row) => row.id);
+    expect(ids).toHaveLength(2);
+
+    // Simulate the pre-G3 database this build upgrades: the old unfenced
+    // inbox.lease let ANY token stamp rows. One row got "delivered" under
+    // that token; nothing was acked.
+    const legacyToken = "attacker-token-from-old-build";
+    const leased = obligations.leaseBatch({
+      expiresAt: Date.now() + 2 * 60_000,
+      ids,
+      leaseToken: legacyToken,
+      profileId: "driffs",
+    });
+    expect(leased).toBe(2);
+    expect(
+      obligations.markDelivered({
+        ids: [ids[0] as string],
+        leaseToken: legacyToken,
+        ownerSessionRefJson: "{}",
+      }),
+    ).toBe(1);
+
+    // The one-time startup invalidation clears every stamp: no pre-upgrade
+    // token survives the upgrade, so it can no longer ack rows away and
+    // suppress the user's wakes.
+    expect(obligations.invalidateAllLeases()).toEqual({ invalidated: 2 });
+    const rows = delivery.inboxList({ profileId: "driffs" });
+    expect(rows.map((row) => row.state)).toEqual(["pending", "pending"]);
+    for (const row of rows) {
+      expect(row.leaseToken ?? null).toBeNull();
+      expect(row.leaseExpiresAt ?? null).toBeNull();
+      // Attempts are preserved, not reset: the bounded-attempts cap still
+      // bounds. The rows are re-deliverable, never silently dropped.
+      expect(row.attemptCount).toBe(1);
+    }
+
+    // The legacy token is dead: it acks nothing.
+    expect(delivery.inboxAck({ ids, leaseToken: legacyToken, profileId: "driffs" })).toEqual({
+      acked: 0,
+      rejected: ids,
+    });
+
+    // And the rows are back in circulation for the legitimate owner.
+    const claim = delivery.claim({
+      harnessKind: "pi",
+      harnessSessionRefJson: "{}",
+      herdrSessionName: "default",
+      paneId: "wX:p1",
+      profileId: "driffs",
+      subscriberId: "sub-1",
+      terminalId: "tX",
+    });
+    if (claim.kind !== "claimed") throw new Error("claim failed");
+    const redelivered = delivery.inboxLease({ leaseToken: claim.leaseToken, profileId: "driffs" });
+    expect(redelivered.obligations.map((row) => row.agentEventId)).toEqual([91, 92]);
+  });
+
+  test("invalidation is a no-op on a database with no live stamps", () => {
+    const { obligations } = fixture();
+    expect(obligations.invalidateAllLeases()).toEqual({ invalidated: 0 });
+  });
+});
