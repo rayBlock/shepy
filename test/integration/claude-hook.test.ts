@@ -725,7 +725,14 @@ describe("claude-hook lease-token re-claim (proof of possession)", () => {
       // "reclaimed" answer with a fresh token is reachable ONLY when the
       // exact key currentLeaseToken was accepted by the real server.
       expect(claim.params).toMatchObject({ currentLeaseToken: firstToken });
-      const claimResult = claim.result as { kind?: string; leaseToken?: string };
+      // `result` is what the RPC client resolved: the JSON-RPC response's
+      // `result` field, which for profile.claim wraps the claim payload a
+      // second time as { result: { kind, leaseToken, owner } } — exactly the
+      // envelope the hook itself unwraps (claim.result ?? {}). Read the
+      // payload through that inner .result, not off the envelope.
+      const claimResult =
+        (claim.result as { result?: { kind?: string; leaseToken?: string } } | undefined)?.result ??
+        {};
       expect(claimResult.kind).toBe("reclaimed");
       expect(claimResult.leaseToken).toBeTruthy();
       // A re-claim invalidates the presented token and mints a fresh one.
