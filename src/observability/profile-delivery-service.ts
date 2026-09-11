@@ -231,11 +231,29 @@ export class ProfileDeliveryService {
 
   // ── Inbox surface (the Phase 4 bridge consumes exactly this) ──────────
 
-  /** Expire stranded leases, then lease the oldest pending batch. */
+  /**
+   * Expire stranded leases, then lease the oldest pending batch.
+   *
+   * Leasing is a mutation — it stamps rows, increments attempts and removes
+   * the batch from every other harness's reach — so it is fenced to the
+   * token that currently owns the profile. A stale token (superseded by a
+   * re-claim) or an arbitrary string is refused outright; before this fence
+   * any presented token could pull a profile's pending batch under itself,
+   * double-delivering it beside the legitimate owner's pump. Ack/delivered/
+   * nack need no such fence: they can only touch rows already stamped with
+   * the presented token, so their authority is the stamp, not live
+   * ownership (inboxAck documents the superseded-token decision).
+   */
   inboxLease(input: { leaseToken: string; maxBatch?: number; now?: number; profileId: string }): {
     expired: number;
     obligations: Array<Obligation & { outcome: InboxOutcomeSnapshot | null }>;
   } {
+    const owner = this.#owners.get(input.profileId);
+    if (!owner || owner.leaseToken !== input.leaseToken) {
+      throw new Error(
+        `inbox.lease refused: the presented lease token is not the active owner of profile ${input.profileId}`,
+      );
+    }
     const sweep = this.#obligations.sweepExpired({
       ...(input.now !== undefined ? { now: input.now } : {}),
       profileId: input.profileId,

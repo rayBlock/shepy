@@ -309,11 +309,23 @@ describe("inbox.lease event-correlated outcomes", () => {
       workspaceId: "wA",
     });
     built.delivery.projectAgentEvent(stored);
-    return { delivery: built.delivery, sqlite: built.sqlite, stored };
+    // Leasing is owner-fenced, so these fixtures claim an owner and lease
+    // under the claimed token.
+    const owner = built.delivery.claim({
+      harnessKind: "pi",
+      harnessSessionRefJson: "{}",
+      herdrSessionName: "default",
+      paneId: "wX:p1",
+      profileId: "driffs",
+      subscriberId: "sub-1",
+      terminalId: "tX",
+    });
+    if (owner.kind !== "claimed") throw new Error("fixture: owner claim rejected");
+    return { delivery: built.delivery, ownerToken: owner.leaseToken, sqlite: built.sqlite, stored };
   }
 
   test("each leased obligation carries the immutable event snapshot, not live history", () => {
-    const { delivery, stored } = appendOutcomeEvent({
+    const { delivery, ownerToken, stored } = appendOutcomeEvent({
       compactHistory: {
         historyRef: null,
         lastAssistantMessage: {
@@ -336,7 +348,7 @@ describe("inbox.lease event-correlated outcomes", () => {
       },
       idempotency: "outcome-live",
     });
-    const lease = delivery.inboxLease({ leaseToken: "lease-1", profileId: "driffs" });
+    const lease = delivery.inboxLease({ leaseToken: ownerToken, profileId: "driffs" });
     expect(lease.obligations).toHaveLength(1);
     const outcome = (lease.obligations[0] as { outcome?: unknown }).outcome as
       | Record<string, unknown>
@@ -357,7 +369,7 @@ describe("inbox.lease event-correlated outcomes", () => {
 
   test("long excerpts are bounded with a read-back hint; tool bodies never ride", () => {
     const long = "x".repeat(5_000);
-    const { delivery } = appendOutcomeEvent({
+    const { delivery, ownerToken } = appendOutcomeEvent({
       compactHistory: {
         historyRef: null,
         lastAssistantMessage: { ref: "r1", role: "assistant", text: long, timestamp: null },
@@ -369,7 +381,7 @@ describe("inbox.lease event-correlated outcomes", () => {
       },
       idempotency: "outcome-long",
     });
-    const lease = delivery.inboxLease({ leaseToken: "lease-1", profileId: "driffs" });
+    const lease = delivery.inboxLease({ leaseToken: ownerToken, profileId: "driffs" });
     const outcome = (
       lease.obligations[0] as { outcome?: { excerpt?: { text: string; truncated: boolean } } }
     ).outcome;
@@ -379,21 +391,30 @@ describe("inbox.lease event-correlated outcomes", () => {
   });
 
   test("a missing historical event leases with an honest null outcome", () => {
-    const { delivery, sqlite, stored } = appendOutcomeEvent({ idempotency: "outcome-missing" });
+    const { delivery, ownerToken, sqlite, stored } = appendOutcomeEvent({
+      idempotency: "outcome-missing",
+    });
     expect(delivery.inboxList({ profileId: "driffs" })).toHaveLength(1);
     sqlite.exec("delete from agent_events");
-    const lease = delivery.inboxLease({ leaseToken: "lease-1", profileId: "driffs" });
+    const lease = delivery.inboxLease({ leaseToken: ownerToken, profileId: "driffs" });
     expect(lease.obligations).toHaveLength(1);
     expect((lease.obligations[0] as { outcome?: unknown }).outcome).toBeNull();
     expect((lease.obligations[0] as { agentEventId?: number }).agentEventId).toBe(stored.id);
   });
 
-  test("enrichment preserves lease fencing — a second lease token gets nothing", () => {
-    const { delivery } = appendOutcomeEvent({ idempotency: "outcome-fencing" });
-    const first = delivery.inboxLease({ leaseToken: "lease-1", profileId: "driffs" });
+  test("enrichment preserves lease fencing — the owner's stamp beats a rival token", () => {
+    const { delivery, ownerToken } = appendOutcomeEvent({ idempotency: "outcome-fencing" });
+    const first = delivery.inboxLease({ leaseToken: ownerToken, profileId: "driffs" });
     expect(first.obligations).toHaveLength(1);
-    const second = delivery.inboxLease({ leaseToken: "lease-2", profileId: "driffs" });
-    expect(second.obligations).toHaveLength(0);
+    // A rival token is refused outright — it can neither steal the leased
+    // rows nor lease anything else while the owner holds the profile.
+    expect(() => delivery.inboxLease({ leaseToken: "lease-2", profileId: "driffs" })).toThrow(
+      /not the active owner/,
+    );
+    const leased = delivery.inboxList({ profileId: "driffs", state: "leased" });
+    expect(leased).toHaveLength(1);
+    expect(leased[0]?.leaseToken).toBeNull(); // read surface redacts (G1)
+    expect(leased[0]?.state).toBe("leased");
   });
 });
 
@@ -837,8 +858,20 @@ describe("Phase 3 gate — durable delivery obligations", () => {
       clock += 10 * 60_000; // lease expires
     }
     // One more lease call triggers the sweep: the final lease expires back
-    // to pending at the attempt cap, then dead-letters.
-    delivery.inboxLease({ leaseToken: "sweep-trigger", now: clock, profileId: "driffs" });
+    // to pending at the attempt cap, then dead-letters. Leasing is
+    // owner-fenced, so the sweep trigger is a legitimate owner: a fresh
+    // claimant takes over the long-lapsed lease and leases under its token.
+    const sweeper = delivery.claim({
+      harnessKind: "pi",
+      harnessSessionRefJson: "{}",
+      herdrSessionName: "default",
+      paneId: "wX:p2",
+      profileId: "driffs",
+      subscriberId: "sweeper",
+      terminalId: "tX",
+    });
+    if (sweeper.kind !== "claimed" && sweeper.kind !== "reclaimed") throw new Error("claim failed");
+    delivery.inboxLease({ leaseToken: sweeper.leaseToken, now: clock, profileId: "driffs" });
     const dead = delivery.inboxList({ profileId: "driffs", state: "dead_letter" });
     expect(dead).toHaveLength(1);
     const deadRow = dead[0];
@@ -917,6 +950,165 @@ describe("Phase 3 gate — durable delivery obligations", () => {
     const pending = delivery.inboxList({ profileId: "driffs", state: "pending" });
     expect(pending).toHaveLength(1);
     expect(pending[0]?.lastErrorCode).toBe("harness_interrupted");
+  });
+});
+
+describe("inbox mutates only for the token that currently owns the profile", () => {
+  test("the A2-1-adjacent attack: inbox.lease with an arbitrary token is refused", async () => {
+    const { built, client, server } = await rpcFixture();
+    try {
+      const claim = (await client.request("profile.claim", CLAIM_PANE_X)) as {
+        result: { kind: string; leaseToken: string };
+      };
+      expect(claim.result.kind).toBe("claimed");
+      const worker = built.agents.list().find((row) => row.name === "driffs-worker");
+      if (!worker) throw new Error("fixture: driffs-worker missing");
+      for (const eventId of [71, 72]) {
+        built.delivery.projectAgentEvent({
+          ...eventFor({ eventId, worker: "driffs" }),
+          agentId: worker.id,
+        });
+      }
+
+      // Pre-fix, ANY string leased the pending batch under itself: the rows
+      // became un-ackable by the real owner, and a rival harness could pull
+      // the same batch the legitimate owner was about to pump.
+      await expect(
+        client.request("inbox.lease", { leaseToken: "attacker-string", profileId: "driffs" }),
+      ).rejects.toThrow(/not the active owner/);
+      // Nothing moved: the rows are still pending for the real owner.
+      const pending = (await client.request("inbox.list", {
+        profileId: "driffs",
+        state: "pending",
+      })) as { obligations: unknown[] };
+      expect(pending.obligations).toHaveLength(2);
+      const ownerLease = (await client.request("inbox.lease", {
+        leaseToken: claim.result.leaseToken,
+        profileId: "driffs",
+      })) as { obligations: unknown[] };
+      expect(ownerLease.obligations).toHaveLength(2);
+
+      // And with no owner at all there is nothing to present.
+      await expect(
+        client.request("inbox.lease", { leaseToken: claim.result.leaseToken, profileId: "other" }),
+      ).rejects.toThrow(/not the active owner/);
+    } finally {
+      client.close();
+      await server.stop();
+      built.sqlite.close();
+    }
+  });
+
+  test("a token superseded by a re-claim can no longer lease", async () => {
+    let clock = 1_000_000;
+    const { built, client, server } = await rpcFixture({ now: () => clock });
+    try {
+      const first = (await client.request("profile.claim", CLAIM_PANE_X)) as {
+        result: { kind: string; leaseToken: string };
+      };
+      clock += 60_000;
+      const second = (await client.request("profile.claim", CLAIM_PANE_X)) as {
+        result: { kind: string; leaseToken: string };
+      };
+      expect(second.result.kind).toBe("reclaimed");
+      const worker = built.agents.list().find((row) => row.name === "driffs-worker");
+      if (!worker) throw new Error("fixture: driffs-worker missing");
+      built.delivery.projectAgentEvent({
+        ...eventFor({ eventId: 73, worker: "driffs" }),
+        agentId: worker.id,
+      });
+      await expect(
+        client.request("inbox.lease", { leaseToken: first.result.leaseToken, profileId: "driffs" }),
+      ).rejects.toThrow(/not the active owner/);
+      const lease = (await client.request("inbox.lease", {
+        leaseToken: second.result.leaseToken,
+        profileId: "driffs",
+      })) as { obligations: unknown[] };
+      expect(lease.obligations).toHaveLength(1);
+    } finally {
+      client.close();
+      await server.stop();
+      built.sqlite.close();
+    }
+  });
+
+  test("a superseded token still acks exactly the rows its own lease stamped", async () => {
+    // The Claude Code hook acks on the turn AFTER delivering, with the token
+    // persisted at delivery time. A same-subscriber re-claim between those
+    // two moments mints a new token; refusing the persisted one would
+    // redeliver a batch the user already saw. Ack authority therefore
+    // derives from holding the lease that stamped the rows — not from
+    // currently owning the profile. A token that stamped nothing is refused
+    // per-row either way, so this accepts no new capability.
+    let clock = 1_000_000;
+    const { built, client, server } = await rpcFixture({ now: () => clock });
+    try {
+      const first = (await client.request("profile.claim", CLAIM_PANE_X)) as {
+        result: { kind: string; leaseToken: string };
+      };
+      const staleToken = first.result.leaseToken;
+      const worker = built.agents.list().find((row) => row.name === "driffs-worker");
+      if (!worker) throw new Error("fixture: driffs-worker missing");
+      for (const eventId of [74, 75]) {
+        built.delivery.projectAgentEvent({
+          ...eventFor({ eventId, worker: "driffs" }),
+          agentId: worker.id,
+        });
+      }
+      const lease = (await client.request("inbox.lease", {
+        leaseToken: staleToken,
+        profileId: "driffs",
+      })) as { obligations: Array<{ id: string }> };
+      expect(lease.obligations).toHaveLength(2);
+      const stampedIds = lease.obligations.map((row) => row.id);
+
+      // The re-claim between delivery and ack rotates the token.
+      clock += 60_000;
+      const second = (await client.request("profile.claim", CLAIM_PANE_X)) as {
+        result: { kind: string; leaseToken: string };
+      };
+      expect(second.result.kind).toBe("reclaimed");
+
+      // The superseded token retires exactly its own stamped rows...
+      await expect(
+        client.request("inbox.ack", {
+          ids: stampedIds,
+          leaseToken: staleToken,
+          profileId: "driffs",
+        }),
+      ).resolves.toEqual({ acked: 2, rejected: [] });
+
+      // ...and it cannot touch rows stamped by the NEW owner's lease. The
+      // new owner leases a fresh outcome; the stale token's ack of it is
+      // rejected per-row and the row stays leased.
+      built.delivery.projectAgentEvent({
+        ...eventFor({ eventId: 76, worker: "driffs" }),
+        agentId: worker.id,
+      });
+      const newLease = (await client.request("inbox.lease", {
+        leaseToken: second.result.leaseToken,
+        profileId: "driffs",
+      })) as { obligations: Array<{ id: string }> };
+      expect(newLease.obligations).toHaveLength(1);
+      const newRowId = newLease.obligations[0]?.id;
+      if (!newRowId) throw new Error("fixture: new lease returned no rows");
+      await expect(
+        client.request("inbox.ack", {
+          ids: [newRowId],
+          leaseToken: staleToken,
+          profileId: "driffs",
+        }),
+      ).resolves.toEqual({ acked: 0, rejected: [newRowId] });
+      const stillLeased = (await client.request("inbox.list", {
+        profileId: "driffs",
+        state: "leased",
+      })) as { obligations: Array<{ id: string }> };
+      expect(stillLeased.obligations.map((row) => row.id)).toEqual([newRowId]);
+    } finally {
+      client.close();
+      await server.stop();
+      built.sqlite.close();
+    }
   });
 });
 
