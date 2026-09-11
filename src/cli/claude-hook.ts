@@ -13,11 +13,14 @@ import { ObservabilityRpcClient } from "@/daemon/client.js";
  * the conversation as Stop hook feedback). This bridge makes a Claude pane a
  * Shepy profile owner anyway. Every UserPromptSubmit re-claims the profile (a
  * same-subscriber re-claim always succeeds and returns a fresh token — that
- * is what makes a stateless hook viable), leases the inbox once, marks the
- * batch delivered under the current prompt id, and emits a bounded outcome
- * summary as additionalContext. When worker outcomes arrive mid-turn, the
- * Stop hook delivers the same bounded summary — which continues the turn —
- * and acknowledges exactly what this prompt's delivery recorded.
+ * is what makes a stateless hook viable), acknowledges the previous turn's
+ * delivery from the persisted owner-file record, then leases the inbox once,
+ * marks the batch delivered under the current prompt id, and emits a bounded
+ * outcome summary as additionalContext. When worker outcomes arrive mid-turn,
+ * the Stop hook delivers the same bounded summary — which continues the turn —
+ * and also acknowledges the recorded delivery. Stop still acks earlier when it
+ * runs, but nothing depends on it alone: a user interrupt skips Stop entirely,
+ * and the next UserPromptSubmit settles whatever is recorded.
  *
  * Hard rules:
  *  - Exit 0 on every expected condition. The hook runs inside the user's turn
@@ -61,7 +64,7 @@ const ownerFileSchema = Type.Object(
       Type.Object(
         {
           ids: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
-          promptId: Type.String({ minLength: 1 }),
+          promptId: Type.Union([Type.Null(), Type.String({ minLength: 1 })]),
         },
         { additionalProperties: false },
       ),
@@ -81,7 +84,7 @@ type HookPayload = {
 };
 
 type OwnerFile = {
-  delivered: { ids: string[]; promptId: string } | null;
+  delivered: { ids: string[]; promptId: string | null } | null;
   leaseToken: string;
   ownerSessionRefJson: string;
   profileId: string;
@@ -212,31 +215,73 @@ async function handlePromptSubmit(payload: HookPayload, input: ClaudeHookInput):
     }
     const leaseToken = result.leaseToken;
 
+    // Ack the PREVIOUS turn's delivery from the persisted owner-file record
+    // before leasing anything new. This is the primary ack surface: Stop
+    // still acks earlier when it runs, but nothing may depend on it — a user
+    // interrupt skips Stop entirely, and older Claude Code builds omit
+    // prompt_id, which the old Stop-only correlation required.
+    const previous = readOwnerFile(input.homeDir, payload.session_id);
+    if (previous?.delivered) {
+      try {
+        await request("inbox.ack", {
+          ids: previous.delivered.ids,
+          leaseToken: previous.leaseToken,
+          profileId: input.profileId,
+        });
+      } catch (error) {
+        // Propagate: the record survives untouched and the next prompt
+        // retries the ack before anything new is delivered.
+        throw new ExpectedHookError(`inbox ack failed: ${describe(error)}`);
+      }
+      // A successful RPC settles the record either way: acked ids are done,
+      // and rejected ids are permanently fenced away from this token (their
+      // lease moved on), so keeping them would only block the next record.
+      previous.delivered = null;
+    }
+
     const lease = await request<{ obligations?: LeasedObligation[] }>("inbox.lease", {
       leaseToken,
       maxBatch: LEASE_MAX_BATCH,
       profileId: input.profileId,
     });
     const obligations = lease.obligations ?? [];
+    const cleared: OwnerFile = {
+      delivered: null,
+      leaseToken,
+      ownerSessionRefJson,
+      profileId: input.profileId,
+    };
     if (obligations.length === 0) {
+      // Persist even with nothing to deliver: this clears a stale delivered
+      // record (an interrupted turn never ran Stop to clear it) and parks the
+      // fresh token so Stop can ack and lease without another prompt first.
+      writeOwnerFile(input.homeDir, payload.session_id, cleared);
       // Ownership held, nothing to deliver: stay silent so Claude Code adds
       // no context to the turn.
       return;
     }
 
     const ids = obligations.map((obligation) => obligation.id);
-    await request("inbox.delivered", {
-      ...(payload.prompt_id ? { harnessTurnId: payload.prompt_id } : {}),
-      ids,
-      leaseToken,
-      ownerSessionRefJson,
-    });
+    // Persist the record BEFORE committing inbox.delivered: a failed write
+    // must never leave rows marked delivered with no local ack record.
     writeOwnerFile(input.homeDir, payload.session_id, {
-      delivered: payload.prompt_id ? { ids, promptId: payload.prompt_id } : null,
-      leaseToken,
-      ownerSessionRefJson,
-      profileId: input.profileId,
+      ...cleared,
+      delivered: { ids, promptId: payload.prompt_id ?? null },
     });
+    try {
+      await request("inbox.delivered", {
+        ...(payload.prompt_id ? { harnessTurnId: payload.prompt_id } : {}),
+        ids,
+        leaseToken,
+        ownerSessionRefJson,
+      });
+    } catch (error) {
+      // The rows stay leased and expire back to pending server-side; drop the
+      // record so the next prompt's ack cannot retire outcomes the model
+      // never saw.
+      writeOwnerFile(input.homeDir, payload.session_id, cleared);
+      throw new ExpectedHookError(`inbox delivered failed: ${describe(error)}`);
+    }
     input.writeStdout(
       JSON.stringify({
         hookSpecificOutput: {
@@ -254,24 +299,22 @@ async function handleStop(payload: HookPayload, input: ClaudeHookInput): Promise
   const client = new ObservabilityRpcClient({ socketPath: input.socketPath });
   try {
     const request = requestWithDeadline(client);
-    // Ack exactly what this prompt's delivery recorded. Fencing is per
-    // obligation (id + lease token), so the token from this turn's claim
-    // still acks even though Stop never re-claims. Lease expiry recovers a
-    // failed ack server-side; the redelivered batch refreshes the record.
+    // Ack exactly what the owner file records as delivered and not yet
+    // settled. Fencing is per obligation (id + lease token), so the token
+    // from this turn's claim still acks even though Stop never re-claims.
+    // The record is keyed per session and profile, so no prompt_id
+    // correlation is needed — a user interrupt or an older Claude Code
+    // without prompt_id leaves nothing for the next prompt to clean up.
     const file = readOwnerFile(input.homeDir, payload.session_id);
-    if (
-      file &&
-      file.profileId === input.profileId &&
-      file.delivered &&
-      file.delivered.promptId === payload.prompt_id
-    ) {
+    if (file && file.profileId === input.profileId && file.delivered) {
       try {
         await request("inbox.ack", {
           ids: file.delivered.ids,
           leaseToken: file.leaseToken,
           profileId: input.profileId,
         });
-        writeOwnerFile(input.homeDir, payload.session_id, { ...file, delivered: null });
+        file.delivered = null;
+        writeOwnerFile(input.homeDir, payload.session_id, file);
       } catch (error) {
         throw new ExpectedHookError(`inbox ack failed: ${describe(error)}`);
       }
@@ -296,7 +339,7 @@ async function handleStop(payload: HookPayload, input: ClaudeHookInput): Promise
     const ids = obligations.map((obligation) => obligation.id);
     writeOwnerFile(input.homeDir, payload.session_id, {
       ...file,
-      delivered: payload.prompt_id ? { ids, promptId: payload.prompt_id } : null,
+      delivered: { ids, promptId: payload.prompt_id ?? null },
     });
     try {
       await request("inbox.delivered", {

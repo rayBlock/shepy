@@ -106,11 +106,13 @@ Claude Code loads skills at startup, so start a fresh session after installing o
 {"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"shepy claude-hook --profile <profileId>"}]}]}}
 ```
 
-A `Stop` registration is optional but recommended; the same command handles both events:
+Register the `Stop` hook too — it is not optional, and the same command handles both events:
 
 ```json
 {"hooks":{"Stop":[{"hooks":[{"type":"command","command":"shepy claude-hook --profile <profileId>"}]}]}}
 ```
+
+Without the `Stop` hook nothing is lost permanently, but delivery degrades in two visible ways: outcomes that arrive while the pane is working wait for the following prompt (on a pane that goes idle, that can mean they are never shown), and each delivery is only acknowledged one prompt later than necessary. Shepy recovers on its own either way — the next prompt settles the recorded delivery, so no outcome is silently retired.
 
 Delivery is at turn boundaries only. A Pi extension can interrupt an idle terminal; a hook cannot. If an outcome lands while a Claude pane sits idle with nothing queued, it waits for the next prompt — nothing polls in between.
 

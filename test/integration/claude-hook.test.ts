@@ -308,13 +308,59 @@ describe("claude-hook UserPromptSubmit", () => {
     });
   });
 
+  test("a previous turn's delivery is acked by the next prompt with no Stop in between", async () => {
+    const fixture = await openHookServer();
+    projectOutcome(fixture, "hook-prev", "previous turn outcome");
+    await runHook(fixture, promptPayload());
+    const firstIds = readOwnerFile(fixture).delivered?.ids ?? [];
+    expect(firstIds).toHaveLength(1);
+
+    // No Stop runs (user interrupt). A new outcome lands; the next prompt
+    // must ack the previous delivery BEFORE leasing and injecting the new
+    // one, or the ack backlog burns delivery attempts into dead_letter.
+    projectOutcome(fixture, "hook-next", "next turn outcome");
+    const { code, stdout } = await runHook(fixture, promptPayload({ prompt_id: "prompt-2" }));
+    expect(code).toBe(0);
+    const acked = fixture.delivery.inboxList({ profileId: "driffs", state: "acked" });
+    expect(acked.map((row) => row.id).sort()).toEqual(firstIds);
+    const context =
+      (JSON.parse(stdout) as { hookSpecificOutput?: { additionalContext?: string } })
+        .hookSpecificOutput?.additionalContext ?? "";
+    expect(context).toContain("next turn outcome");
+    const file = readOwnerFile(fixture);
+    expect(file.delivered?.promptId).toBe("prompt-2");
+    expect(file.delivered?.ids).toHaveLength(1);
+    expect(file.delivered?.ids).not.toEqual(firstIds);
+    expect(fixture.delivery.inboxList({ profileId: "driffs", state: "pending" })).toHaveLength(0);
+  });
+
+  test("an interrupted turn's stale record is cleared when the next prompt has nothing pending", async () => {
+    const fixture = await openHookServer();
+    projectOutcome(fixture, "hook-stale", "stale outcome");
+    await runHook(fixture, promptPayload());
+    const staleIds = readOwnerFile(fixture).delivered?.ids ?? [];
+
+    // Interrupt: Stop never runs. The next prompt finds nothing pending but
+    // must still settle the stale delivery instead of returning early with
+    // the record (and its outcomes) dangling forever.
+    const { code, stdout } = await runHook(fixture, promptPayload({ prompt_id: "prompt-2" }));
+    expect(code).toBe(0);
+    expect(stdout).toBe("");
+    const acked = fixture.delivery.inboxList({ profileId: "driffs", state: "acked" });
+    expect(acked.map((row) => row.id).sort()).toEqual(staleIds);
+    expect(readOwnerFile(fixture).delivered).toBeNull();
+  });
+
   test("no pending obligations exits 0 silently but still claims the profile", async () => {
     const fixture = await openHookServer();
 
     const { code, stdout } = await runHook(fixture, promptPayload());
     expect(code).toBe(0);
     expect(stdout).toBe("");
-    expect(existsSync(ownerFilePath(fixture))).toBe(false);
+    // Even a no-delivery prompt persists the cleared record and the fresh
+    // token: an interrupted later turn self-heals here, and Stop can ack and
+    // lease without waiting for another prompt.
+    expect(readOwnerFile(fixture).delivered).toBeNull();
     expect(fixture.owners.get("driffs")?.subscriberId).toBe(SESSION_ID);
   });
 
