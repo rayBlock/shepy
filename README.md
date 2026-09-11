@@ -87,6 +87,24 @@ Add the official Herdr skill when an agent needs to control workspaces, tabs, pa
 npx skills add ogulcancelik/herdr --skill herdr -g
 ```
 
+### Orchi orchestration skill
+
+[Orchi](skills/orchi/SKILL.md) is an explicitly invoked lead-agent playbook for
+Herdr + Shepy + Pi. It defaults new workers to Z.ai `glm-5.3-flash`, explains
+readable pane grids, bounded delegation, precise subscriptions, independent
+verification, and handoffs. It does not change the lead's model or start workers
+merely because it is installed.
+
+For a local source checkout, link `skills/orchi/` into
+`~/.pi/agent/skills/orchi`, then use `/skill:orchi` or say “use Orchi” in a new Pi
+session (reload resources first in an existing session).
+
+Agents can already select their worker roster with `shepy profile ensure`,
+`subscribe`, and `unsubscribe`. Receiving automatic wakes is separate: the lead
+Pi claims that profile with `/shepy on <profileId>`. The current extension exposes
+this claim as a slash command, not a model-callable tool; a new lead needs that
+one user action. No daemon change is needed for subscription management.
+
 ## Pi extension
 
 Install the extension through Pi:
