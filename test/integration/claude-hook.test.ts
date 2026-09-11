@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -324,6 +325,8 @@ describe("claude-hook UserPromptSubmit", () => {
     };
     const context = parsed.hookSpecificOutput?.additionalContext ?? "";
     expect(parsed.hookSpecificOutput?.hookEventName).toBe("UserPromptSubmit");
+    // A healthy turn emits nothing but the injection — no systemMessage noise.
+    expect(Object.keys(parsed)).toEqual(["hookSpecificOutput"]);
     expect(context).toContain("[SHEPY WAKE POLICY]");
     expect(context).toContain("[SHEPY PROFILE OUTCOMES]");
     expect(context).toContain("builder");
@@ -469,7 +472,11 @@ describe("claude-hook UserPromptSubmit", () => {
 
     const { code, stdout } = await runHook(fixture, promptPayload());
     expect(code).toBe(0);
-    expect(stdout).toBe("");
+    // The symlink IS an owner-file storage failure: the operator hears about
+    // it now, but the turn still exits 0 and the victim file is untouched.
+    const parsed = JSON.parse(stdout) as { systemMessage?: string };
+    expect(parsed.systemMessage).toContain("cannot write the shepy owner file");
+    expect(stdout).not.toContain("symlink outcome");
     expect(readFileSync(victim, "utf8")).toBe("do not touch\n");
     expect(lstatSync(ownerFilePath(fixture)).isSymbolicLink()).toBe(true);
   });
@@ -551,7 +558,7 @@ describe("claude-hook UserPromptSubmit", () => {
     expect(readOwnerFile(fixture).delivered).toBeNull();
   });
 
-  test("a claim held by another subscriber exits 0 silently and never steals", async () => {
+  test("a claim held by another subscriber exits 0 and names the owning pane in a systemMessage", async () => {
     const fixture = await openHookServer();
     const claim = fixture.delivery.claim({
       harnessKind: "pi",
@@ -567,16 +574,70 @@ describe("claude-hook UserPromptSubmit", () => {
 
     const { code, stdout } = await runHook(fixture, promptPayload());
     expect(code).toBe(0);
-    expect(stdout).toBe("");
+    // The pane would otherwise be deaf forever with no signal anywhere. The
+    // warning names the owning pane and never reaches the model.
+    const parsed = JSON.parse(stdout) as { hookSpecificOutput?: unknown; systemMessage?: string };
+    expect(parsed.systemMessage).toContain("driffs");
+    expect(parsed.systemMessage).toContain("w9:p9");
+    expect(parsed.systemMessage).toContain("pi");
+    expect(parsed.hookSpecificOutput).toBeUndefined();
     expect(fixture.owners.get("driffs")?.subscriberId).toBe("other-subscriber");
   });
 
-  test("a profile that does not exist exits 0 silently", async () => {
+  test("a profile that does not exist exits 0 and says so in a systemMessage", async () => {
     const fixture = await openHookServer();
 
     const { code, stdout } = await runHook(fixture, promptPayload(), { profileId: "ghost" });
     expect(code).toBe(0);
-    expect(stdout).toBe("");
+    const parsed = JSON.parse(stdout) as { hookSpecificOutput?: unknown; systemMessage?: string };
+    expect(parsed.systemMessage).toContain("ghost");
+    expect(parsed.systemMessage).toContain("does not exist");
+    expect(parsed.hookSpecificOutput).toBeUndefined();
+  });
+
+  test("a profile with no enabled subscriptions says it cannot receive outcomes", async () => {
+    const fixture = await openHookServer();
+    fixture.profiles.createProfile({
+      displayName: "Deaf",
+      profileId: "deaf",
+      projectRoots: [],
+    });
+
+    const { code, stdout } = await runHook(fixture, promptPayload(), { profileId: "deaf" });
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdout) as { hookSpecificOutput?: unknown; systemMessage?: string };
+    expect(parsed.systemMessage).toContain("deaf");
+    expect(parsed.systemMessage).toContain("no enabled subscriptions");
+    expect(parsed.hookSpecificOutput).toBeUndefined();
+  });
+
+  test("an unwritable owners directory warns the operator instead of failing silently", async () => {
+    const fixture = await openHookServer();
+    projectOutcome(fixture, "hook-ro", "unwritable outcome");
+    mkdirSync(dirname(ownerFilePath(fixture)), { recursive: true });
+    chmodSync(dirname(ownerFilePath(fixture)), 0o500);
+    try {
+      // The exact verify-b V2 shape: with the owners directory unwritable,
+      // every turn used to exit 0 with empty output while the obligation
+      // marched to dead_letter with no signal to anyone.
+      const { code, stdout } = await runHook(fixture, promptPayload());
+      expect(code).toBe(0);
+      const parsed = JSON.parse(stdout) as {
+        hookSpecificOutput?: unknown;
+        systemMessage?: string;
+      };
+      expect(parsed.systemMessage).toContain("cannot write the shepy owner file");
+      expect(parsed.systemMessage).toContain("dead_letter");
+      expect(parsed.hookSpecificOutput).toBeUndefined();
+      // The batch is not lost: it was leased but never delivered, so it
+      // expires back to pending and is re-delivered once storage recovers.
+      expect(fixture.delivery.inboxList({ profileId: "driffs", state: "leased" })).toHaveLength(1);
+      expect(
+        fixture.delivery.inboxList({ profileId: "driffs", state: "dead_letter" }),
+      ).toHaveLength(0);
+    } finally {
+      chmodSync(dirname(ownerFilePath(fixture)), 0o700);
+    }
   });
 });
 

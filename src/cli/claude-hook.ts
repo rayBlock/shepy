@@ -42,11 +42,16 @@ import { ObservabilityRpcClient } from "@/daemon/client.js";
  * Hard rules:
  *  - Exit 0 on every expected condition. The hook runs inside the user's turn
  *    latency; Shepy is observability and must never degrade the session.
+ *  - Silent is the default; loud is for persistent operator action. A
+ *    rejected claim, a profile that cannot receive anything, and owner-file
+ *    storage failures surface as a top-level systemMessage — user-facing
+ *    only, never model input, one short line each. Transient daemon trouble
+ *    stays silent.
  *  - One claim, one lease, no retries, no sleeps, and a hard per-request
  *    deadline.
  *  - The lease token is a credential. It never reaches stdout or the
- *    transcript; it lives in <home>/owners/claude-<session_id>.json, mode
- *    0600. A missing file is recovered by the next claim, never an error.
+ *    transcript; it lives in <home>/owners/claude-<session_id>-<profile>.json,
+ *    mode 0600. A missing file is recovered by the next claim, never an error.
  */
 
 /** Hook payloads are small JSON documents; anything larger is malformed. */
@@ -61,12 +66,21 @@ const LEASE_MAX_BATCH = 20;
  * first. The budget sits at 6 000/120 — ~25% headroom on both axes — so
  * header growth, a longer truncation note, or JSON escaping can never push
  * the payload past the platform limit. If you raise these numbers,
- * re-verify the caps against the installed Claude Code binary first: the
- * previous 12 000-char cap shipped above the real limit and silently
- * clipped busy payloads (verify-b report F4).
+ * re-verify the caps against the installed Claude Code binary first — in
+ * characters AND in bytes: the limit is documented in characters, but a
+ * char budget full of CJK measures ~2.6 UTF-8 bytes per char (verify-b
+ * measured a 4 750-char payload at 12 598 bytes, report V6), so a
+ * byte-counted implementation of the cap would cut the tail — the
+ * truncation note — even with the char budget respected. The previous
+ * 12 000-char cap shipped above the real limit and silently clipped busy
+ * payloads (verify-b report F4).
  */
 export const CONTEXT_MAX_CHARS = 6_000;
 export const CONTEXT_MAX_LINES = 120;
+
+/** Claude Code caps a hook's top-level systemMessage at 4 000 chars / 20 lines. */
+export const SYSTEM_MESSAGE_MAX_CHARS = 4_000;
+export const SYSTEM_MESSAGE_MAX_LINES = 20;
 
 type RpcClient = Pick<ObservabilityRpcClient, "close" | "request">;
 
@@ -146,9 +160,18 @@ export type LeasedObligation = {
 
 /** A classified failure: expected, so the hook exits 0 for it. */
 class ExpectedHookError extends Error {
-  constructor(message: string) {
+  /**
+   * A user-facing one-liner (Claude Code shows it via the top-level
+   * systemMessage field without feeding it to the model), emitted when this
+   * failure is a persistent condition the operator must act on — never for
+   * transient daemon trouble.
+   */
+  readonly userWarning: string | undefined;
+
+  constructor(message: string, userWarning?: string) {
     super(message);
     this.name = "ExpectedHookError";
+    this.userWarning = userWarning;
   }
 }
 
@@ -163,26 +186,65 @@ export type ClaudeHookInput = {
 
 /** Runs one hook event. Returns the process exit code (0 for everything expected). */
 export async function runClaudeHook(input: ClaudeHookInput): Promise<number> {
+  const warnings: string[] = [];
   try {
-    await runHook(input);
+    const emission = await runHook(input, warnings);
+    writeOutput(input, emission, warnings);
     return 0;
   } catch (error) {
-    if (error instanceof ExpectedHookError) return 0;
+    if (error instanceof ExpectedHookError) {
+      writeOutput(input, null, error.userWarning ? [...warnings, error.userWarning] : warnings);
+      return 0;
+    }
     throw error;
   }
 }
 
-async function runHook(input: ClaudeHookInput): Promise<void> {
+type HookEmission = { context: string; event: "Stop" | "UserPromptSubmit" } | null;
+
+/**
+ * Composes the hook's stdout: the additionalContext injection (when the turn
+ * delivered outcomes) and/or the top-level systemMessage (when a persistent
+ * condition needs the OPERATOR's eyes — it never reaches the model). A clean
+ * turn still writes nothing at all.
+ */
+function writeOutput(input: ClaudeHookInput, emission: HookEmission, warnings: string[]): void {
+  const output: {
+    hookSpecificOutput?: { additionalContext: string; hookEventName: string };
+    systemMessage?: string;
+  } = {};
+  const systemMessage = clampSystemMessage(warnings);
+  if (systemMessage !== undefined) output.systemMessage = systemMessage;
+  if (emission) {
+    output.hookSpecificOutput = {
+      additionalContext: emission.context,
+      hookEventName: emission.event,
+    };
+  }
+  if (Object.keys(output).length > 0) input.writeStdout(JSON.stringify(output));
+}
+
+function clampSystemMessage(warnings: string[]): string | undefined {
+  const unique = [...new Set(warnings)];
+  if (unique.length === 0) return undefined;
+  const text = unique
+    .flatMap((warning) => warning.split("\n"))
+    .slice(0, SYSTEM_MESSAGE_MAX_LINES)
+    .join("\n");
+  if (text.length <= SYSTEM_MESSAGE_MAX_CHARS) return text;
+  return `${text.slice(0, SYSTEM_MESSAGE_MAX_CHARS - 1)}…`;
+}
+
+async function runHook(input: ClaudeHookInput, warnings: string[]): Promise<HookEmission> {
   const payload = await parseStdin(input.readStdin);
   if (payload.hook_event_name === "UserPromptSubmit") {
-    await handlePromptSubmit(payload, input);
-    return;
+    return handlePromptSubmit(payload, input, warnings);
   }
   if (payload.hook_event_name === "Stop") {
-    await handleStop(payload, input);
-    return;
+    return handleStop(payload, input, warnings);
   }
   // Any other hook event is none of Shepy's business: exit 0 silently.
+  return null;
 }
 
 async function parseStdin(read: () => Promise<string>): Promise<HookPayload> {
@@ -218,7 +280,11 @@ function requireHerdrIdentity(environment: NodeJS.ProcessEnv): {
   return { paneId, workspaceId };
 }
 
-async function handlePromptSubmit(payload: HookPayload, input: ClaudeHookInput): Promise<void> {
+async function handlePromptSubmit(
+  payload: HookPayload,
+  input: ClaudeHookInput,
+  warnings: string[],
+): Promise<HookEmission> {
   const { paneId, workspaceId } = requireHerdrIdentity(input.environment);
   const client = new ObservabilityRpcClient({ socketPath: input.socketPath });
   try {
@@ -232,24 +298,58 @@ async function handlePromptSubmit(payload: HookPayload, input: ClaudeHookInput):
       value: payload.session_id,
     });
     const herdrSessionName = await resolveHerdrSessionName(request, paneId, workspaceId);
-    const claim = await request<{ result?: { kind?: string; leaseToken?: string } }>(
-      "profile.claim",
-      {
-        harnessKind: "claude",
-        harnessSessionRefJson: ownerSessionRefJson,
-        herdrSessionName,
-        paneId,
-        profileId: input.profileId,
-        subscriberId: payload.session_id,
-        terminalId: paneId,
-        workspaceId,
-      },
-    );
+    const claim = await request<{
+      result?: {
+        kind?: string;
+        leaseToken?: string;
+        owner?: { harnessKind?: string; paneId?: string };
+      };
+    }>("profile.claim", {
+      harnessKind: "claude",
+      harnessSessionRefJson: ownerSessionRefJson,
+      herdrSessionName,
+      paneId,
+      profileId: input.profileId,
+      subscriberId: payload.session_id,
+      terminalId: paneId,
+      workspaceId,
+    });
     const result = claim.result ?? {};
     if ((result.kind !== "claimed" && result.kind !== "reclaimed") || !result.leaseToken) {
+      if (result.kind === "rejected") {
+        // Another owner (typically a Pi lead) holds this profile. Without
+        // this line the pane is deaf forever and nobody says so.
+        warnings.push(
+          `shepy: profile ${plainText(input.profileId)} is owned by pane ${plainText(result.owner?.paneId)} (${plainText(result.owner?.harnessKind, 24)}); this pane will not receive worker outcomes`,
+        );
+      }
       throw new ExpectedHookError(`profile claim rejected (${result.kind ?? "unknown"})`);
     }
     const leaseToken = result.leaseToken;
+
+    // A profile that cannot receive anything is a permanent misconfiguration:
+    // say so instead of being silently deaf. One line, user-facing only.
+    try {
+      const show = await request<{
+        subscriptions?: Array<{ enabled?: boolean }>;
+      }>("profile.show", { profileId: input.profileId });
+      const anyEnabled = (show.subscriptions ?? []).some(
+        (subscription) => subscription.enabled !== false,
+      );
+      if (!anyEnabled) {
+        warnings.push(
+          `shepy: profile ${plainText(input.profileId)} has no enabled subscriptions; nothing can be delivered to this pane`,
+        );
+      }
+    } catch (error) {
+      if (/No such profile/.test(describe(error))) {
+        warnings.push(
+          `shepy: profile ${plainText(input.profileId)} does not exist in shepy; create it with shepy profile ensure — this pane cannot receive worker outcomes`,
+        );
+      }
+      // Any other profile.show failure is daemon trouble; the request paths
+      // below already degrade to a silent no-op for it.
+    }
 
     // Settle the PREVIOUS turn's record before leasing anything new. This is
     // the primary ack surface: Stop still acks earlier when it runs, but
@@ -258,7 +358,7 @@ async function handlePromptSubmit(payload: HookPayload, input: ClaudeHookInput):
     // correlation required. A "leased"-phase record is discarded, never
     // acked: its process died before inbox.delivered committed, so nobody
     // ever saw those rows.
-    const previous = readOwnerFile(input.homeDir, payload.session_id, input.profileId);
+    const previous = readOwnerFile(input.homeDir, payload.session_id, input.profileId, warnings);
     let handled: HandledRecord = null;
     if (previous?.delivered) {
       if (previous.delivered.phase === "delivered") {
@@ -308,7 +408,7 @@ async function handlePromptSubmit(payload: HookPayload, input: ClaudeHookInput):
       );
       // Ownership held, nothing to deliver: stay silent so Claude Code adds
       // no context to the turn.
-      return;
+      return null;
     }
 
     const ids = obligations.map((obligation) => obligation.id);
@@ -335,7 +435,7 @@ async function handlePromptSubmit(payload: HookPayload, input: ClaudeHookInput):
       // A concurrent invocation recorded a newer delivery while we leased.
       // Abandon our batch: the rows stay leased, expire, and are re-delivered
       // under the winner's record — a duplicate, never a loss.
-      return;
+      return null;
     }
     try {
       await request("inbox.delivered", {
@@ -366,20 +466,20 @@ async function handlePromptSubmit(payload: HookPayload, input: ClaudeHookInput):
       { ...cleared, delivered: { ...record, phase: "delivered" } },
       { ids, leaseToken },
     );
-    input.writeStdout(
-      JSON.stringify({
-        hookSpecificOutput: {
-          additionalContext: formatHookContext(input.profileId, obligations),
-          hookEventName: "UserPromptSubmit",
-        },
-      }),
-    );
+    return {
+      context: formatHookContext(input.profileId, obligations),
+      event: "UserPromptSubmit",
+    };
   } finally {
     client.close();
   }
 }
 
-async function handleStop(payload: HookPayload, input: ClaudeHookInput): Promise<void> {
+async function handleStop(
+  payload: HookPayload,
+  input: ClaudeHookInput,
+  warnings: string[],
+): Promise<HookEmission> {
   const client = new ObservabilityRpcClient({ socketPath: input.socketPath });
   try {
     const request = requestWithDeadline(client);
@@ -388,7 +488,7 @@ async function handleStop(payload: HookPayload, input: ClaudeHookInput): Promise
     // though Stop never re-claims. A "leased"-phase record — its process died
     // before inbox.delivered committed — is discarded without acking, exactly
     // like on UserPromptSubmit.
-    const file = readOwnerFile(input.homeDir, payload.session_id, input.profileId);
+    const file = readOwnerFile(input.homeDir, payload.session_id, input.profileId, warnings);
     let handled: HandledRecord = null;
     if (file && file.profileId === input.profileId && file.delivered) {
       if (file.delivered.phase === "delivered") {
@@ -416,8 +516,8 @@ async function handleStop(payload: HookPayload, input: ClaudeHookInput): Promise
     // stop_hook_active guards the loop a Stop injection creates: injecting
     // continues the conversation, which produces another Stop. This Stop has
     // already continued once, so it only acks and never injects again.
-    if (payload.stop_hook_active === true) return;
-    if (!file || file.profileId !== input.profileId) return;
+    if (payload.stop_hook_active === true) return null;
+    if (!file || file.profileId !== input.profileId) return null;
 
     // Deliver fresh mid-turn outcomes the same way UserPromptSubmit does:
     // lease, mark delivered under this prompt id, inject the same bounded
@@ -428,7 +528,7 @@ async function handleStop(payload: HookPayload, input: ClaudeHookInput): Promise
       profileId: input.profileId,
     });
     const obligations = lease.obligations ?? [];
-    if (obligations.length === 0) return;
+    if (obligations.length === 0) return null;
     const ids = obligations.map((obligation) => obligation.id);
     // Two-phase record, same as UserPromptSubmit: persist "leased" before
     // the commit, promote to "delivered" only after inbox.delivered succeeds.
@@ -448,7 +548,7 @@ async function handleStop(payload: HookPayload, input: ClaudeHookInput): Promise
     ) {
       // A concurrent prompt owns the record now; do not deliver under a
       // stale identity on top of it. Our batch expires and re-delivers.
-      return;
+      return null;
     }
     try {
       await request("inbox.delivered", {
@@ -474,14 +574,10 @@ async function handleStop(payload: HookPayload, input: ClaudeHookInput): Promise
       { ...file, delivered: { ...record, phase: "delivered" } },
       { ids, leaseToken: file.leaseToken },
     );
-    input.writeStdout(
-      JSON.stringify({
-        hookSpecificOutput: {
-          additionalContext: formatHookContext(input.profileId, obligations),
-          hookEventName: "Stop",
-        },
-      }),
-    );
+    return {
+      context: formatHookContext(input.profileId, obligations),
+      event: "Stop",
+    };
   } finally {
     client.close();
   }
@@ -577,17 +673,33 @@ function writeOwnerFile(
     }
   } catch (error) {
     // The lease and delivery already succeeded server-side; a lost ack
-    // record self-heals at lease expiry. Never fail a turn over storage.
-    throw new ExpectedHookError(`owner file unwritable: ${describe(error)}`);
+    // record self-heals at lease expiry. Never fail a turn over storage —
+    // but do tell the operator instead of being silently deaf (verify-b V2:
+    // seven silent turns marched an obligation into dead_letter).
+    throw new ExpectedHookError(
+      `owner file unwritable: ${describe(error)}`,
+      `shepy: cannot write the shepy owner file for profile ${plainText(profileId)}; outcomes may repeat or lapse — if they vanish, check shepy inbox list ${plainText(profileId)} --state dead_letter`,
+    );
   }
 }
 
-function readOwnerFile(homeDir: string, sessionId: string, profileId: string): OwnerFile | null {
+function readOwnerFile(
+  homeDir: string,
+  sessionId: string,
+  profileId: string,
+  warnings: string[] = [],
+): OwnerFile | null {
   let raw: string;
   try {
     raw = readFileSync(ownerFilePath(homeDir, sessionId, profileId), "utf8");
-  } catch {
-    // Missing or unreadable — the next claim recovers, never an error.
+  } catch (error) {
+    // Missing is the normal state (first turn, stateless recovery). Any
+    // other read failure is a storage problem the operator should hear about.
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      warnings.push(
+        `shepy: cannot read the shepy owner file for profile ${plainText(profileId)}; a pending ack record was ignored`,
+      );
+    }
     return null;
   }
   try {
@@ -596,6 +708,22 @@ function readOwnerFile(homeDir: string, sessionId: string, profileId: string): O
   } catch {
     return null;
   }
+}
+
+/**
+ * One-line-safe rendering of untrusted-ish text (profile ids from argv, pane
+ * ids and harness kinds from the daemon) for user-facing warning lines:
+ * control bytes and line separators become spaces so a value can never forge
+ * additional lines in the systemMessage.
+ */
+function plainText(value: string | null | undefined, max = 64): string {
+  const collapsed = (value ?? "")
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional stripping — untrusted values must never carry control bytes or line breaks into a user-facing warning line
+    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (collapsed.length === 0) return "unknown";
+  return collapsed.length > max ? `${collapsed.slice(0, max - 1)}…` : collapsed;
 }
 
 /**

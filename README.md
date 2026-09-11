@@ -100,7 +100,7 @@ Claude Code loads skills at startup, so start a fresh session after installing o
 
 ### Claude Code hook bridge
 
-`shepy claude-hook --profile <profileId>` lets a Claude Code pane own a Shepy profile. The hook claims the profile at every turn, delivers pending worker outcomes as injected context on `UserPromptSubmit` (and on `Stop`, when outcomes arrive mid-turn), and acknowledges what each prompt consumed on `Stop`. Register it in `.claude/settings.json` yourself — Shepy never edits that file:
+`shepy claude-hook --profile <profileId>` lets a Claude Code pane own a Shepy profile. The hook claims the profile at every turn, delivers pending worker outcomes as injected context on `UserPromptSubmit` (and on `Stop`, when outcomes arrive mid-turn), and acknowledges what each prompt consumed at the next turn boundary — on the following `UserPromptSubmit`, or on `Stop` when it runs. Register it in `.claude/settings.json` yourself — Shepy never edits that file:
 
 ```json
 {"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"shepy claude-hook --profile <profileId>"}]}]}}
@@ -112,7 +112,9 @@ Register the `Stop` hook too — it is not optional, and the same command handle
 {"hooks":{"Stop":[{"hooks":[{"type":"command","command":"shepy claude-hook --profile <profileId>"}]}]}}
 ```
 
-Without the `Stop` hook nothing is lost permanently, but delivery degrades in two visible ways: outcomes that arrive while the pane is working wait for the following prompt (on a pane that goes idle, that can mean they are never shown), and each delivery is only acknowledged one prompt later than necessary. Shepy recovers on its own either way — the next prompt settles the recorded delivery, so no outcome is silently retired.
+Without the `Stop` hook delivery degrades in two visible ways: outcomes that arrive while the pane is working wait for the following prompt (on a pane that goes idle, that can mean they are never shown), and each delivery is only acknowledged one prompt later than necessary.
+
+Recovery is conditional, not guaranteed. The next prompt settles the recorded delivery only while the hook can read and write its owner file and the process is not killed mid-turn. A hook process killed inside the delivery window costs one duplicate delivery — never a silent loss: a record that cannot prove the model saw a batch is discarded instead of acknowledged, and the batch is re-delivered. When the hook cannot write its owner file (unwritable `SHEPY_HOME`, full disk, a symlink planted at the path), it says so through a `systemMessage` warning every turn — user-facing only, never model input — instead of failing silently; the stranded outcomes still march toward `dead_letter` on the daemon side until storage recovers. If outcomes seem to have vanished, check `shepy inbox list <profileId> --state dead_letter` and re-deliver with `shepy inbox retry <id>`.
 
 Delivery is at turn boundaries only. A Pi extension can interrupt an idle terminal; a hook cannot. If an outcome lands while a Claude pane sits idle with nothing queued, it waits for the next prompt — nothing polls in between.
 
