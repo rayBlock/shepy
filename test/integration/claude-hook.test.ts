@@ -548,9 +548,15 @@ describe("claude-hook UserPromptSubmit", () => {
     await runHook(fixture, promptPayload());
     const real = readOwnerFile(fixture);
 
-    // A record pointing at someone else's id and token must not retire the
-    // real delivery: ack matching is obligation id + lease token. This pins
-    // the ack correlation — an ack that ignores the record fails here.
+    // A record pointing at someone else's obligation id must not retire the
+    // real delivery: ack matching is obligation id + lease token. Only the
+    // ids are corrupted and the REAL token is kept: the record's token is
+    // also the re-claim's proof of possession, so a bogus token would be
+    // rejected at profile.claim (lease_active) before any ack is attempted
+    // — that lockout is the stale-token tests' contract, not the ack fence
+    // this test pins. A record body corrupted around a genuine token is
+    // the reachable mismatch: a partial write, disk rot, or a tampering
+    // editor that read the owner file.
     writeFileSync(
       ownerFilePath(fixture),
       `${JSON.stringify(
@@ -560,7 +566,7 @@ describe("claude-hook UserPromptSubmit", () => {
             phase: "delivered",
             promptId: PROMPT_ID,
           },
-          leaseToken: "bogus-token",
+          leaseToken: real.leaseToken,
           ownerSessionRefJson: real.ownerSessionRefJson,
           profileId: "driffs",
         },
@@ -572,9 +578,16 @@ describe("claude-hook UserPromptSubmit", () => {
 
     const { code } = await runHook(fixture, promptPayload({ prompt_id: "prompt-2" }));
     expect(code).toBe(0);
+    // The fence held: the ack of the mismatched id was rejected in full and
+    // the real delivery was never retired.
     const delivered = fixture.delivery.inboxList({ profileId: "driffs", state: "delivered" });
     expect(delivered).toHaveLength(1);
+    // A fully-rejected ack still settles the record: the mismatched ids are
+    // permanently fenced away from this token, and a record kept past its
+    // ack would block every future one. The re-claim minted a fresh token
+    // and the hook persisted it.
     expect(readOwnerFile(fixture).delivered).toBeNull();
+    expect(readOwnerFile(fixture).leaseToken).not.toBe(real.leaseToken);
   });
 
   test("a claim held by another subscriber exits 0 and names the owning pane in a systemMessage", async () => {
