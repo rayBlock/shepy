@@ -11,13 +11,13 @@ acceptance recommendation; portfolio owns cross-program acceptance.
 
 ## Live
 
-- state: **CORRECTION 2 LANDED `481c56c`** — candidate returned to portfolio for its independent recheck; lead's acceptance recommendation: accept. History: initial lead acceptance `36fe131` (14:13Z) → portfolio returned for correction (P1/P2) → corrected.
+- state: **ACCEPTED BY PORTFOLIO (local-code scope) at 14:42:22Z — candidate `481c56c`, CLOSED.** History: lead accepted `36fe131` (14:13Z) → portfolio returned it (P1/P2) → correction landed `481c56c` (14:37Z) → portfolio recheck PASS/PASS + 3 files / 43 tests → accepted. No live/deployed acceptance.
 - lead: `w31:p1` (Claude Code, supervised)
-- workers: none (all four Flash children retired; the cap of four is reached — no further child under this assignment)
+- workers: none (four Flash children used, cap reached)
 - worktrees: none; branches deleted
 - waits armed: none
-- next safe action: portfolio's recheck of `481c56c` (shared dist rebuilt from it; archived probe passes both); daemon stays on the 12:41 build until portfolio approves
-- updated: 2026-09-13T14:38Z
+- next safe action: none under this assignment. Rollout = Ray's restart approval, then scoped live Pi/Claude inspection; MC02 is a separately scoped portfolio decision.
+- updated: 2026-09-13T14:44Z
 
 ## Registration (before dispatch)
 
@@ -313,11 +313,37 @@ acceptance recommendation; portfolio owns cross-program acceptance.
   `w31:p1C` closed, worktree removed, branch deleted, 14:37:52Z.
   Envelope used ≈ 83 of 150 min. Daemon untouched (12:41 build).
 
-## Results (correction 2, 14:38Z — the candidate for portfolio's recheck)
+## Portfolio acceptance (14:42:22Z) — FINAL disposition for this run
+
+- Portfolio coordinator (Pi `wP:p70`) **ACCEPTS candidate `481c56c`,
+  local-code scope**: it read the correction diff, re-ran its own probes
+  against the rebuilt shared artifact (both pass; raw output archived as
+  `portfolio-review/portfolio-mc01-recheck-481c56c.json`, sha256
+  `0b463c7a…`), and ran the three context-health test files itself
+  (3 files / 43 tests, exit 0). Disposition note archived as
+  `portfolio-review/portfolio-mc01-acceptance-481c56c.md`, sha256
+  `b3534be1…`. Ops verified both archive hashes and the built artifact:
+  `dist/src/agent-history/context-health.js` sha256 `1fe43cce…` matches
+  the note.
+- Provenance note (portfolio's, preserved): the frozen probe script's
+  literal `candidate: 36fe131` field labels the original failing fixture
+  context; the tested artifact is `481c56c`.
+- Scope of the acceptance: source-limited v1 (last-reported metadata,
+  honest limitations, no window/percent, no active compaction, no
+  coordinator awareness). **No live/deployed acceptance**; the daemon
+  stays on the 12:41 build; another restart needs Ray's approval; then a
+  scoped live Pi/Claude inspection. No children or follow-on engineering
+  authorized. Next program decision: rollout timing and a separately
+  scoped MC02.
+- Portfolio independently confirmed operation `op_db50f450…` settled at
+  `14:36:44.786Z` (four useful early-armed waits across the run); the
+  parent late-wait timeout remains a separate open case.
+
+## Results (correction 2, 14:38Z — the candidate portfolio then rechecked)
 
 - **Candidate `481c56c`** = landed `36fe131` + correction `3935fce`
-  (rebased). Lead's recommendation: ACCEPT within scope. Portfolio owns
-  the decision and the deployment (restart) approval.
+  (rebased). Lead's recommendation was ACCEPT within scope; portfolio
+  accepted at 14:42Z (above).
 - Portfolio findings P1 (Pi branch marker lost after a non-usage append)
   and P2 (Claude sidechain identity leak) fixed with RED-first tests at
   the projection boundary and one at the RPC surface; both portfolio
