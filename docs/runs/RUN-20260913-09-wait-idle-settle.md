@@ -86,6 +86,40 @@ replacement, row repair, re-arm or live experiment.
   `agent_events` rows queried read-only; adapter and Herdr help read.
 - 19:35Z — worktree at `c518663`, installed `--ignore-scripts`.
 - 19:38Z — record registered; packet `/tmp/run-20260913-09/builder.packet.md`.
+- 19:38:01Z — `builder-wait` in `w31:p1E` (`(zai) glm-5.3-flash • high`),
+  profile `run-09-builder` `matched` on the second poll, `shepy dispatch`
+  → `op_f50e6eeeff7043eb1bfa01ad`, `working` in 4 s (seq 2615). Two
+  single-shot instruments armed 19:38–19:39Z (see Live).
+- **Envelope note (COA clarification received ~19:45Z):** the COA's
+  original wording allowed only an extra verifying worker; it now
+  explicitly allows ONE builder plus ONE fresh verifier within the
+  unchanged 120 min, and local frozen-lockfile dependency restoration in
+  the worktree. The builder start (19:38Z) and the worktree install
+  (19:35Z) happened BEFORE this clarification and are recorded as such,
+  not as retroactive original permission.
+- 19:45Z — **COA challenge to the guard, accepted:** "any lifecycle row
+  since submittedAt" is not completion evidence — a focus-only
+  `done → idle` row after submission concerns the PREVIOUS completion; a
+  `working` row alone proves start, not finish; created_at + terminal
+  alone cannot fix the execution epoch when operations overlap on one
+  terminal. Design tightened to an **execution epoch**: the earliest
+  `to: "working"` row at/after submission FOLLOWED (higher row id) by a
+  settled row on the same target. Focus-only, working-only, previous
+  completion, and overlapping-operation cases all yield
+  `target_not_started`. Addendum 1
+  (`/tmp/run-20260913-09/builder.addendum.md`) replaces D2/D3 and
+  R2–R4; verifier packet R2–R4 and mutations (2)(3)(4)(10) + probes
+  updated to the adversarial ordering/identity/overlap cases.
+- 19:46:48Z — addendum pointer delivered to the working builder as a Pi
+  steering prompt (`agent_prompted`, status stayed `working`, seq 2615
+  unchanged). Instruments untouched.
+- Still unqualified by design (recorded, not fixed here): Herdr's
+  `state_change_seq` at prompt time is not stored (no schema change in
+  scope), so the guard reasons from indexed rows, not from Herdr's own
+  sequence; a human typing into a dispatched pane would create a
+  working→settled epoch the guard cannot distinguish from the prompt's;
+  index lag can produce one `target_not_started` before a genuine settle
+  (fail-closed, self-heals on the next wait).
 
 ## Results
 
