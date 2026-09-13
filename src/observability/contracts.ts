@@ -82,7 +82,42 @@ export type CompactToolResult = {
   toolName: string;
 };
 
+export type ContextMeasurementKind = "measured" | "estimated" | "last_reported" | "unavailable";
+
+export type ContextCompactionBoundary = {
+  durationMs: number | null;
+  ref: string;
+  timestamp: string | null;
+  tokensAfter: number | null;
+  tokensBefore: number | null;
+  trigger: "auto" | "manual" | "unknown";
+};
+
+export type ContextUsageReading = {
+  current: boolean;
+  kind: ContextMeasurementKind;
+  percent: number | null;
+  reason: string | null;
+  ref: string | null;
+  reportedAt: string | null;
+  tokens: number | null;
+  window: number | null;
+};
+
+export type ContextHealth = {
+  branch: string | null;
+  compactionCount: number;
+  lastCompaction: ContextCompactionBoundary | null;
+  limitations: string[];
+  model: { changedAt: string | null; id: string | null; provider: string | null } | null;
+  sessionId: string | null;
+  source: AgentHistoryRef["source"];
+  sourceUpdatedAt: string | null;
+  usage: ContextUsageReading;
+};
+
 export type CompactAgentHistory = {
+  contextHealth: ContextHealth | null;
   historyRef: AgentHistoryRef | null;
   lastAssistantMessage: AgentHistoryExcerpt | null;
   lastToolResult: CompactToolResult | null;

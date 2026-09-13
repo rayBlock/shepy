@@ -142,6 +142,7 @@ describe("agent observability contracts", () => {
     const snapshot: AgentContextSnapshotRecord = {
       agentId: agent.id,
       compactHistory: {
+        contextHealth: null,
         historyRef: null,
         lastAssistantMessage: null,
         lastToolResult: null,

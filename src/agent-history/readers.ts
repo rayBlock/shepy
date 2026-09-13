@@ -3,6 +3,7 @@ import type {
   AgentHistoryMessage,
   AgentHistoryRef,
   CompactAgentHistory,
+  ContextHealth,
 } from "@/observability/contracts.js";
 
 export type JsonlEntry = { line: number; value: Record<string, unknown> };
@@ -33,11 +34,13 @@ export async function readJsonl(path: string): Promise<JsonlEntry[]> {
 export function compactFromMessages(
   ref: AgentHistoryRef,
   messages: AgentHistoryMessage[],
+  contextHealth: ContextHealth | null = null,
 ): CompactAgentHistory {
   const lastUser = lastByRole(messages, "user");
   const lastAssistant = lastByRole(messages, "assistant");
   const lastTool = [...messages].reverse().find((message) => message.role === "tool_result");
   return {
+    contextHealth,
     historyRef: ref,
     lastAssistantMessage: lastAssistant ? excerpt(lastAssistant) : null,
     lastToolResult: lastTool?.compact ?? null,

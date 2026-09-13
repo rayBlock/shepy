@@ -191,6 +191,7 @@ describe("AgentStore terminal identity", () => {
     agentContextSnapshots.put({
       agentId: initial.id,
       compactHistory: {
+        contextHealth: null,
         historyRef: null,
         lastAssistantMessage: null,
         lastToolResult: null,

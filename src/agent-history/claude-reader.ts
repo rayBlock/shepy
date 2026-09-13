@@ -1,7 +1,9 @@
 import type { AgentHistoryMessage, AgentHistoryRef } from "@/observability/contracts.js";
+import { projectClaudeContextHealth } from "./context-health.js";
 import {
   type AgentHistoryReader,
   compactFromMessages,
+  type JsonlEntry,
   limitMessages,
   readJsonl,
 } from "./readers.js";
@@ -18,47 +20,59 @@ export class ClaudeHistoryReader implements AgentHistoryReader {
     options: { limit?: number } = {},
   ): Promise<AgentHistoryMessage[]> {
     const path = ref.path ?? ref.value;
-    const messages: AgentHistoryMessage[] = [];
-    for (const entry of await readJsonl(path)) {
-      const type = stringValue(entry.value.type);
-      if (!type || ignoredTypes.has(type)) continue;
-      const message = record(entry.value.message);
-      const uuid = stringValue(entry.value.uuid) ?? stringValue(entry.value.id);
-      const timestamp = timestampFrom(entry.value.timestamp) ?? timestampFrom(message.timestamp);
-      const refValue = messageRef(path, uuid ?? undefined, entry.line);
-      const role =
-        stringValue(message.role) ?? (type === "assistant" || type === "user" ? type : null);
-
-      const toolResult = toolResultFrom(entry.value, message);
-      if (toolResult) {
-        const compact = compactToolResult({
-          isError: toolResult.isError,
-          ref: refValue,
-          text: toolResult.text,
-          toolName: toolResult.toolName,
-        });
-        messages.push({
-          compact,
-          ref: refValue,
-          role: "tool_result",
-          text: compact.text,
-          timestamp,
-          toolName: toolResult.toolName,
-        });
-        continue;
-      }
-
-      if (role === "user" || role === "assistant") {
-        const text = textFromContent(message.content);
-        if (text) messages.push({ ref: refValue, role, text, timestamp });
-      }
-    }
-    return limitMessages(messages, options.limit);
+    return limitMessages(messagesFromEntries(path, await readJsonl(path)), options.limit);
   }
 
   async readCompact(ref: AgentHistoryRef) {
-    return compactFromMessages(ref, await this.read(ref));
+    // One read serves both projections: the message extraction and the
+    // context-health projection walk the same parsed entries.
+    const path = ref.path ?? ref.value;
+    const entries = await readJsonl(path);
+    return compactFromMessages(
+      ref,
+      messagesFromEntries(path, entries),
+      projectClaudeContextHealth(path, entries),
+    );
   }
+}
+
+function messagesFromEntries(path: string, entries: JsonlEntry[]): AgentHistoryMessage[] {
+  const messages: AgentHistoryMessage[] = [];
+  for (const entry of entries) {
+    const type = stringValue(entry.value.type);
+    if (!type || ignoredTypes.has(type)) continue;
+    const message = record(entry.value.message);
+    const uuid = stringValue(entry.value.uuid) ?? stringValue(entry.value.id);
+    const timestamp = timestampFrom(entry.value.timestamp) ?? timestampFrom(message.timestamp);
+    const refValue = messageRef(path, uuid ?? undefined, entry.line);
+    const role =
+      stringValue(message.role) ?? (type === "assistant" || type === "user" ? type : null);
+
+    const toolResult = toolResultFrom(entry.value, message);
+    if (toolResult) {
+      const compact = compactToolResult({
+        isError: toolResult.isError,
+        ref: refValue,
+        text: toolResult.text,
+        toolName: toolResult.toolName,
+      });
+      messages.push({
+        compact,
+        ref: refValue,
+        role: "tool_result",
+        text: compact.text,
+        timestamp,
+        toolName: toolResult.toolName,
+      });
+      continue;
+    }
+
+    if (role === "user" || role === "assistant") {
+      const text = textFromContent(message.content);
+      if (text) messages.push({ ref: refValue, role, text, timestamp });
+    }
+  }
+  return messages;
 }
 
 const ignoredTypes = new Set(["attachment", "file-history-snapshot", "mode", "permission-mode"]);

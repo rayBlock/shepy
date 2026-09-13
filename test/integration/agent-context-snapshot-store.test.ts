@@ -41,6 +41,7 @@ function snapshotInput(agentId: string) {
   return {
     agentId,
     compactHistory: {
+      contextHealth: null,
       historyRef,
       lastAssistantMessage: { ref: "entry-2", text: "done", timestamp: null },
       lastToolResult: null,
@@ -92,6 +93,7 @@ describe("AgentContextSnapshotStore", () => {
     const snapshot = agentContextSnapshots.put({
       agentId: agent.id,
       compactHistory: {
+        contextHealth: null,
         historyRef: null,
         lastAssistantMessage: null,
         lastToolResult: null,

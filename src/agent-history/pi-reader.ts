@@ -1,7 +1,9 @@
 import type { AgentHistoryMessage, AgentHistoryRef } from "@/observability/contracts.js";
+import { projectPiContextHealth } from "./context-health.js";
 import {
   type AgentHistoryReader,
   compactFromMessages,
+  type JsonlEntry,
   limitMessages,
   readJsonl,
 } from "./readers.js";
@@ -18,47 +20,59 @@ export class PiHistoryReader implements AgentHistoryReader {
     options: { limit?: number } = {},
   ): Promise<AgentHistoryMessage[]> {
     const path = ref.path ?? ref.value;
-    const messages: AgentHistoryMessage[] = [];
-    for (const entry of await readJsonl(path)) {
-      const message = record(entry.value.message);
-      const role = stringValue(message.role);
-      if (entry.value.type !== "message" || !role) continue;
-      const id = stringValue(entry.value.id);
-      const timestamp = timestampFrom(entry.value.timestamp) ?? timestampFrom(message.timestamp);
-      const refValue = messageRef(path, id ?? undefined, entry.line);
-      if (role === "user" || role === "assistant") {
-        const text = textFromContent(message.content);
-        if (text) messages.push({ ref: refValue, role, text, timestamp });
-      }
-      if (role === "toolResult") {
-        const text = textFromContent(message.content) ?? "";
-        const toolName = stringValue(message.toolName) ?? "unknown";
-        messages.push({
-          compact: compactToolResult({
-            isError: message.isError === true,
-            ref: refValue,
-            text,
-            toolName,
-          }),
-          ref: refValue,
-          role: "tool_result",
-          text: compactToolResult({
-            isError: message.isError === true,
-            ref: refValue,
-            text,
-            toolName,
-          }).text,
-          timestamp,
-          toolName,
-        });
-      }
-    }
-    return limitMessages(messages, options.limit);
+    return limitMessages(messagesFromEntries(path, await readJsonl(path)), options.limit);
   }
 
   async readCompact(ref: AgentHistoryRef) {
-    return compactFromMessages(ref, await this.read(ref));
+    // One read serves both projections: the message extraction and the
+    // context-health projection walk the same parsed entries.
+    const path = ref.path ?? ref.value;
+    const entries = await readJsonl(path);
+    return compactFromMessages(
+      ref,
+      messagesFromEntries(path, entries),
+      projectPiContextHealth(path, entries),
+    );
   }
+}
+
+function messagesFromEntries(path: string, entries: JsonlEntry[]): AgentHistoryMessage[] {
+  const messages: AgentHistoryMessage[] = [];
+  for (const entry of entries) {
+    const message = record(entry.value.message);
+    const role = stringValue(message.role);
+    if (entry.value.type !== "message" || !role) continue;
+    const id = stringValue(entry.value.id);
+    const timestamp = timestampFrom(entry.value.timestamp) ?? timestampFrom(message.timestamp);
+    const refValue = messageRef(path, id ?? undefined, entry.line);
+    if (role === "user" || role === "assistant") {
+      const text = textFromContent(message.content);
+      if (text) messages.push({ ref: refValue, role, text, timestamp });
+    }
+    if (role === "toolResult") {
+      const text = textFromContent(message.content) ?? "";
+      const toolName = stringValue(message.toolName) ?? "unknown";
+      messages.push({
+        compact: compactToolResult({
+          isError: message.isError === true,
+          ref: refValue,
+          text,
+          toolName,
+        }),
+        ref: refValue,
+        role: "tool_result",
+        text: compactToolResult({
+          isError: message.isError === true,
+          ref: refValue,
+          text,
+          toolName,
+        }).text,
+        timestamp,
+        toolName,
+      });
+    }
+  }
+  return messages;
 }
 
 function record(value: unknown): Record<string, unknown> {

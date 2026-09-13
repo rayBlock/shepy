@@ -1,15 +1,23 @@
 import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, test } from "vitest";
+import { CodexHistoryReader } from "@/agent-history/codex-reader.js";
 import type { AgentHistoryLookupInput } from "@/agent-history/discovery.js";
+import { GeminiHistoryReader } from "@/agent-history/gemini-reader.js";
+import { HermesHistoryReader } from "@/agent-history/hermes-reader.js";
+import { OpenCodeHistoryReader } from "@/agent-history/opencode-reader.js";
 import type { AgentHistoryReader } from "@/agent-history/readers.js";
 import {
+  agentHistoryFormatterVersion,
   cacheSourcePathForRef,
   createAgentHistoryService,
   emptyCompactHistory,
 } from "@/agent-history/service.js";
-import type { AgentHistoryCacheStore } from "@/db/agent-history-cache.js";
+import { AgentHistoryCacheStore } from "@/db/agent-history-cache.js";
+import { applyMigrations } from "@/db/apply-migrations.js";
+import { openSqlite } from "@/db/client.js";
 import type { AgentHistoryRef } from "@/observability/contracts.js";
 
 const tempDirs: string[] = [];
@@ -292,5 +300,121 @@ describe("agent history service", () => {
 
     expect(cacheSourcePathForRef(first)).toBe("/tmp/opencode.db#session=session-a");
     expect(cacheSourcePathForRef(second)).toBe("/tmp/opencode.db#session=session-b");
+  });
+
+  test("bumped formatter version recomputes v1 cache rows instead of serving them", async () => {
+    expect(agentHistoryFormatterVersion).toBe("agent-history-v2");
+    const path = await sourceFile("cached-v1.jsonl");
+    await writeFile(path, `${JSON.stringify({ type: "session", id: "s1" })}\n`);
+    const preferred = ref(path);
+    const dir = await mkdtemp(join(tmpdir(), "shepy-history-cache-"));
+    tempDirs.push(dir);
+    const { sqlite } = openSqlite(join(dir, "cache.sqlite"));
+    applyMigrations(sqlite, { migrationsFolder: "drizzle" });
+    const cache = new AgentHistoryCacheStore(sqlite);
+    const stats = await stat(path);
+    const fingerprint = {
+      formatterVersion: "agent-history-v1",
+      sourceMtimeMs: Math.trunc(stats.mtimeMs),
+      sourcePath: path,
+      sourceSize: stats.size,
+    };
+    cache.put({
+      compactHistory: { ...emptyCompactHistory("pi-jsonl"), messageCount: 99 },
+      historyRef: preferred,
+      ...fingerprint,
+    });
+    // The existing getFresh contract: the stored row is fresh only under its
+    // own version.
+    expect(cache.getFresh({ ...fingerprint, formatterVersion: "agent-history-v1" })).toBeDefined();
+    expect(
+      cache.getFresh({ ...fingerprint, formatterVersion: agentHistoryFormatterVersion }),
+    ).toBeUndefined();
+
+    const fixture = service({ cache, discovered: null });
+    const result = await fixture.service.resolveCompactHistory(lookup, { preferredRef: preferred });
+    // The v1 blob (messageCount 99) was NOT served; a fresh read happened.
+    expect(result.compactHistory.messageCount).toBe(0);
+    expect(result.compactHistory.contextHealth).toBeNull();
+    expect(fixture.reader.compactRefs).toEqual([preferred]);
+    sqlite.close();
+  });
+
+  test("readers without a context projection keep contextHealth null", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "shepy-history-null-projection-"));
+    tempDirs.push(dir);
+
+    const codexPath = join(dir, "rollout.jsonl");
+    await writeFile(
+      codexPath,
+      `${JSON.stringify({ type: "session_meta", payload: { cwd: "/repo" } })}\n${JSON.stringify({ type: "event_msg", payload: { type: "agent_message", message: "codex done" } })}\n`,
+    );
+    await expect(
+      new CodexHistoryReader().readCompact({
+        kind: "discovered_file",
+        path: codexPath,
+        source: "codex-jsonl",
+        value: codexPath,
+      }),
+    ).resolves.toMatchObject({ contextHealth: null, messageCount: 1 });
+
+    const geminiPath = join(dir, "gemini.json");
+    await writeFile(geminiPath, JSON.stringify([{ type: "gemini", content: "gemini done" }]));
+    await expect(
+      new GeminiHistoryReader().readCompact({
+        kind: "discovered_file",
+        path: geminiPath,
+        source: "gemini-json",
+        value: geminiPath,
+      }),
+    ).resolves.toMatchObject({ contextHealth: null, messageCount: 1 });
+
+    const hermesPath = join(dir, "hermes.db");
+    const hermes = new DatabaseSync(hermesPath);
+    hermes.exec(
+      "create table messages (id integer primary key autoincrement, session_id text not null, role text not null, content text, tool_name text, finish_reason text, timestamp real not null, active integer not null default 1)",
+    );
+    hermes
+      .prepare("insert into messages (session_id, role, content, timestamp) values (?, ?, ?, ?)")
+      .run("s1", "assistant", "hermes done", 1);
+    hermes.close();
+    await expect(
+      new HermesHistoryReader().readCompact({
+        kind: "discovered_file",
+        path: hermesPath,
+        source: "hermes-sqlite",
+        value: "s1",
+      }),
+    ).resolves.toMatchObject({ contextHealth: null, messageCount: 1 });
+
+    const openCodePath = join(dir, "opencode.db");
+    const openCode = new DatabaseSync(openCodePath);
+    openCode.exec(`
+      create table session (id text primary key, directory text not null, time_updated integer not null);
+      create table message (id text primary key, session_id text not null, time_created integer not null, time_updated integer not null, data text not null);
+      create table part (id text primary key, message_id text not null, session_id text not null, time_created integer not null, time_updated integer not null, data text not null);
+    `);
+    openCode
+      .prepare("insert into session (id, directory, time_updated) values (?, ?, ?)")
+      .run("oc_1", "/repo", 1);
+    openCode
+      .prepare(
+        "insert into message (id, session_id, time_created, time_updated, data) values (?, ?, ?, ?, ?)",
+      )
+      .run("m1", "oc_1", 1, 1, JSON.stringify({ role: "assistant" }));
+    openCode
+      .prepare(
+        "insert into part (id, message_id, session_id, time_created, time_updated, data) values (?, ?, ?, ?, ?, ?)",
+      )
+      .run("p1", "m1", "oc_1", 2, 2, JSON.stringify({ type: "text", text: "opencode done" }));
+    openCode.close();
+    await expect(
+      new OpenCodeHistoryReader().readCompact({
+        kind: "discovered_file",
+        path: openCodePath,
+        source: "opencode-sqlite",
+        value: "oc_1",
+      }),
+    ).resolves.toMatchObject({ contextHealth: null, messageCount: 1 });
   });
 });

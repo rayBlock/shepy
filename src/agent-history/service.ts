@@ -19,7 +19,9 @@ import { OpenCodeHistoryReader } from "./opencode-reader.js";
 import { PiHistoryReader } from "./pi-reader.js";
 import type { AgentHistoryReader } from "./readers.js";
 
-export const agentHistoryFormatterVersion = "agent-history-v1";
+// RUN-20260913-06 D5: v2 adds history.contextHealth; v1 blobs lack the field,
+// so the fingerprint cache recomputes them once via the version mismatch.
+export const agentHistoryFormatterVersion = "agent-history-v2";
 
 type CacheLike = Pick<AgentHistoryCacheStore, "getFresh" | "put">;
 type Discovery = (input: AgentHistoryLookupInput) => Promise<AgentHistoryRef | null>;
@@ -191,6 +193,7 @@ export function cacheSourcePathForRef(historyRef: {
 
 export function emptyCompactHistory(source: string | null = null): CompactAgentHistory {
   return {
+    contextHealth: null,
     historyRef: null,
     lastAssistantMessage: null,
     lastToolResult: null,
