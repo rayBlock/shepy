@@ -8,23 +8,27 @@ import type { JsonlEntry } from "./readers.js";
 import { messageRef, timestampFrom } from "./text.js";
 
 /**
- * Context-health projection (RUN-20260913-06 D2/D4 + ADDENDUM 1 D8–D10).
- * Pure functions over already-parsed entries — no I/O, no wall clock. The
- * occupancy rule is the only honest one these sources support: the context
- * size at an assistant turn is the prompt that call was billed for (Pi
- * `input + cacheRead + cacheWrite`, Claude `input_tokens +
- * cache_creation_input_tokens + cache_read_input_tokens`), read as a
- * last_reported sample at that message's timestamp. Usage is never summed
- * across messages; a compaction or branch_summary entry's `usage` is the
- * summariser call, never a current reading. Unknown stays unknown: null
- * with a limitation code, never a manufactured 0%.
+ * Context-health projection (RUN-20260913-06 D2/D4, ADDENDUM 1 D8–D10,
+ * CORRECTION 2 D11–D12). Pure functions over already-parsed entries — no
+ * I/O, no wall clock. The occupancy rule is the only honest one these
+ * sources support: the context size at an assistant turn is the prompt
+ * that call was billed for (Pi `input + cacheRead + cacheWrite`, Claude
+ * `input_tokens + cache_creation_input_tokens + cache_read_input_tokens`),
+ * read as a last_reported sample at that message's timestamp. Usage is
+ * never summed across messages; a compaction or branch_summary entry's
+ * `usage` is the summariser call, never a current reading. Unknown stays
+ * unknown: null with a limitation code, never a manufactured 0%.
  *
  * Pi session files are a TREE: the active lineage is the parentId chain
  * from the last appended entry to the root, and everything is computed
- * over lineage entries only, in root→leaf order. Claude Code does not
- * branch conversations in-file, so Claude stays file order — with
- * subagent (isSidechain) transcripts excluded from reading, model, and
- * boundaries.
+ * over lineage entries only, in root→leaf order. A branch_summary anywhere
+ * on that lineage marks the branch boundary (D11) — the marker persists
+ * through later appends until a genuinely later assistant reading exists
+ * on the lineage. Claude Code does not branch conversations in-file, so
+ * Claude stays file order — with subagent (isSidechain) transcripts
+ * skipped before any observation (D12): identity, branch, model,
+ * boundaries, reading and source freshness all come from manager entries
+ * only; a file of nothing but sidechain entries reports no_manager_entries.
  *
  * Staleness marker precedence when several apply:
  * post_compaction_no_turn > model_changed_since_reading >
@@ -99,7 +103,7 @@ export function projectPiContextHealth(path: string, entries: JsonlEntry[]): Con
   const boundaries: Boundary[] = [];
   let reading: UsageCandidate | null = null;
   let lastAssistantPosition: number | null = null;
-  const leafIsBranchSummary = stringField(last.value.type) === "branch_summary";
+  let lastBranchSummaryPosition: number | null = null;
 
   lineage.forEach((entry, position) => {
     const type = stringField(entry.value.type);
@@ -111,6 +115,13 @@ export function projectPiContextHealth(path: string, entries: JsonlEntry[]): Con
         position,
         timestampFrom(entry.value.timestamp),
       );
+      return;
+    }
+    if (type === "branch_summary") {
+      // D11: any branch_summary on the active lineage marks the boundary —
+      // not only one at the leaf — so later appends cannot resurrect the
+      // pre-branch reading. Its own usage is never a current reading.
+      lastBranchSummaryPosition = position;
       return;
     }
     if (type === "compaction") {
@@ -151,10 +162,9 @@ export function projectPiContextHealth(path: string, entries: JsonlEntry[]): Con
   const usage = usageReading({
     boundaries,
     branch: null,
-    branchMarker: leafIsBranchSummary ? "branch_switched_since_reading" : null,
     lastAssistantPosition,
+    lastBranchSummaryPosition,
     lastModelChange: model.lastChange,
-    leafIsBranchSummary,
     reading,
   });
   const limitations = [...PI_LIMITATIONS];
@@ -172,25 +182,29 @@ export function projectPiContextHealth(path: string, entries: JsonlEntry[]): Con
 }
 
 export function projectClaudeContextHealth(path: string, entries: JsonlEntry[]): ContextHealth {
+  // D12: a sidechain entry (isSidechain: true) belongs to the subagent
+  // transcript. Skipping it before ANY observation keeps the session id,
+  // branch, model, boundaries, reading and source freshness the manager's;
+  // a file of nothing but sidechain entries reports no_manager_entries.
+  const manager = entries.filter((entry) => entry.value.isSidechain !== true);
   const model: ModelObservation = { changedAt: null, id: null, lastChange: null, provider: null };
   const boundaries: Boundary[] = [];
   let reading: UsageCandidate | null = null;
   let lastAssistantPosition: number | null = null;
   let previousAssistantModel: string | null = null;
   let sessionId: string | null = null;
+  let branch: string | null = null;
   const sessionIds = new Set<string>();
 
-  entries.forEach((entry, position) => {
+  manager.forEach((entry, position) => {
     const entrySessionId = stringField(entry.value.sessionId);
     if (entrySessionId) {
       sessionIds.add(entrySessionId);
       sessionId = entrySessionId;
     }
+    branch = stringField(entry.value.gitBranch);
     const type = stringField(entry.value.type);
     if (type === "system" && stringField(entry.value.subtype) === "compact_boundary") {
-      // Sidechain boundaries belong to the subagent transcript, not the
-      // manager's context.
-      if (entry.value.isSidechain === true) return;
       // A string compactMetadata still counts; its numerics degrade to null.
       const meta = recordField(entry.value.compactMetadata);
       boundaries.push({
@@ -204,7 +218,7 @@ export function projectClaudeContextHealth(path: string, entries: JsonlEntry[]):
       });
       return;
     }
-    if (type !== "assistant" || entry.value.isSidechain === true) return;
+    if (type !== "assistant") return;
     // O3: the position is tracked whether or not this entry carried usage.
     lastAssistantPosition = position;
     const message = recordField(entry.value.message);
@@ -237,23 +251,26 @@ export function projectClaudeContextHealth(path: string, entries: JsonlEntry[]):
 
   const usage = usageReading({
     boundaries,
-    branch: stringField(entries.at(-1)?.value.gitBranch),
-    branchMarker: null,
+    branch,
     lastAssistantPosition,
+    lastBranchSummaryPosition: null,
     lastModelChange: model.lastChange,
-    leafIsBranchSummary: false,
     reading,
   });
   const limitations = [...CLAUDE_LIMITATIONS];
-  if (sessionIds.size > 1) limitations.push("session_id_varies");
+  if (manager.length === 0 && entries.length > 0) {
+    limitations.push("no_manager_entries");
+  } else if (sessionIds.size > 1) {
+    limitations.push("session_id_varies");
+  }
   return finish({
     boundaries,
-    branch: stringField(entries.at(-1)?.value.gitBranch),
+    branch,
     limitations,
     model,
     sessionId,
     source: "claude-jsonl",
-    sourceUpdatedAt: latestTimestamp(entries),
+    sourceUpdatedAt: latestTimestamp(manager),
     usage,
   });
 }
@@ -262,16 +279,15 @@ export function projectClaudeContextHealth(path: string, entries: JsonlEntry[]):
 function usageReading(input: {
   boundaries: Boundary[];
   branch: string | null;
-  branchMarker: "branch_switched_since_reading" | null;
   lastAssistantPosition: number | null;
+  lastBranchSummaryPosition: number | null;
   lastModelChange: ModelChange | null;
-  leafIsBranchSummary: boolean;
   reading: UsageCandidate | null;
 }): ContextUsageReading {
   const reading = input.reading;
   if (reading === null) {
     return unavailableUsage(
-      input.leafIsBranchSummary ? "no_usage_on_active_lineage" : "no_usage_recorded",
+      input.lastBranchSummaryPosition !== null ? "no_usage_on_active_lineage" : "no_usage_recorded",
     );
   }
   if (input.boundaries.some((boundary) => boundary.position > reading.position)) {
@@ -303,9 +319,13 @@ function usageReading(input: {
     };
   }
   // current:false markers keep the tokens but say why the reading may no
-  // longer describe this turn: a /tree branch switch (D8) or a git branch
-  // change (D4, Claude only).
-  let marker: string | null = input.branchMarker;
+  // longer describe this turn: a branch boundary later on the lineage than
+  // the reading (D11 — it persists until a genuinely later assistant
+  // reading) or a git branch change (D4, Claude only).
+  let marker: string | null =
+    input.lastBranchSummaryPosition !== null && input.lastBranchSummaryPosition > reading.position
+      ? "branch_switched_since_reading"
+      : null;
   if (
     marker === null &&
     reading.branch !== null &&

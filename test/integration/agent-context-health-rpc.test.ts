@@ -243,4 +243,144 @@ describe("agent context health over RPC", () => {
 
     client.close();
   });
+
+  test("a branch_summary followed by a user append reads stale over agent.get (P1)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "shepy-ctx-health-rpc-branch-"));
+    tempDirs.push(dir);
+    const socketPath = join(dir, "rpc.sock");
+    if (existsSync(socketPath)) unlinkSync(socketPath);
+    // The portfolio P1 lineage: assistant a (usage 100) → abandoned b (200);
+    // a branch_summary re-roots to a; then a user turn appends on it.
+    const piPath = join(dir, "pi-session.jsonl");
+    writeFileSync(
+      piPath,
+      [
+        piLine({
+          cwd: "/repo",
+          id: "pi-session-1",
+          timestamp: "2026-09-13T10:00:00.000Z",
+          type: "session",
+          version: 3,
+        }),
+        piLine({
+          id: "mc1",
+          modelId: "gpt-6-astra",
+          parentId: null,
+          provider: "openai-codex",
+          timestamp: "2026-09-13T10:00:01.000Z",
+          type: "model_change",
+        }),
+        assistantLine("a", "mc1", "2026-09-13T10:01:00.000Z", {
+          cacheRead: 0,
+          cacheWrite: 0,
+          input: 100,
+          totalTokens: 107,
+        }),
+        assistantLine("b", "a", "2026-09-13T10:02:00.000Z", {
+          cacheRead: 0,
+          cacheWrite: 0,
+          input: 200,
+          totalTokens: 207,
+        }),
+        piLine({
+          fromHook: false,
+          fromId: "b",
+          id: "r",
+          parentId: "a",
+          timestamp: "2026-09-13T10:03:00.000Z",
+          type: "branch_summary",
+          usage: { input: 4321 },
+        }),
+        piLine({
+          id: "u",
+          message: {
+            content: [{ text: "synthetic continuation", type: "text" }],
+            role: "user",
+          },
+          parentId: "r",
+          timestamp: "2026-09-13T10:04:00.000Z",
+          type: "message",
+        }),
+      ].join(""),
+    );
+
+    const harness = openObservabilityDbHarness();
+    harness.herdrSessions.upsertRunning({
+      name: "default",
+      sessionDir: "/tmp/herdr",
+      socketPath: "/tmp/herdr.sock",
+    });
+    const [agent] = harness.agents.replaceForSession({
+      agents: [
+        {
+          agent: "pi",
+          agent_session: { agent: "pi", kind: "path", source: "herdr:pi", value: piPath },
+          agent_status: "working",
+          pane_id: "wB:p1",
+          terminal_id: "term_1",
+          workspace_id: "wB",
+        },
+      ],
+      herdrSessionName: "default",
+    });
+    if (!agent) throw new Error("Expected seeded agent");
+
+    const profiles = new OrchestratorProfileStore(harness.sqlite);
+    const obligations = new DeliveryObligationStore(harness.sqlite);
+    const owners = new ProfileOwnerStore({ sqlite: harness.sqlite });
+    const delivery = new ProfileDeliveryService({
+      agentEvents: harness.agentEvents,
+      agents: harness.agents,
+      obligations,
+      owners,
+      profiles,
+    });
+    const history = createAgentHistoryService({
+      cache: harness.agentHistoryCache,
+      homeDir: dir,
+    });
+    const context = new AgentContextService({
+      history,
+      stores: { agentContextSnapshots: harness.agentContextSnapshots, agents: harness.agents },
+    });
+    const server = new ObservabilityRpcServer({
+      context,
+      delivery,
+      history,
+      orchestrator: new AgentOrchestratorService({
+        agentEvents: harness.agentEvents,
+        agents: harness.agents,
+        scopes: harness.agentOrchestratorScopes,
+      }),
+      socketPath,
+      stores: {
+        agentEvents: harness.agentEvents,
+        agents: harness.agents,
+        herdrSessions: harness.herdrSessions,
+        herdrWorkspaces: harness.herdrWorkspaces,
+      },
+    });
+    servers.push(server);
+    await server.start();
+    const client = new ObservabilityRpcClient({ socketPath });
+
+    await context.refreshAgent({ agent, identityChanged: false });
+    const get = (await client.request("agent.get", { target: "pi", workspaceId: "wB" })) as {
+      agent: {
+        history: {
+          contextHealth: {
+            usage: { current: boolean; reason: string | null; tokens: number | null };
+          } | null;
+        };
+      };
+    };
+    expect(get.agent.history.contextHealth?.usage).toMatchObject({
+      current: false,
+      kind: "last_reported",
+      reason: "branch_switched_since_reading",
+      tokens: 100,
+    });
+
+    client.close();
+  });
 });

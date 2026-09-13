@@ -53,6 +53,10 @@ function boundary(
   };
 }
 
+function sidechain(value: unknown): unknown {
+  return { ...(value as Record<string, unknown>), isSidechain: true };
+}
+
 const threeAssistants = [
   entry(
     1,
@@ -421,5 +425,127 @@ describe("projectClaudeContextHealth", () => {
       changedAt: "2026-09-13T11:03:00.000Z",
       id: "claude-fable-5-1",
     });
+  });
+
+  test("a sidechain entry never changes the manager's identity or reading (P2 a)", () => {
+    // The exact portfolio P2 pair: the sidechain entry carries a different
+    // sessionId and gitBranch (real-file shape is unknown; excluded either way).
+    const managerEntry = assistant("a", "manager-claude", "2026-09-13T11:01:00.000Z", {
+      input_tokens: 100,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+    });
+    const managerOnly = project([entry(1, managerEntry)]);
+    const withSidechain = project([
+      entry(1, managerEntry),
+      entry(
+        2,
+        sidechain(
+          assistant(
+            "c",
+            "child-claude",
+            "2026-09-13T11:02:00.000Z",
+            {
+              input_tokens: 1,
+              cache_creation_input_tokens: 0,
+              cache_read_input_tokens: 0,
+            },
+            "claude-mini-x",
+            "child-branch",
+          ),
+        ),
+      ),
+    ]);
+    expect(withSidechain.sessionId).toBe("manager-claude");
+    expect(withSidechain.branch).toBe("main");
+    // The manager reading is untouched by the child transcript.
+    expect(withSidechain.usage).toEqual(managerOnly.usage);
+  });
+
+  test("a sidechain sessionId adds no session_id_varies limitation (P2 b)", () => {
+    const health = project([
+      entry(
+        1,
+        assistant("a", "manager-claude", "2026-09-13T11:01:00.000Z", {
+          input_tokens: 100,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        }),
+      ),
+      entry(
+        2,
+        sidechain(
+          assistant("c", "child-claude", "2026-09-13T11:02:00.000Z", {
+            input_tokens: 1,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+          }),
+        ),
+      ),
+    ]);
+    expect(health.limitations).not.toContain("session_id_varies");
+  });
+
+  test("an all-sidechain file has no manager entries (P2 c)", () => {
+    const health = project([
+      entry(
+        1,
+        sidechain(
+          assistant("c", "child-claude", "2026-09-13T11:01:00.000Z", {
+            input_tokens: 10,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+          }),
+        ),
+      ),
+    ]);
+    expect(health.sessionId).toBeNull();
+    expect(health.branch).toBeNull();
+    expect(health.model).toBeNull();
+    expect(health.usage).toMatchObject({
+      kind: "unavailable",
+      reason: "no_usage_recorded",
+    });
+    expect(health.sourceUpdatedAt).toBeNull();
+    expect(health.limitations).toEqual([
+      "context_window_not_recorded",
+      "claude_lineage_by_file_order",
+      "no_manager_entries",
+    ]);
+  });
+
+  test("sidechain boundaries and assistants do not move sourceUpdatedAt (P2 d)", () => {
+    const health = project([
+      entry(
+        1,
+        assistant("a1", "s1", "2026-09-13T11:01:00.000Z", {
+          input_tokens: 10,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        }),
+      ),
+      entry(
+        2,
+        sidechain(
+          boundary("b1", "s2", "2026-09-13T11:04:00.000Z", {
+            trigger: "manual",
+            preTokens: 100,
+            postTokens: 10,
+          }),
+        ),
+      ),
+      entry(
+        3,
+        sidechain(
+          assistant("c1", "s2", "2026-09-13T11:05:00.000Z", {
+            input_tokens: 10,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+          }),
+        ),
+      ),
+    ]);
+    expect(health.sourceUpdatedAt).toBe("2026-09-13T11:01:00.000Z");
+    expect(health.compactionCount).toBe(0);
   });
 });

@@ -79,6 +79,61 @@ function branchSummary(id: string, timestamp: string, parentId: string, fromId: 
   };
 }
 
+function userMessage(id: string, timestamp: string, parentId: string): unknown {
+  return {
+    type: "message",
+    id,
+    parentId,
+    timestamp,
+    message: { role: "user", content: [{ type: "text", text: `synthetic ask ${id}` }] },
+  };
+}
+
+function thinkingLevelChange(id: string, timestamp: string, parentId: string): unknown {
+  // Shape from the installed Pi type definition (ThinkingLevelChangeEntry).
+  return { type: "thinking_level_change", id, parentId, timestamp, thinkingLevel: "high" };
+}
+
+function assistantWithoutUsage(id: string, timestamp: string, parentId: string): unknown {
+  return {
+    type: "message",
+    id,
+    parentId,
+    timestamp,
+    message: {
+      role: "assistant",
+      provider: "openai-codex",
+      model: "gpt-6-astra",
+      content: [{ type: "text", text: `synthetic reply ${id}` }],
+    },
+  };
+}
+
+// The P1 lineage from the portfolio acceptance review: assistant a (usage
+// 100) → assistant b (usage 200, later abandoned); a branch_summary re-roots
+// to a; then a user turn appends on the summary with no fresh assistant use.
+function portfolioLineage(): JsonlEntry[] {
+  return [
+    entry(1, header(ROOT)),
+    entry(2, modelChange("mc1", "gpt-6-astra", "2026-09-13T10:00:01.000Z")),
+    entry(
+      3,
+      assistant(
+        "a",
+        "2026-09-13T10:01:00.000Z",
+        { input: 100, cacheRead: 0, cacheWrite: 0 },
+        "mc1",
+      ),
+    ),
+    entry(
+      4,
+      assistant("b", "2026-09-13T10:02:00.000Z", { input: 200, cacheRead: 0, cacheWrite: 0 }, "a"),
+    ),
+    entry(5, branchSummary("r", "2026-09-13T10:03:00.000Z", "a", "b")),
+    entry(6, userMessage("u", "2026-09-13T10:04:00.000Z", "r")),
+  ];
+}
+
 const threeMessages = [
   entry(1, header(ROOT)),
   entry(2, modelChange("mc1", "gpt-6-astra", "2026-09-13T10:00:01.000Z")),
@@ -574,6 +629,105 @@ describe("projectPiContextHealth", () => {
     expect(health.model).toMatchObject({
       changedAt: "2026-09-13T10:03:00.000Z",
       id: "gpt-6-astra",
+    });
+  });
+
+  test("the branch marker persists through appends until a new reading (P1 a)", () => {
+    // With the summary itself as the leaf the pre-branch reading is stale.
+    expect(project(portfolioLineage().slice(0, -1)).usage).toMatchObject({
+      current: false,
+      reason: "branch_switched_since_reading",
+      tokens: 100,
+    });
+    // Appending the user turn must NOT resurrect it.
+    const health = project(portfolioLineage());
+    expect(health.usage).toMatchObject({
+      current: false,
+      kind: "last_reported",
+      reason: "branch_switched_since_reading",
+      tokens: 100,
+    });
+    expect(health.usage.ref).toContain("entry=a");
+  });
+
+  test("a genuinely new assistant reading after the summary clears the marker (P1 b)", () => {
+    const health = project([
+      ...portfolioLineage(),
+      entry(
+        7,
+        assistant(
+          "n",
+          "2026-09-13T10:05:00.000Z",
+          { input: 150, cacheRead: 0, cacheWrite: 0 },
+          "u",
+        ),
+      ),
+    ]);
+    expect(health.usage).toMatchObject({
+      current: true,
+      kind: "last_reported",
+      reason: null,
+      tokens: 150,
+    });
+  });
+
+  test("later_turn_without_usage outranks the persisted branch marker (P1 c)", () => {
+    const health = project([
+      ...portfolioLineage(),
+      entry(7, assistantWithoutUsage("x", "2026-09-13T10:05:00.000Z", "u")),
+    ]);
+    expect(health.usage).toMatchObject({
+      current: false,
+      kind: "last_reported",
+      reason: "later_turn_without_usage",
+      tokens: 100,
+    });
+  });
+
+  test("a branch summary before the reading does not invalidate it (P1 d)", () => {
+    const health = project([
+      entry(1, header(ROOT)),
+      entry(2, modelChange("mc1", "gpt-6-astra", "2026-09-13T10:00:01.000Z")),
+      entry(
+        3,
+        assistant(
+          "mA",
+          "2026-09-13T10:01:00.000Z",
+          { input: 1000, cacheRead: 0, cacheWrite: 0 },
+          "mc1",
+        ),
+      ),
+      entry(4, branchSummary("bs1", "2026-09-13T10:02:00.000Z", "mc1", "mA")),
+      entry(
+        5,
+        assistant(
+          "m2",
+          "2026-09-13T10:03:00.000Z",
+          { input: 2000, cacheRead: 0, cacheWrite: 0 },
+          "bs1",
+        ),
+      ),
+    ]);
+    expect(health.usage).toMatchObject({
+      current: true,
+      kind: "last_reported",
+      reason: null,
+      tokens: 2000,
+    });
+  });
+
+  test("user and thinking_level_change appends after the summary keep the marker (P1 e)", () => {
+    const health = project([
+      ...portfolioLineage().slice(0, -1),
+      entry(6, userMessage("u", "2026-09-13T10:04:00.000Z", "r")),
+      entry(7, thinkingLevelChange("t1", "2026-09-13T10:05:00.000Z", "u")),
+      entry(8, userMessage("u2", "2026-09-13T10:06:00.000Z", "t1")),
+    ]);
+    expect(health.usage).toMatchObject({
+      current: false,
+      kind: "last_reported",
+      reason: "branch_switched_since_reading",
+      tokens: 100,
     });
   });
 });
