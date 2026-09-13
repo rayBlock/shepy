@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { createAgentHistoryService } from "@/agent-history/service.js";
+import { runCliCommand } from "@/cli/shepy.js";
 import { ObservabilityRpcServer } from "@/daemon/observability-server.js";
 import { AgentContextSnapshotStore } from "@/db/agent-context-snapshots.js";
 import { AgentEventStore } from "@/db/agent-events.js";
@@ -1781,5 +1782,84 @@ describe("startup lease-stamp invalidation (F3-2)", () => {
   test("invalidation is a no-op on a database with no live stamps", () => {
     const { obligations } = fixture();
     expect(obligations.invalidateAllLeases()).toEqual({ invalidated: 0 });
+  });
+});
+
+describe("shepy profile owner CLI verb (operator surface)", () => {
+  test("prints the owning pane, workspace, and local lease expiry, never the token", async () => {
+    const { built, client, server } = await rpcFixture();
+    try {
+      const claim = (await client.request("profile.claim", CLAIM_PANE_X)) as {
+        result: { kind: string; leaseToken: string };
+      };
+      expect(claim.result.kind).toBe("claimed");
+      const leaseToken = claim.result.leaseToken;
+      expect(leaseToken).toBeTruthy();
+
+      const socketPath = join(dirname(built.path), "rpc.sock");
+      // runCliCommand closes its client in a finally — every call gets its
+      // own connection; the fixture client stays free for RPC assertions.
+      const runOwnerCli = async (json: boolean): Promise<string[]> => {
+        const lines: string[] = [];
+        await runCliCommand(
+          { command: "profile-owner", json, profileId: "driffs" },
+          {
+            connect: () => RpcTestClient.connect(socketPath),
+            output: (line) => lines.push(line),
+            socketPath,
+          },
+        );
+        return lines;
+      };
+
+      const text = (await runOwnerCli(false)).join("\n");
+      expect(text).toContain("profile: driffs");
+      expect(text).toContain("owner: wX:p1 (pi)");
+      expect(text).toContain("session: default");
+      expect(text).toMatch(/lease valid for \d+m\d+s/);
+      expect(text).toMatch(/\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/);
+      // The stripping is the security fix; the CLI must not reintroduce it.
+      expect(text).not.toContain(leaseToken);
+      expect(text).not.toContain("sub-1");
+      expect(text).not.toContain("harnessSessionRefJson");
+
+      const jsonText = (await runOwnerCli(true)).join("\n");
+      expect(JSON.parse(jsonText)).toEqual({
+        owner: expect.objectContaining({ paneId: "wX:p1", profileId: "driffs" }),
+      });
+      expect(jsonText).not.toContain(leaseToken);
+      expect(jsonText).not.toContain("sub-1");
+    } finally {
+      client.close();
+      await server.stop();
+    }
+  });
+
+  test("an unowned profile says so clearly and exits 0", async () => {
+    const { built, client, server } = await rpcFixture();
+    try {
+      const socketPath = join(dirname(built.path), "rpc.sock");
+      const runOwnerCli = async (json: boolean): Promise<string[]> => {
+        const lines: string[] = [];
+        await runCliCommand(
+          { command: "profile-owner", json, profileId: "other" },
+          {
+            connect: () => RpcTestClient.connect(socketPath),
+            output: (line) => lines.push(line),
+            socketPath,
+          },
+        );
+        return lines;
+      };
+
+      const text = (await runOwnerCli(false)).join("\n");
+      expect(text).toContain("other has no owner");
+      expect(text).toContain("claimable");
+
+      expect(JSON.parse((await runOwnerCli(true)).join("\n"))).toEqual({ owner: null });
+    } finally {
+      client.close();
+      await server.stop();
+    }
   });
 });

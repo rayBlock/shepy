@@ -11,6 +11,7 @@ import {
   startDaemonProcess,
   stopDaemonProcess,
 } from "@/daemon/process-manager.js";
+import { DEFAULT_LEASE_GRACE_MS, type PublicProfileOwner } from "@/db/profile-owners.js";
 import type { AgentGetResult, AgentListItem, AgentReadResult } from "@/observability/contracts.js";
 
 const CURRENT_HERDR_WORKSPACE_ERROR =
@@ -37,6 +38,7 @@ type HelpTopic =
   | "profile-context"
   | "profile-ensure"
   | "profile-list"
+  | "profile-owner"
   | "profile-show"
   | "profile-subscribe"
   | "root"
@@ -72,6 +74,7 @@ export type CliCommand =
       projectRoots: string[];
     }
   | { command: "profile-list"; json: boolean }
+  | { command: "profile-owner"; json: boolean; profileId: string }
   | {
       command: "profile-show";
       json: boolean;
@@ -382,6 +385,10 @@ function parseProfileCommand(args: string[]): CliCommand {
     rejectExtra(extra, helpTopic);
     return { command: "profile-context", json, profileId };
   }
+  if (subcommand === "owner") {
+    rejectExtra(extra, helpTopic);
+    return { command: "profile-owner", json, profileId };
+  }
   throw new CliUsageError(`Unknown profile command: ${subcommand}`, "profile");
 }
 
@@ -548,6 +555,7 @@ Commands:
   ensure <profileId>       Create or update a profile
   show <profileId>         Show one profile with subscriptions
   context <profileId>      Show cached agent context for a profile
+  owner <profileId>        Show the profile's current owner
   subscribe <profileId>    Bind a profile to one Herdr agent
   unsubscribe <profileId>  Remove a profile subscription
 
@@ -593,6 +601,19 @@ Options:
 
 Usage:
   shepy profile context <profileId> [options]
+
+Options:
+  --json         Print JSON
+  -h, --help     Show help
+`;
+    case "profile-owner":
+      return `Show the profile's current owner.
+
+Usage:
+  shepy profile owner <profileId> [options]
+
+The lease token is never part of this output. A lapsed lease reads as
+claimable — a claim decides ownership, not the presence of a stale row.
 
 Options:
   --json         Print JSON
@@ -837,6 +858,9 @@ async function dispatchRpcCommand(
   if (command.command === "profile-context") {
     return client.request("profile.context", { profileId: command.profileId });
   }
+  if (command.command === "profile-owner") {
+    return client.request("profile.owner", { profileId: command.profileId });
+  }
   if (command.command === "inbox-list") {
     return client.request("inbox.list", {
       profileId: command.profileId,
@@ -912,6 +936,8 @@ function formatHumanResult(command: CliCommand, result: unknown): string {
     );
   if (command.command === "profile-show" || command.command === "profile-context")
     return JSON.stringify(result, null, 2);
+  if (command.command === "profile-owner")
+    return formatProfileOwner(command, result as { owner?: PublicProfileOwner | null });
   if (command.command === "inbox-list")
     return formatInboxList(
       result as {
@@ -1186,6 +1212,7 @@ function profileHelpTopic(subcommand: string): HelpTopic | undefined {
     subcommand === "context" ||
     subcommand === "ensure" ||
     subcommand === "list" ||
+    subcommand === "owner" ||
     subcommand === "show" ||
     subcommand === "subscribe" ||
     subcommand === "unsubscribe"
@@ -1275,6 +1302,53 @@ if (
     console.error(formatCliError(error));
     exit(1);
   });
+}
+
+function formatProfileOwner(
+  command: Extract<CliCommand, { command: "profile-owner" }>,
+  result: { owner?: PublicProfileOwner | null },
+): string {
+  const owner = result.owner;
+  if (!owner) return `Profile ${command.profileId} has no owner. It is claimable now.`;
+  const expiredAgoMs = Date.now() - owner.leaseExpiresAt;
+  const expiry = formatLocalTimestamp(owner.leaseExpiresAt);
+  // "Lapsed" mirrors claim(): the profile is claimable the moment
+  // lease_expires_at + reconnect grace is past, not at the raw expiry.
+  const lease =
+    expiredAgoMs < 0
+      ? `lease valid for ${formatDuration(-expiredAgoMs)} (expires ${expiry})`
+      : expiredAgoMs < DEFAULT_LEASE_GRACE_MS
+        ? `lease in reconnect grace — claimable in ${formatDuration(DEFAULT_LEASE_GRACE_MS - expiredAgoMs)} (expired ${expiry})`
+        : `lease lapsed ${formatDuration(expiredAgoMs)} ago (expired ${expiry}) — claimable`;
+  return [
+    `profile: ${owner.profileId}`,
+    `owner: ${owner.paneId} (${owner.harnessKind})`,
+    `workspace: ${owner.workspaceId ?? "unknown"}`,
+    `session: ${owner.herdrSessionName}`,
+    `terminal: ${owner.terminalId}`,
+    lease,
+  ].join("\n");
+}
+
+function formatLocalTimestamp(epochMs: number): string {
+  const at = new Date(epochMs);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return (
+    `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())} ` +
+    `${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}`
+  );
+}
+
+function formatDuration(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const seconds = totalSeconds % 60;
+  const minutes = Math.floor(totalSeconds / 60) % 60;
+  const hours = Math.floor(totalSeconds / 3_600) % 24;
+  const days = Math.floor(totalSeconds / 86_400);
+  if (days > 0) return `${days}d${hours}h`;
+  if (hours > 0) return `${hours}h${minutes}m`;
+  if (minutes > 0) return `${minutes}m${seconds}s`;
+  return `${seconds}s`;
 }
 
 function formatProfileList(result: {

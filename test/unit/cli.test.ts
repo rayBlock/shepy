@@ -124,6 +124,143 @@ describe("shepy CLI", () => {
     expect(() => parseCliArgs(["operation", "frobnicate"])).toThrow("Unknown operation command");
   });
 
+  test("parses profile owner", () => {
+    expect(parseCliArgs(["profile", "owner", "battle"])).toEqual({
+      command: "profile-owner",
+      json: false,
+      profileId: "battle",
+    });
+    expect(parseCliArgs(["profile", "owner", "battle", "--json"])).toEqual({
+      command: "profile-owner",
+      json: true,
+      profileId: "battle",
+    });
+    expect(parseCliArgs(["profile", "owner", "--help"])).toEqual({
+      command: "help",
+      topic: "profile-owner",
+    });
+    expect(() => parseCliArgs(["profile", "owner"])).toThrow("profile owner requires <profileId>");
+  });
+
+  test("help documents the profile owner verb", () => {
+    expect(helpText("profile")).toContain("owner <profileId>");
+    expect(helpText("profile-owner")).toContain("shepy profile owner <profileId>");
+    expect(helpText("profile-owner")).toContain("--json");
+  });
+
+  test("renders profile owner for humans and never prints lease secrets", async () => {
+    const now = Date.now();
+    const owner = {
+      claimedAt: now - 60_000,
+      harnessKind: "pi",
+      harnessSessionRefJson: '{"sessionRef":"secret-ref"}',
+      herdrSessionName: "default",
+      lastSeenAt: now - 5_000,
+      leaseExpiresAt: now + 300_000,
+      leaseToken: "secret-lease-token",
+      paneId: "w31:p2",
+      profileId: "battle",
+      subscriberId: "secret-subscriber",
+      terminalId: "t31",
+      workspaceId: "w31",
+    };
+    const output: string[] = [];
+    await runCliCommand(
+      { command: "profile-owner", json: false, profileId: "battle" },
+      {
+        connect: async () => ({ close: () => {}, request: async () => ({ owner }) }),
+        output: (line) => output.push(line),
+        socketPath: "/tmp/s.sock",
+      },
+    );
+    const text = output.join("\n");
+    expect(text).toContain("profile: battle");
+    expect(text).toContain("owner: w31:p2 (pi)");
+    expect(text).toContain("workspace: w31");
+    expect(text).toContain("session: default");
+    expect(text).toContain("terminal: t31");
+    expect(text).toMatch(/lease valid for \d+m\d+s/);
+    expect(text).toMatch(/\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/);
+    expect(text).not.toContain("secret-lease-token");
+    expect(text).not.toContain("secret-subscriber");
+    expect(text).not.toContain("secret-ref");
+  });
+
+  test("renders a lapsed owner as claimable", async () => {
+    const now = Date.now();
+    const owner = {
+      claimedAt: now - 26 * 3_600_000,
+      harnessKind: "claude",
+      harnessSessionRefJson: "{}",
+      herdrSessionName: "default",
+      lastSeenAt: now - 20 * 3_600_000,
+      leaseExpiresAt: now - 2 * 3_600_000,
+      leaseToken: "secret-lease-token",
+      paneId: "w31:p3",
+      profileId: "battle",
+      subscriberId: "secret-subscriber",
+      terminalId: "t31",
+      workspaceId: "w31",
+    };
+    const output: string[] = [];
+    await runCliCommand(
+      { command: "profile-owner", json: false, profileId: "battle" },
+      {
+        connect: async () => ({ close: () => {}, request: async () => ({ owner }) }),
+        output: (line) => output.push(line),
+        socketPath: "/tmp/s.sock",
+      },
+    );
+    const text = output.join("\n");
+    expect(text).toContain("owner: w31:p3 (claude)");
+    expect(text).toMatch(/lease lapsed 2h\d+m ago/);
+    expect(text).toContain("claimable");
+    expect(text).not.toContain("secret-lease-token");
+  });
+
+  test("says an unowned profile is claimable", async () => {
+    const output: string[] = [];
+    await runCliCommand(
+      { command: "profile-owner", json: false, profileId: "battle" },
+      {
+        connect: async () => ({ close: () => {}, request: async () => ({ owner: null }) }),
+        output: (line) => output.push(line),
+        socketPath: "/tmp/s.sock",
+      },
+    );
+    expect(output.join("\n")).toContain("battle has no owner");
+    expect(output.join("\n")).toContain("claimable");
+  });
+
+  test("prints json output verbatim", async () => {
+    const owner = {
+      claimedAt: 1,
+      harnessKind: "pi",
+      harnessSessionRefJson: "{}",
+      herdrSessionName: "default",
+      lastSeenAt: 2,
+      leaseExpiresAt: 3,
+      leaseToken: "secret-lease-token",
+      paneId: "w31:p2",
+      profileId: "battle",
+      subscriberId: "secret-subscriber",
+      terminalId: "t31",
+      workspaceId: "w31",
+    };
+    const output: string[] = [];
+    await runCliCommand(
+      { command: "profile-owner", json: true, profileId: "battle" },
+      {
+        connect: async () => ({ close: () => {}, request: async () => ({ owner }) }),
+        output: (line) => output.push(line),
+        socketPath: "/tmp/s.sock",
+      },
+    );
+    expect(JSON.parse(output[0] ?? "")).toEqual({
+      owner: expect.objectContaining({ paneId: "w31:p2" }),
+    });
+  });
+
   test("parses root help and version flags", () => {
     expect(parseCliArgs([])).toEqual({ command: "help", topic: "root" });
     expect(parseCliArgs(["--help"])).toEqual({ command: "help", topic: "root" });

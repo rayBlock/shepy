@@ -14,7 +14,7 @@ import type { DatabaseSync } from "node:sqlite";
  * lease a claimant was entitled to take.
  */
 const DEFAULT_LEASE_MS = 5 * 60_000;
-const DEFAULT_LEASE_GRACE_MS = 30_000;
+export const DEFAULT_LEASE_GRACE_MS = 30_000;
 
 export type OwnerRow = {
   claimed_at: number;
