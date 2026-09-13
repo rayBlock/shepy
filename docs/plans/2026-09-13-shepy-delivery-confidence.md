@@ -250,6 +250,24 @@ wake mechanism is verified in the real Claude harness.
   never be deferred (2 000-char cap always fits); a permanently overloaded
   inbox re-renders ~a third of a batch per turn — drain with
   `inbox list` / `retire`, not by waiting.
+- **Item 5 (first slice: diagnose + daemon identity) LANDED `e19afb5`** as
+  RUN-20260913-04 (`docs/runs/`): `daemon.info` RPC and `shepy daemon
+  status` showing daemon vs CLI `version`/`buildStamp`/`bootId` (degrades
+  to `daemon: null` against an older daemon — proven live);
+  `profile.diagnose` RPC + `shepy profile diagnose <id> [--json]`, one
+  read-only report reusing `resolveSubscriptions` and `isLeaseAlive`, with
+  coded findings (`no_owner`, `owner_lapsed`, `subscription_unmatched`,
+  `stranded_leases`, `pending_not_draining`, `daemon_version_skew`, …,
+  `healthy`), findings first and one line each. Read-only pinned with an
+  expired-lease fixture (a `sweepExpired` inside diagnose now fails the
+  test), the `lease + grace` boundary pinned. **Still open under item 5,
+  unassigned:** the three wrong signals — hook checks `enabled` rather
+  than `matched`; Pi `pendingCount` is the batch size; `retire` writes
+  `acked` without a reason — and the `Observability RPC socket closed`
+  failure seen by the typography lead at 11:36Z.
+- **`shepy wait` defect (found in RUN-04) → RUN-20260913-05** in flight:
+  Herdr 0.8 answers `agent wait` with `{type:"agent_info", agent:{agent_status}}`,
+  the adapter threw and the operation stayed `submitted` untraced.
 - The lapsed-row sweep stays **held** on `ops/owner-sweep-held` — the review
   condition is to display lapsed state and preserve transition history, not to GC
   yet. `shepy profile owner` now covers the display half.

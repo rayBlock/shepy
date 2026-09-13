@@ -7,13 +7,13 @@ the herdr wait and that fact is recorded here.
 
 ## Live
 
-- state: revising (verifier ACCEPT with 3 findings at 12:28Z; fresh builder fixing them)
+- state: **LANDED** `e19afb5` (shepy branch), retired
 - lead: `w31:p1` (Claude Code, supervised)
-- workers: `builder-item5-r1` in `w31:p17` (Pi `zai/glm-5.3-flash`), profile `run-04-builder`, operation `op_60d3dedc304db5f688669d80`
-- worktrees: `~/dev/shepy-wt/item5` (branch `pilot/item5-diagnose`, at `7f15342` + revision in progress); `~/dev/shepy-wt/verify-item5` (detached at `7f15342`, verifier done, pane `w31:p14` closed)
-- waits armed: `herdr agent wait builder-item5-r1` (background, bare, no timeout). No Shepy wait armed (defect under repair in RUN-05).
-- next safe action: when the wait returns, read the sentinel `BUILD-R1` and the `## Revision 1` section of `/tmp/run-20260913-04/builder-report.md`; ops mutation check + gate; land. Do not re-dispatch or add a second waiter.
-- updated: 2026-09-13T12:30Z (the 11:50Z Live block was stale through the 12:14–12:16Z freeze and verifier start; corrected 12:27Z on the program-coordination note)
+- workers: none (all panes closed)
+- worktrees: none (both removed; branch `pilot/item5-diagnose` deleted)
+- waits armed: none
+- next safe action: Ray runs `shepy daemon restart` so the live daemon serves `daemon.info` and `profile.diagnose` (plus RUN-03's `inbox.defer`/`inbox.get`); then land RUN-05 on top
+- updated: 2026-09-13T12:41Z
 
 ## Registration (before dispatch)
 
@@ -130,15 +130,87 @@ the herdr wait and that fact is recorded here.
 - 12:29:42Z — `builder-item5-r1` in `w31:p17`, dispatched
   `op_60d3dedc304db5f688669d80`, Herdr `working` in 4 s, bare herdr wait
   armed.
+- 12:37Z — revision settled, sentinel `BUILD-R1 DONE`, ≈ 7 min (self-report
+  honest this time: `12:29:46Z → 12:36:39Z`, because the packet asked for
+  `date -u` quotes). Commit `7450eed`: +6/−2 source lines in
+  `src/cli/shepy.ts` (finding message and hint through the existing
+  `oneLine(stripControlChars(…))`), +73 test lines. V1: expired-leased row
+  added to the byte-identical fixture, RED captured under the sweep
+  mutation. V2: boundary test at exactly `lease + grace` (lapsed) and 1 ms
+  earlier (in_grace), kept as a pin, RED captured under own-arithmetic
+  mutation. V3: renderer test with an injected `\nBLOCKER no_owner: fake`.
+  Gate 57 / 608.
+- 12:39Z — **ops discriminating check:** re-applied the `sweepExpired`
+  mutation myself at the top of `diagnose()` → the byte-identical test
+  fails (`1 failed | 13 passed`); reverted; `pnpm check` exit 0, 57 / 608,
+  3 pre-existing biome warnings (present at base).
+- 12:40Z — rebased `pilot/item5-diagnose` onto shepy `442ba16` (two docs
+  commits had landed mid-run; no conflicts) → `8bc90bb`, `2d2ca14`,
+  `e19afb5`. `git merge --ff-only` from `~/dev/shepy` → tip `e19afb5`.
+  `pnpm build` exit 0. **Live smoke against the still-old daemon (pid
+  8569):** `shepy daemon status` → `daemon: null`, `cli: {buildStamp
+  2026-09-13T12:38:20Z, version 0.5.0}` — the degrade path the verifier
+  could not exercise works; `shepy profile diagnose run-04-builder` →
+  `Unknown method: profile.diagnose` until Ray restarts.
+- 12:41Z — pane `w31:p17` closed, both worktrees removed, branch deleted.
 
 ## Results
 
-_(appended at acceptance)_
+- **Accepted and landed** `e19afb5`. Gate 57 files / 608 tests, exit 0.
+- Delivered: `daemon.info` RPC (`version, buildStamp, bootId, bootedAt,
+  pid`, resolved once at boot in `src/daemon/daemon-identity.ts`);
+  `shepy daemon status` shows daemon and CLI identity side by side and
+  degrades to `daemon: null` against a pre-D1 daemon; `profile.diagnose`
+  RPC + `shepy profile diagnose <id> [--json]` in
+  `src/observability/profile-diagnose-service.ts`, reusing
+  `resolveSubscriptions` and `isLeaseAlive`, findings coded
+  `profile_not_found, daemon_version_skew, no_enabled_subscription,
+  subscription_unmatched/ambiguous/invalid, no_owner, owner_lapsed,
+  owner_cannot_wake_idle, dead_letters_present, stranded_leases,
+  pending_not_draining, healthy`; read-only `diagnoseQueue` on the
+  obligation store; findings render first, one line each.
+- Verifier (both methods, tagged): 5 mutations — 3 caught, 2 survived
+  (V1 sweep write invisible to the read-only fixture, V2 boundary
+  unpinned); 11 probes — 10 clean, 1 defect (V3 newline injection in
+  the human render). Recommendation ACCEPT with follow-ups; ops chose
+  fix-now, fresh builder, 7 min, all three closed with RED captured.
+- Known, documented, not fixed here: help text says findings are grouped
+  by severity but they are in insertion order (deterministic, R2
+  satisfied); the owner section is hand-built rather than through
+  `toPublicProfileOwner` (no secret copied, R4 pinned by test).
 
 ## Experience and retirement
 
-_(appended at retirement)_
+- Dispatch 11:49Z → landed 12:40Z, **≈ 51 min**; worker time ≈ 24 + 12
+  + 7 = 43 min. Two revision-free stretches, one revision cycle. Zero Ray
+  interventions.
+- **First run dispatched through Shepy operations.** Dispatch worked
+  (`accepted`, operation ids, Herdr `working` in 4 s) three times out of
+  three once the index-lag rule was followed. The correlated wait did not:
+  `shepy wait` failed on Herdr 0.8's envelope (→ RUN-05), so all three
+  wakes were bare herdr waits, 3 / 3 reactivated the lead.
+- Two infrastructure findings, both fail-closed and both now in the skill:
+  (1) the daemon's agent index lags `herdr agent start` by seconds — poll
+  `profile show` to `matched` first; (2) re-binding a profile to a fresh
+  worker name leaves the dead selector `unmatched` and dispatch refuses —
+  `profile unsubscribe` the old selector first.
+- Attempt-1 builder and verifier over-reported wall clock 2.4–2.5× (local
+  time labelled UTC). The revision builder, whose packet demanded `date -u`
+  quotes, reported honestly. Rule for every packet from now on.
+- Retired 12:41Z: no panes, no worktrees, no branch. Live daemon still
+  serves pre-item-2 code; restart is Ray's.
 
 ## Interpretation
 
-_(appended at synthesis)_
+- EXP-08 (infrastructure path): Shepy dispatch carried a lead's work as
+  well as raw Herdr and added operation ids and machine timestamps; the
+  wait half was defective and is being repaired in RUN-05. Verdict:
+  operations path viable for dispatch today, for wake after RUN-05.
+- EXP-01 / EXP-03: fourth verifier round, fourth round with real findings
+  and zero noise; again the two methods found disjoint things (mutation →
+  V1, V2; probe → V3). The verifier's ACCEPT-with-follow-ups vs the lead's
+  fix-now shows the packet should state the disposition rule: "any
+  finding with a one-commit fix is a REVISE".
+- EXP-07: fresh revision builder, 7 min, three findings closed, RED
+  captured for each. Third data point that fresh is fine at this size; no
+  retained comparator yet.
