@@ -6,13 +6,12 @@ import type {
   ProfileSubscriptionRecord,
 } from "@/db/orchestrator-profiles.js";
 import type { AgentIndexRecord } from "./contracts.js";
+import { resolveSelectorInWorkspaceScope } from "./profile-selector-scope.js";
 import {
   type AgentSelector,
   describeSelector,
   parseAgentSelector,
   parseWorkspaceSelector,
-  resolveAgentSelector,
-  selectableFromRow,
 } from "./profile-selectors.js";
 
 /**
@@ -141,21 +140,17 @@ export class ProfileService {
         resolutions.push({ detail: selector.detail, kind: "invalid", subscription });
         continue;
       }
-      // Structural scope: exact session + exact workspace BEFORE agent
-      // resolution. An identical workspace id in another session is
-      // never a candidate (§6.1.2).
-      const candidates = this.#agents
-        .list({ herdrSessionName: workspace.herdrSession, workspaceId: workspace.workspaceId })
-        .map((record) => selectableFromRow(recordToRow(record)));
-      const resolution = resolveAgentSelector(selector, candidates);
+      // Shared scope → candidates → resolve step (§6.1.2): exact session +
+      // exact workspace BEFORE agent resolution, identical to the delivery
+      // path — the two cannot drift because they resolve through one helper.
+      const resolution = resolveSelectorInWorkspaceScope({
+        agents: this.#agents,
+        selector,
+        workspace,
+      });
       if (resolution.kind === "matched") {
-        const record = this.#agents
-          .list({ herdrSessionName: workspace.herdrSession, workspaceId: workspace.workspaceId })
-          .find((candidate) => candidate.id === resolution.agent.id);
-        if (record) {
-          resolutions.push({ agent: record, kind: "matched", subscription });
-          continue;
-        }
+        resolutions.push({ agent: resolution.record, kind: "matched", subscription });
+        continue;
       }
       if (resolution.kind === "ambiguous") {
         resolutions.push({
@@ -192,20 +187,6 @@ export class ProfileService {
     }
     return { agents, profile, resolutions };
   }
-}
-
-function recordToRow(record: AgentIndexRecord) {
-  return {
-    agent: record.agent,
-    agentSessionJson: record.agentSession ? JSON.stringify(record.agentSession) : null,
-    cwd: record.cwd,
-    herdrSessionName: record.herdrSessionName,
-    id: record.id,
-    name: record.name,
-    paneId: record.paneId,
-    terminalId: record.terminalId,
-    workspaceId: record.workspaceId,
-  };
 }
 
 export { describeSelector };

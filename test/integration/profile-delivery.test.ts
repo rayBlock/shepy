@@ -19,8 +19,10 @@ import { OrchestratorProfileStore } from "@/db/orchestrator-profiles.js";
 import { ProfileOwnerStore } from "@/db/profile-owners.js";
 import { AgentContextService } from "@/observability/agent-context-service.js";
 import { AgentOrchestratorService } from "@/observability/agent-orchestrator-service.js";
-import type { AgentEventRecord } from "@/observability/contracts.js";
+import type { AgentEventRecord, AgentIndexRecord } from "@/observability/contracts.js";
 import { ProfileDeliveryService } from "@/observability/profile-delivery-service.js";
+import type { AgentSelector } from "@/observability/profile-selectors.js";
+import { ProfileService } from "@/observability/profile-service.js";
 import { RpcTestClient } from "./rpc-test-client.js";
 
 /**
@@ -1860,6 +1862,299 @@ describe("shepy profile owner CLI verb (operator surface)", () => {
     } finally {
       client.close();
       await server.stop();
+    }
+  });
+});
+
+describe("selector ambiguity is fail-closed on BOTH paths (§7, §6.1.3)", () => {
+  const WORKER_CWD = "/Users/ray/dev/driffs";
+
+  /**
+   * Real RPC server + real ProfileService + real ProfileDeliveryService over
+   * one real migrated SQLite file. Two pi workers share the exact session
+   * ("default") and workspace ("wA") — identical agent kind and cwd, distinct
+   * panes — plus a cross-session decoy in session "other" holding the SAME
+   * workspace id and the SAME name/kind/cwd as the first worker (the §6.1.2
+   * expansion trap).
+   */
+  async function ambiguityRpcFixture(input: {
+    agentSelector: AgentSelector;
+    workerNames?: [string, string];
+  }) {
+    const dir = mkdtempSync(join(tmpdir(), "shepy-ambiguity-"));
+    tempDirs.push(dir);
+    const path = join(dir, "test.sqlite");
+    const { sqlite } = openSqlite(path);
+    applyMigrations(sqlite, { migrationsFolder: "drizzle" });
+    const sessions = new HerdrSessionStore(sqlite);
+    const agents = new AgentStore(sqlite);
+    sessions.upsertRunning({ name: "default", sessionDir: "/tmp/a", socketPath: "/tmp/a.sock" });
+    sessions.upsertRunning({ name: "other", sessionDir: "/tmp/b", socketPath: "/tmp/b.sock" });
+    const workerNames = input.workerNames ?? ["worker-a", "worker-b"];
+    agents.replaceForSession({
+      agents: [
+        {
+          agent: "pi",
+          agent_status: "idle",
+          cwd: WORKER_CWD,
+          focused: false,
+          name: workerNames[0],
+          pane_id: "wA:p1",
+          terminal_id: "tA1",
+          workspace_id: "wA",
+        },
+        {
+          agent: "pi",
+          agent_status: "idle",
+          cwd: WORKER_CWD,
+          focused: false,
+          name: workerNames[1],
+          pane_id: "wA:p2",
+          terminal_id: "tA2",
+          workspace_id: "wA",
+        },
+      ],
+      herdrSessionName: "default",
+    });
+    agents.replaceForSession({
+      agents: [
+        {
+          agent: "pi",
+          agent_status: "idle",
+          cwd: WORKER_CWD,
+          focused: false,
+          name: workerNames[0],
+          pane_id: "wA:p1",
+          terminal_id: "tZ",
+          workspace_id: "wA",
+        },
+      ],
+      herdrSessionName: "other",
+    });
+    const profiles = new OrchestratorProfileStore(sqlite);
+    profiles.createProfile({ displayName: "Driffs", profileId: "driffs", projectRoots: [] });
+    profiles.addSubscription({
+      agentSelectorJson: JSON.stringify(input.agentSelector),
+      herdrSessionName: "default",
+      profileId: "driffs",
+      workspaceSelectorJson: JSON.stringify({ herdrSession: "default", workspaceId: "wA" }),
+    });
+    const agentEvents = new AgentEventStore(sqlite);
+    const delivery = new ProfileDeliveryService({
+      agentEvents,
+      agents,
+      obligations: new DeliveryObligationStore(sqlite),
+      owners: new ProfileOwnerStore({ sqlite }),
+      profiles,
+    });
+    const history = createAgentHistoryService({
+      cache: new AgentHistoryCacheStore(sqlite),
+      homeDir: dir,
+    });
+    const profileService = new ProfileService({ agents, history, profiles });
+    const context = new AgentContextService({
+      history,
+      stores: {
+        agentContextSnapshots: new AgentContextSnapshotStore(sqlite),
+        agents,
+      },
+    });
+    const orchestrator = new AgentOrchestratorService({
+      agentEvents,
+      agents,
+      scopes: new AgentOrchestratorScopeStore(sqlite),
+    });
+    const socketPath = join(dir, "rpc.sock");
+    const server = new ObservabilityRpcServer({
+      context,
+      delivery,
+      history,
+      orchestrator,
+      profiles: profileService,
+      socketPath,
+      stores: {
+        agentEvents,
+        agents,
+        herdrSessions: sessions,
+        herdrWorkspaces: new HerdrWorkspaceStore(sqlite),
+      },
+    });
+    await server.start();
+    const client = await RpcTestClient.connect(socketPath);
+    return { agentEvents, agents, client, delivery, profileService, server, sqlite };
+  }
+
+  function appendDoneEvent(input: {
+    agentEvents: AgentEventStore;
+    key: string;
+    row: AgentIndexRecord;
+  }): AgentEventRecord {
+    return input.agentEvents.append({
+      agentId: input.row.id,
+      compactHistory: null,
+      herdrSessionName: input.row.herdrSessionName,
+      idempotencyKey: input.key,
+      paneId: input.row.paneId,
+      payload: { agent: input.row.agent, from: "working", name: input.row.name, to: "done" },
+      type: "agent.done",
+      workspaceId: input.row.workspaceId,
+    });
+  }
+
+  function workersOf(built: Awaited<ReturnType<typeof ambiguityRpcFixture>>) {
+    const rows = built.agents.list({ herdrSessionName: "default" });
+    const first = rows.find((row) => row.paneId === "wA:p1");
+    const second = rows.find((row) => row.paneId === "wA:p2");
+    if (!first || !second) throw new Error("fixture: scoped workers missing");
+    return { first, second };
+  }
+
+  async function inboxSize(built: Awaited<ReturnType<typeof ambiguityRpcFixture>>) {
+    const list = (await built.client.request("inbox.list", { profileId: "driffs" })) as {
+      obligations: unknown[];
+    };
+    return list.obligations.length;
+  }
+
+  async function resolutionKinds(built: Awaited<ReturnType<typeof ambiguityRpcFixture>>) {
+    const show = (await built.client.request("profile.show", { profileId: "driffs" })) as {
+      resolutions: Array<{ kind: string }>;
+    };
+    return show.resolutions.map((resolution) => resolution.kind);
+  }
+
+  test("the reviewer's case: two identical workers + runtimeKindPlusCwd — inspection says ambiguous, delivery projects NOTHING", async () => {
+    const built = await ambiguityRpcFixture({
+      agentSelector: { kind: "runtimeKindPlusCwd", agent: "pi", cwd: WORKER_CWD },
+    });
+    try {
+      // Inspection path (already §7-correct): the selector is ambiguous.
+      await expect(resolutionKinds(built)).resolves.toEqual(["ambiguous"]);
+
+      // Delivery path (the defect): whichever worker finishes, the selector
+      // is ambiguous in this scope, so NOTHING may project.
+      const { first, second } = workersOf(built);
+      built.delivery.projectAgentEvent(
+        appendDoneEvent({ agentEvents: built.agentEvents, key: "done-first", row: first }),
+      );
+      built.delivery.projectAgentEvent(
+        appendDoneEvent({ agentEvents: built.agentEvents, key: "done-second", row: second }),
+      );
+      await expect(inboxSize(built)).resolves.toBe(0);
+    } finally {
+      built.client.close();
+      await built.server.stop();
+      built.sqlite.close();
+    }
+  });
+
+  test("two live workers sharing one name: inspection says ambiguous, delivery projects NOTHING", async () => {
+    // Executable evidence that the index admits duplicate live names: the
+    // agents table constrains (session, pane) and (session, terminal) but
+    // nothing constrains name — so a name selector can be genuinely
+    // ambiguous and must fail closed on both paths.
+    const built = await ambiguityRpcFixture({
+      agentSelector: { kind: "name", value: "worker" },
+      workerNames: ["worker", "worker"],
+    });
+    try {
+      await expect(resolutionKinds(built)).resolves.toEqual(["ambiguous"]);
+      const { first, second } = workersOf(built);
+      built.delivery.projectAgentEvent(
+        appendDoneEvent({ agentEvents: built.agentEvents, key: "done-first", row: first }),
+      );
+      built.delivery.projectAgentEvent(
+        appendDoneEvent({ agentEvents: built.agentEvents, key: "done-second", row: second }),
+      );
+      await expect(inboxSize(built)).resolves.toBe(0);
+    } finally {
+      built.client.close();
+      await built.server.stop();
+      built.sqlite.close();
+    }
+  });
+
+  test("a unique match naming worker-a never projects worker-b's event", async () => {
+    const built = await ambiguityRpcFixture({
+      agentSelector: { kind: "name", value: "worker-a" },
+    });
+    try {
+      // The selector resolves uniquely — to worker-a.
+      await expect(resolutionKinds(built)).resolves.toEqual(["matched"]);
+      // worker-b completing must not ride worker-a's subscription, even
+      // though worker-b alone would satisfy nothing else about the scope.
+      const { second } = workersOf(built);
+      built.delivery.projectAgentEvent(
+        appendDoneEvent({ agentEvents: built.agentEvents, key: "done-b", row: second }),
+      );
+      await expect(inboxSize(built)).resolves.toBe(0);
+    } finally {
+      built.client.close();
+      await built.server.stop();
+      built.sqlite.close();
+    }
+  });
+
+  test("happy path survives: one unique in-scope match from the emitting agent projects exactly one obligation", async () => {
+    const built = await ambiguityRpcFixture({
+      agentSelector: { kind: "name", value: "worker-a" },
+    });
+    try {
+      await expect(resolutionKinds(built)).resolves.toEqual(["matched"]);
+      const { first } = workersOf(built);
+      const stored = appendDoneEvent({
+        agentEvents: built.agentEvents,
+        key: "done-a",
+        row: first,
+      });
+      built.delivery.projectAgentEvent(stored);
+      const pending = (await built.client.request("inbox.list", {
+        profileId: "driffs",
+        state: "pending",
+      })) as { obligations: Array<{ agentEventId: number }> };
+      expect(pending.obligations).toHaveLength(1);
+      expect(pending.obligations[0]?.agentEventId).toBe(stored.id);
+    } finally {
+      built.client.close();
+      await built.server.stop();
+      built.sqlite.close();
+    }
+  });
+
+  test("cross-session same-workspace-id stays excluded on the delivery path", async () => {
+    // The decoy in session "other" shares worker-a's name, kind, cwd AND
+    // workspace id "wA" — only the Herdr session differs. Its completion
+    // must never satisfy the session-"default" subscription; the same-named
+    // worker in the subscribed session still projects.
+    const built = await ambiguityRpcFixture({
+      agentSelector: { kind: "name", value: "worker-a" },
+    });
+    try {
+      const decoy = built.agents
+        .list({ herdrSessionName: "other" })
+        .find((row) => row.herdrSessionName === "other");
+      if (!decoy) throw new Error("fixture: cross-session decoy missing");
+      built.delivery.projectAgentEvent(
+        appendDoneEvent({ agentEvents: built.agentEvents, key: "done-decoy", row: decoy }),
+      );
+      await expect(inboxSize(built)).resolves.toBe(0);
+
+      const { first } = workersOf(built);
+      const stored = appendDoneEvent({
+        agentEvents: built.agentEvents,
+        key: "done-default",
+        row: first,
+      });
+      built.delivery.projectAgentEvent(stored);
+      const pending = (await built.client.request("inbox.list", {
+        profileId: "driffs",
+        state: "pending",
+      })) as { obligations: unknown[] };
+      expect(pending.obligations).toHaveLength(1);
+    } finally {
+      built.client.close();
+      await built.server.stop();
+      built.sqlite.close();
     }
   });
 });

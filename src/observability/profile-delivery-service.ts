@@ -6,12 +6,8 @@ import type { OrchestratorProfileStore } from "@/db/orchestrator-profiles.js";
 import type { ProfileOwnerStore } from "@/db/profile-owners.js";
 import { type PublicProfileOwner, toPublicProfileOwner } from "@/db/profile-owners.js";
 import type { AgentEventRecord, AgentEventType } from "./contracts.js";
-import {
-  parseAgentSelector,
-  parseWorkspaceSelector,
-  resolveAgentSelector,
-  selectableFromRow,
-} from "./profile-selectors.js";
+import { resolveSelectorInWorkspaceScope } from "./profile-selector-scope.js";
+import { parseAgentSelector, parseWorkspaceSelector } from "./profile-selectors.js";
 
 /**
  * Event types that merit waking an owner (vault §9.1: an outcome is a
@@ -171,22 +167,14 @@ export class ProfileDeliveryService {
       this.#sameSettledOutcomeAsPrior(event)
     )
       return;
-    const agentRows = this.#agents
+    // Short-circuit only: an event whose agent is absent from the live
+    // index can never be projected below (no scoped candidate can name it).
+    // The real gate is the scoped resolution + identity check per
+    // subscription.
+    const agentIndexed = this.#agents
       .list({ herdrSessionName: event.herdrSessionName })
-      .filter((row) => row.id === event.agentId);
-    const [agentRow] = agentRows;
-    if (!agentRow) return;
-    const agent = selectableFromRow({
-      agent: agentRow.agent,
-      agentSessionJson: agentRow.agentSession ? JSON.stringify(agentRow.agentSession) : null,
-      cwd: agentRow.cwd,
-      herdrSessionName: agentRow.herdrSessionName,
-      id: agentRow.id,
-      name: agentRow.name,
-      paneId: agentRow.paneId,
-      terminalId: agentRow.terminalId,
-      workspaceId: agentRow.workspaceId,
-    });
+      .some((row) => row.id === event.agentId);
+    if (!agentIndexed) return;
     for (const profile of this.#profiles.listProfiles()) {
       for (const subscription of this.#profiles.listSubscriptions(profile.profileId)) {
         if (!subscription.enabled) continue;
@@ -197,8 +185,20 @@ export class ProfileDeliveryService {
         if (workspace.workspaceId !== event.workspaceId) continue;
         const selector = parseAgentSelector(subscription.agentSelectorJson);
         if ("error" in selector) continue;
-        const resolution = resolveAgentSelector(selector, [agent]);
+        // Same scoped resolution the inspection path uses (§6.1.2/§7): the
+        // candidate set is the subscription's exact session + workspace —
+        // NEVER a single-element array built from this event's agent, which
+        // could not be ambiguous and delivered inspection-ambiguous
+        // selectors as a first match. Fail closed: only a unique match
+        // naming THIS event's agent projects; ambiguous, unmatched, invalid
+        // selector, and a unique match of a different in-scope agent do not.
+        const resolution = resolveSelectorInWorkspaceScope({
+          agents: this.#agents,
+          selector,
+          workspace,
+        });
         if (resolution.kind !== "matched") continue;
+        if (resolution.agent.id !== event.agentId) continue;
         this.#obligations.project({
           agentEventId: event.id,
           profileId: profile.profileId,
