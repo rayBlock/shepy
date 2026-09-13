@@ -11,13 +11,13 @@ acceptance recommendation; portfolio owns cross-program acceptance.
 
 ## Live
 
-- state: building
+- state: verifying (candidate `5a538af` frozen 13:46Z; ops already holds three defects O1–O3 for the corrective cycle)
 - lead: `w31:p1` (Claude Code, supervised)
-- workers: `builder-ctx` in `w31:p19` (Pi `zai/glm-5.3-flash`, reasoning high, verified on the pane), profile `run-06-builder`, operation `op_7a4a0062662bf9e824dde073`
-- worktrees: `~/dev/shepy-wt/ctx-health` (branch `pilot/context-health`, base `8d1d0b0`)
-- waits armed: ONE `shepy wait op_7a4a0062662bf9e824dde073 --json` (background, lead harness task `bjt7pu45r`) — the repaired daemon's first useful qualification; if it fails or returns `transport_unknown`: inspect once, then one bare `herdr agent wait builder-ctx`, recorded here
-- next safe action: when the wait returns, record its outcome in the lineage FIRST (qualification), then read the sentinel and `/tmp/run-20260913-06/builder-report.md`; freeze; verifier
-- updated: 2026-09-13T13:20Z
+- workers: `verifier-ctx` in `w31:p1A` (Pi `zai/glm-5.3-flash`), profile `run-06-verifier`, operation `op_fe7db5963dcacf6c2ce1fb63`
+- worktrees: `~/dev/shepy-wt/verify-ctx` (detached at `5a538af`), `~/dev/shepy-wt/ctx-health` (branch `pilot/context-health`, builder done, pane closed)
+- waits armed: ONE `shepy wait op_fe7db5963dcacf6c2ce1fb63 --json` (background, lead task `byjutx0ct`); fallback on failure = one bare `herdr agent wait verifier-ctx`
+- next safe action: when the wait returns, record its outcome, read the sentinel and `/tmp/run-20260913-06/verifier-report.md`, merge its findings with O1–O3 into `/tmp/run-20260913-06/revision-1.packet.md`, fresh builder (the ONE corrective cycle)
+- updated: 2026-09-13T13:53Z
 
 ## Registration (before dispatch)
 
@@ -128,6 +128,52 @@ acceptance recommendation; portfolio owns cross-program acceptance.
   operation `op_5ddd8e4583b23ed0e507ef7a` returned `wait_timeout` after
   this lead's setup response; durable state `submitted`. Different case
   from this run's early-armed, open-ended builder wait.
+- 13:46:20Z — **QUALIFICATION RESULT (repaired `operation.wait`, daemon
+  pid 53303):** the single `shepy wait op_7a4a0062662bf9e824dde073
+  --json` armed 13:20:11Z returned at 13:46:20Z with
+  `{"outcome":{"kind":"settled","operationId":"op_7a4a0062662bf9e824dde073"}}`,
+  exit 0; durable row: `lifecycle: "settled"`, `errorSummary: null`,
+  `promptSha256 e67abd56…`. Herdr: `done`. One wait, one return, no
+  fallback needed. This is one successful sample of the repaired path on
+  useful work; it is not crash-safety or idle-wake qualification.
+- 13:46Z — builder settled; sentinel `BUILD DONE`; ≈ 26 min by lead clock
+  (self-report `13:20:07Z → 13:45:07Z`, honest). **Candidate frozen at
+  `5a538af`** (`505adff` contract+projection+readers+v2, `65d9af7` CLI,
+  `5a538af` RPC/D7 test). 15 files, +2 081/−78, 60 / 650, gate exit 0.
+  Addendum 1 folded in before any commit. Disclosed honestly: the
+  implementation was drafted before the RED run; RED was then captured
+  against base by stashing `src/`. D7 result: a compaction-only append
+  changes the snapshot and `agent.context.changed` fan-out but mints no
+  delivery obligation (obligations come only from agent events) — proven
+  with a real profile + subscription, zero rows before and after.
+- 13:47:12Z — builder pane closed; detached `~/dev/shepy-wt/verify-ctx`
+  at `5a538af`; `verifier-ctx` in `w31:p1A` (`(zai) glm-5.3-flash •
+  high` confirmed), profile `run-06-verifier` `matched` on the third
+  poll (≈ 9 s), `shepy dispatch` → `op_fe7db5963dcacf6c2ce1fb63`, Herdr
+  `working` in 4 s. Second native `shepy wait --json` armed.
+- 13:48–13:52Z — **ops adjudication by reading + scratch probes in the
+  builder worktree (file deleted after; tree clean), three defects:**
+  - **O1 `[probe]` BLOCKER — Pi `sessionId` is null on real files.** The
+    lineage walk stops at the first entry (`parentId: null`); the
+    `session` header has no `parentId` and nothing points at it, so the
+    `type === "session"` branch inside the walk never runs. The shipped
+    fixture hides it: `ROOT = "pi-session-1"` links the first entry to
+    the header id, which real Pi files never do (verified on today's
+    sessions: first entry `model_change` with `parentId: null`).
+    Fixture-assumption trap. Fix: session id from the header entry
+    regardless of lineage; correct every fixture to `parentId: null` at
+    the root.
+  - **O2 `[probe]` should-fix — false zero.** `usage {input:0, cacheRead:0,
+    cacheWrite:0}` (Pi writes zeros for providers that do not report;
+    Claude equivalent) projects as `last_reported`, `tokens: 0`. A billed
+    prompt of 0 is not a reading. Fix: a zero sum is no usage.
+  - **O3 `[probe]` should-fix — false current.** A later assistant turn on
+    the lineage with absent (or zero) usage leaves the earlier reading
+    `current: true`, `reason: null`. The context grew by an unknown
+    amount. Fix: any assistant turn after the reading → `current: false`,
+    reason `later_turn_without_usage`.
+  Verifier not told (independence); these go into the corrective cycle
+  alongside its findings.
 
 ## Results
 
