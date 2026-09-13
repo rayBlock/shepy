@@ -48,16 +48,29 @@ function operation(overrides: Partial<OperationRecord> = {}): OperationRecord {
 }
 
 function fakeStore(record: OperationRecord) {
+  // The record is mutable so wait-service flows (recordWaitError, then a
+  // later settle) can be observed through get() like the real store.
+  const current: OperationRecord = { ...record };
   return {
     get: vi.fn((id: string, scope?: { profileId?: string }) => {
-      if (scope?.profileId && record.profileId !== scope.profileId) return undefined;
-      return id === record.id ? { ...record } : undefined;
+      if (scope?.profileId && current.profileId !== scope.profileId) return undefined;
+      return id === current.id ? { ...current } : undefined;
+    }),
+    recordWaitError: vi.fn((input: { errorSummary: string; operationId: string }) => {
+      current.errorSummary = input.errorSummary;
+      current.updatedAt = new Date();
+      return { ...current };
     }),
     settle: vi.fn(
       (input: {
         lifecycle: "settled" | "blocked" | "failed" | "target_lost";
         operationId: string;
-      }) => operation({ ...record, lifecycle: input.lifecycle, state: input.lifecycle }),
+      }) => {
+        current.lifecycle = input.lifecycle;
+        current.state = input.lifecycle;
+        current.settledAt = new Date();
+        return { ...current };
+      },
     ),
   } as unknown as OperationStore;
 }
@@ -168,5 +181,44 @@ describe("OperationWaitService", () => {
 
     const result = await service.applyLifecycle("op_missing", lifecycleEvent());
     expect(result.kind).toBe("not_found");
+  });
+
+  test("a transport_unknown result records the error but never settles the operation", async () => {
+    const detail = 'unrecognized herdr wait response (keys: agent, type; status "unknown")';
+    const store = fakeStore(operation());
+    const service = new OperationWaitService({ operations: store });
+
+    const result = await service.applyLifecycle(
+      "op_1",
+      lifecycleEvent({ kind: "transport_unknown", detail }),
+    );
+
+    expect(result).toEqual({ kind: "transport_unknown", operationId: "op_1", detail });
+    expect(store.settle).not.toHaveBeenCalled();
+    expect(store.recordWaitError).toHaveBeenCalledWith({
+      operationId: "op_1",
+      errorSummary: detail,
+    });
+    const stored = store.get("op_1");
+    expect(stored?.state).toBe("submitted");
+    expect(stored?.lifecycle).toBeNull();
+    expect(stored?.settledAt).toBeNull();
+    expect(stored?.errorSummary).toBe(detail);
+  });
+
+  test("the operation is re-waitable after a transport_unknown result", async () => {
+    const store = fakeStore(operation());
+    const service = new OperationWaitService({ operations: store });
+
+    await service.applyLifecycle(
+      "op_1",
+      lifecycleEvent({ kind: "transport_unknown", detail: "unrecognized herdr wait response" }),
+    );
+    const result = await service.applyLifecycle("op_1", lifecycleEvent());
+
+    expect(result).toEqual({ kind: "settled", operationId: "op_1" });
+    expect(store.settle).toHaveBeenCalledWith(
+      expect.objectContaining({ lifecycle: "settled", operationId: "op_1" }),
+    );
   });
 });

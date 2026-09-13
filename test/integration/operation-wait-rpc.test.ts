@@ -1,14 +1,17 @@
 import { existsSync, mkdtempSync, rmSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import type { AgentHistoryService } from "@/agent-history/service.js";
 import { createAgentHistoryService } from "@/agent-history/service.js";
 import { ObservabilityRpcServer } from "@/daemon/observability-server.js";
 import { OperationStore } from "@/db/operations.js";
 import { OrchestratorProfileStore } from "@/db/orchestrator-profiles.js";
 import type { HerdrOrchestrationTransport } from "@/herdr/orchestration-transport.js";
-import { HerdrWaitTimeoutError } from "@/herdr/orchestration-transport-adapter.js";
+import {
+  HerdrOrchestrationTransportAdapter,
+  HerdrWaitTimeoutError,
+} from "@/herdr/orchestration-transport-adapter.js";
 import { HerdrRequestTimeoutError } from "@/herdr/socket-client.js";
 import { AgentContextService } from "@/observability/agent-context-service.js";
 import { AgentOrchestratorService } from "@/observability/agent-orchestrator-service.js";
@@ -97,6 +100,71 @@ function fixture(waitForLifecycle: HerdrOrchestrationTransport["waitForLifecycle
 async function connected(socketPath: string): Promise<RpcTestClient> {
   return RpcTestClient.connect(socketPath);
 }
+
+/**
+ * Verbatim Herdr 0.8.x `agent wait` response captured on a settled agent
+ * (RUN-20260913-05): the status lives at result.agent.agent_status. The
+ * socket client hands the adapter the stripped envelope result.
+ */
+const agentInfoWait = (agentStatus: string): unknown =>
+  JSON.parse(
+    `{"id":"cli:agent:wait","result":{"agent":{"agent":"pi","agent_session":{"agent":"pi","kind":"path","source":"herdr:pi","value":"…jsonl"},"agent_status":"${agentStatus}","cwd":"…","focused":false,"interactive_ready":true,"name":"builder-item5","pane_id":"w31:p13","revision":1,"state_change_seq":2329,"terminal_id":"term_65b5be8c884f8a6","workspace_id":"w31"},"type":"agent_info"}}`,
+  ).result;
+
+describe("operation.wait — Herdr 0.8.x wait shapes at the RPC boundary", () => {
+  test("the captured agent_info shape settles the operation", async () => {
+    const adapter = new HerdrOrchestrationTransportAdapter({
+      promptAgent: vi.fn(),
+      waitForAgent: vi
+        .fn()
+        .mockResolvedValue({ requestId: "wait-1", result: agentInfoWait("done") }),
+    });
+    const { operation, operations, server, socketPath } = fixture(
+      adapter.waitForLifecycle.bind(adapter),
+    );
+    await server.start();
+    const client = await connected(socketPath);
+    try {
+      await expect(
+        client.request("operation.wait", { operationId: operation.id, timeoutMs: 1000 }),
+      ).resolves.toEqual({ outcome: { kind: "settled", operationId: operation.id } });
+      const stored = operations.get(operation.id);
+      expect(stored?.state).toBe("settled");
+      expect(stored?.lifecycle).toBe("settled");
+    } finally {
+      client.close();
+    }
+  });
+
+  test("an unreadable wait shape returns transport_unknown and keeps the operation submitted", async () => {
+    const adapter = new HerdrOrchestrationTransportAdapter({
+      promptAgent: vi.fn(),
+      waitForAgent: vi
+        .fn()
+        .mockResolvedValue({ requestId: "wait-1", result: { type: "wait_matched" } }),
+    });
+    const { operation, operations, server, socketPath } = fixture(
+      adapter.waitForLifecycle.bind(adapter),
+    );
+    await server.start();
+    const client = await connected(socketPath);
+    try {
+      const result = (await client.request("operation.wait", {
+        operationId: operation.id,
+        timeoutMs: 1000,
+      })) as { outcome: { kind: string; detail?: string } };
+      expect(result.outcome.kind).toBe("transport_unknown");
+      expect(result.outcome.detail).toContain("keys: type");
+      const stored = operations.get(operation.id);
+      expect(stored?.state).toBe("submitted");
+      expect(stored?.lifecycle).toBeNull();
+      expect(stored?.settledAt).toBeNull();
+      expect(stored?.errorSummary).toBe(result.outcome.detail);
+    } finally {
+      client.close();
+    }
+  });
+});
 
 describe("operation.wait — timeout classification at the RPC boundary", () => {
   test("herdr's bounded-wait expiry reports a clean wait_timeout", async () => {

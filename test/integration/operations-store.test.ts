@@ -184,6 +184,31 @@ describe("OperationStore — durable dispatch operations", () => {
     ).toThrow(/invalid transition/i);
   });
 
+  test("recordWaitError updates only error_summary and updated_at", async () => {
+    const { operations } = fixture();
+    const operation = operations.create(dispatch);
+    operations.recordSubmission({
+      operationId: operation.id,
+      requestId: "shepy-1",
+      submittedAt: new Date(),
+    });
+    const before = operations.get(operation.id);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    const updated = operations.recordWaitError({
+      operationId: operation.id,
+      errorSummary: "unrecognized herdr wait response (keys: agent, type)",
+    });
+
+    expect(updated.errorSummary).toBe("unrecognized herdr wait response (keys: agent, type)");
+    expect(updated.updatedAt.getTime()).toBeGreaterThan(before?.updatedAt.getTime() ?? 0);
+    // The state machine is untouched: a later correlated wait can still settle.
+    expect(updated.state).toBe("submitted");
+    expect(updated.lifecycle).toBeNull();
+    expect(updated.settledAt).toBeNull();
+    expect(updated.transportRequestId).toBe("shepy-1");
+  });
+
   test("operations survive a restart (reopen the SQLite file)", () => {
     const { operations, path, sqlite } = fixture();
     const operation = operations.create(dispatch);

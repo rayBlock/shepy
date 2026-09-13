@@ -197,6 +197,23 @@ export class OperationStore {
     });
   }
 
+  /**
+   * A wait response that could not be read says nothing about the worker:
+   * record it on the operation without touching its state machine, so a
+   * later correlated wait can still settle it.
+   */
+  recordWaitError(input: { errorSummary: string; operationId: string }): OperationRecord {
+    return this.#transition(input.operationId, () => {
+      this.#sqlite
+        .prepare(
+          `update orchestration_operations
+             set error_summary = ?, updated_at = ?
+           where id = ?`,
+        )
+        .run(input.errorSummary, this.#now(), input.operationId);
+    });
+  }
+
   settle(input: {
     lifecycle: "blocked" | "failed" | "settled" | "target_lost";
     operationId: string;

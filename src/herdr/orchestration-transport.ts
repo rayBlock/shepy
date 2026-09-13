@@ -12,6 +12,8 @@ export type LifecycleEvent = {
   kind: LifecycleKind;
   operationId: string;
   target: HerdrTargetIdentity;
+  /** Only for transport_unknown: a bounded description of what was received. */
+  detail?: string;
 };
 
 export type SubmitPromptResult = {

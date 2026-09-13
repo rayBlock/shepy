@@ -14,6 +14,7 @@ export type WaitOutcome =
   | { kind: "blocked"; operationId: string }
   | { kind: "failed"; operationId: string }
   | { kind: "target_lost"; operationId: string }
+  | { kind: "transport_unknown"; operationId: string; detail: string }
   | { kind: "uncorrelated"; detail: string }
   | { kind: "already_terminal"; state: string }
   | { kind: "not_submitted" }
@@ -44,9 +45,17 @@ export class OperationWaitService {
       };
     }
 
-    const lifecycle = event.kind === "transport_unknown" ? ("failed" as const) : event.kind;
-    this.#operations.settle({ lifecycle, operationId, settledAt: new Date() });
-    return { kind: lifecycle, operationId };
+    if (event.kind === "transport_unknown") {
+      // An unreadable wait response says nothing about the worker: record the
+      // error on the operation without settling it, so a later `shepy wait`
+      // can still observe and settle the live operation.
+      const detail = event.detail ?? "unrecognized herdr wait response";
+      this.#operations.recordWaitError({ errorSummary: detail, operationId });
+      return { kind: "transport_unknown", operationId, detail };
+    }
+
+    this.#operations.settle({ lifecycle: event.kind, operationId, settledAt: new Date() });
+    return { kind: event.kind, operationId };
   }
 
   /**

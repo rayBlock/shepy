@@ -67,10 +67,12 @@ export class HerdrOrchestrationTransportAdapter implements HerdrOrchestrationTra
       }
       throw error;
     }
+    const outcome = lifecycleOutcome(receipt.result);
     return {
-      kind: lifecycleKind(receipt.result),
+      kind: outcome.kind,
       operationId,
       target,
+      ...(outcome.detail === undefined ? {} : { detail: outcome.detail }),
     };
   }
 }
@@ -91,20 +93,42 @@ function validateTarget(target: HerdrTargetIdentity): void {
   }
 }
 
-function lifecycleKind(value: unknown): LifecycleKind {
+const TRANSPORT_UNKNOWN_DETAIL_MAX = 300;
+
+function lifecycleOutcome(value: unknown): { detail?: string; kind: LifecycleKind } {
   const record = asRecord(value);
   const matched = asRecord(record?.matched);
+  // Herdr 0.8.x answers `agent wait` with the live agent at result.agent
+  // (agent_status there); the remaining keys are the older wait shapes.
   const raw =
+    agentStatus(record?.agent) ??
     stringValue(matched?.agent_status) ??
     stringValue(matched?.status) ??
     stringValue(record?.final_status) ??
     stringValue(record?.agent_status) ??
     stringValue(record?.status);
 
-  if (raw === "done" || raw === "idle") return "settled";
-  if (raw === "blocked") return "blocked";
-  if (raw === "failed") return "failed";
-  throw new Error("Herdr wait response did not contain a recognized lifecycle status");
+  if (raw === "done" || raw === "idle") return { kind: "settled" };
+  if (raw === "blocked") return { kind: "blocked" };
+  if (raw === "failed") return { kind: "failed" };
+  // Unreadable — including herdr's own agent_status "unknown" — says nothing
+  // about the worker, so it is reported, never mapped to a terminal kind.
+  return { detail: unrecognizedWaitDetail(value, raw), kind: "transport_unknown" };
+}
+
+function agentStatus(value: unknown): string | undefined {
+  return stringValue(asRecord(value)?.agent_status);
+}
+
+function unrecognizedWaitDetail(value: unknown, raw: string | undefined): string {
+  const record = asRecord(value);
+  const keys = record ? Object.keys(record).join(", ") : typeof value;
+  const base = `unrecognized herdr wait response (keys: ${keys}${
+    raw === undefined ? "" : `; status "${raw}"`
+  })`;
+  return base.length <= TRANSPORT_UNKNOWN_DETAIL_MAX
+    ? base
+    : `${base.slice(0, TRANSPORT_UNKNOWN_DETAIL_MAX - 1)}…`;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

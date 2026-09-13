@@ -14,6 +14,16 @@ const target: HerdrTargetIdentity = {
   workspaceId: "w1",
 };
 
+/**
+ * Verbatim Herdr 0.8.x `agent wait` response captured on a settled agent
+ * (RUN-20260913-05): the status lives at result.agent.agent_status. The
+ * socket client hands the adapter the stripped envelope result.
+ */
+const agentInfoWait = (agentStatus: string): unknown =>
+  JSON.parse(
+    `{"id":"cli:agent:wait","result":{"agent":{"agent":"pi","agent_session":{"agent":"pi","kind":"path","source":"herdr:pi","value":"…jsonl"},"agent_status":"${agentStatus}","cwd":"…","focused":false,"interactive_ready":true,"name":"builder-item5","pane_id":"w31:p13","revision":1,"state_change_seq":2329,"terminal_id":"term_65b5be8c884f8a6","workspace_id":"w31"},"type":"agent_info"}}`,
+  ).result;
+
 describe("HerdrOrchestrationTransportAdapter", () => {
   test("submits to the exact pane and returns Herdr's request id", async () => {
     const promptAgent = vi
@@ -81,7 +91,52 @@ describe("HerdrOrchestrationTransportAdapter", () => {
     );
   });
 
-  test("rejects an unrecognized wait result instead of inventing success", async () => {
+  test("reads the live Herdr 0.8.x agent_info shape (status at result.agent.agent_status)", async () => {
+    const adapter = new HerdrOrchestrationTransportAdapter({
+      promptAgent: vi.fn(),
+      waitForAgent: vi
+        .fn()
+        .mockResolvedValue({ requestId: "wait-1", result: agentInfoWait("done") }),
+    });
+
+    await expect(adapter.waitForLifecycle("op-1", target)).resolves.toMatchObject({
+      kind: "settled",
+      operationId: "op-1",
+      target,
+    });
+  });
+
+  test("reads blocked from the live agent_info shape", async () => {
+    const adapter = new HerdrOrchestrationTransportAdapter({
+      promptAgent: vi.fn(),
+      waitForAgent: vi
+        .fn()
+        .mockResolvedValue({ requestId: "wait-2", result: agentInfoWait("blocked") }),
+    });
+
+    await expect(adapter.waitForLifecycle("op-2", target)).resolves.toMatchObject({
+      kind: "blocked",
+      operationId: "op-2",
+      target,
+    });
+  });
+
+  test("treats herdr's own agent_status unknown as unrecognized, never settled", async () => {
+    const adapter = new HerdrOrchestrationTransportAdapter({
+      promptAgent: vi.fn(),
+      waitForAgent: vi
+        .fn()
+        .mockResolvedValue({ requestId: "wait-3", result: agentInfoWait("unknown") }),
+    });
+
+    await expect(adapter.waitForLifecycle("op-3", target)).resolves.toMatchObject({
+      kind: "transport_unknown",
+      operationId: "op-3",
+      target,
+    });
+  });
+
+  test("reports an unrecognized wait result as transport_unknown instead of throwing", async () => {
     const adapter = new HerdrOrchestrationTransportAdapter({
       promptAgent: vi.fn(),
       waitForAgent: vi
@@ -89,9 +144,30 @@ describe("HerdrOrchestrationTransportAdapter", () => {
         .mockResolvedValue({ requestId: "wait-1", result: { type: "wait_matched" } }),
     });
 
-    await expect(adapter.waitForLifecycle("op-1", target)).rejects.toThrow(
-      "recognized lifecycle status",
-    );
+    await expect(adapter.waitForLifecycle("op-1", target)).resolves.toEqual({
+      kind: "transport_unknown",
+      operationId: "op-1",
+      target,
+      detail: "unrecognized herdr wait response (keys: type)",
+    });
+  });
+
+  test("the transport_unknown detail names top-level keys and never the payload", async () => {
+    const adapter = new HerdrOrchestrationTransportAdapter({
+      promptAgent: vi.fn(),
+      waitForAgent: vi.fn().mockResolvedValue({
+        requestId: "wait-1",
+        result: { type: "wait_matched", payload: { secret: "x".repeat(400) } },
+      }),
+    });
+
+    const event = await adapter.waitForLifecycle("op-1", target);
+    const detail = event.detail ?? "";
+    expect(event.kind).toBe("transport_unknown");
+    expect(detail).toContain("type");
+    expect(detail).toContain("payload");
+    expect(detail).not.toContain("secret");
+    expect(detail.length).toBeLessThanOrEqual(300);
   });
 
   // Only herdr's own bounded-wait expiry (its `timeout` error response) may
