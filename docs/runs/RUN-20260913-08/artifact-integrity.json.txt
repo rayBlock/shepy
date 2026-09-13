@@ -1,0 +1,246 @@
+{
+  "sealedAt": "2026-09-13T18:36:44.290Z",
+  "scope": "One rehearsal; raw .txt files remain byte exact; this manifest excludes itself",
+  "files": [
+    {
+      "path": "docs/runs/RUN-20260913-08-continuity-rehearsal.md",
+      "sha256": "9cf3c25da47205948f1c3e6fc876812bf7ae36943d2c55beb6e8747b41e0129d"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/compact-identity-before.json.txt",
+      "sha256": "dace73fa6a5b481e8fee0125cc04414065696f1bfaca44c40b2ff6a92d95bc02"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/checker-result.json.txt",
+      "sha256": "7164e5f897b712df7028cda2bce40b8ca47e4b7fb1538b50d3ed83a2b19dbd17"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/progress-2-response.json.txt",
+      "sha256": "020fe540a06ca781944555750c20d67d7568b1a7e8260e25e5dd50d50a84e3b5"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/mapping-and-audit.md.txt",
+      "sha256": "089128dabb8c0d2159730036b7dc5a908d1a8ff2787dc6f13c8e484ac8d8e76c"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/compact-operation.json.txt",
+      "sha256": "88914234a54e3c8d996ab72b1049b2d798f5492f1c6770b091420c1c8192f624"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/mc02-score.ts.txt",
+      "sha256": "0857c5b58dc799e4ae6b0ae7d252da78caebc429be9bf92d25c34fab09801865"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/input-manifest.json.txt",
+      "sha256": "98900b2a4aa18e1a7c368d68863ef47b51213ab55cfeffeb4917b9a3f8291024"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/identity-before-retirement.json.txt",
+      "sha256": "a2565ddddf6b4b024bf540cd5aca187a8144d722bba5a4982530a126bf1ed4ec"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/operator-truth.json.txt",
+      "sha256": "cc6646e8cb88df25f0eeb24b233fddac34ec4fc8fa6553b1e89b2ca0fe4be96f"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/progress-3-identity-before.json.txt",
+      "sha256": "0ba685cb654f3da212b65436e77137121bf1e16fc9bb153b55d2ba6207cede78"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/runtime-evidence.json.txt",
+      "sha256": "913c04a30053c8c50ca8458b4c87d69beacaf94f8fb4055638545c61cf37e879"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/progress-3.prompt.txt",
+      "sha256": "61ef7c3b5004032e5988677b19bc311a7385302fa49522d565d9ccc93dc6a053"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/baseline.prompt.txt",
+      "sha256": "5d54838508f53dd2310b1566362bc1656ab33145ba25d208527087d6e9b50374"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/first-resume-response.md.txt",
+      "sha256": "9791df8f57f49192d17d9cc5414a7af6bae13a6f9e82372ebe09547eac8151eb"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/progress-3-response.json.txt",
+      "sha256": "4e0db08c7acb4c8e0d51d4ce551767d1c3fbe0234868c7b643a83e22423b0644"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/progress-2-identity-before.json.txt",
+      "sha256": "859892b1c3efea587742c048e2c19b848e27bf85bc34fa061b1fd70e27c9767d"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/compact-reconcile-identity.json.txt",
+      "sha256": "dace73fa6a5b481e8fee0125cc04414065696f1bfaca44c40b2ff6a92d95bc02"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/session-after-compact.jsonl.txt",
+      "sha256": "9fe6380c3c8f584bc22ec7c252e36386b9ef14641ce366207f1910aa7fdbb593"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/progress-2-operation.json.txt",
+      "sha256": "5f42f382aee8016920fc9be127e0dfb5f763530f49b1bc1356638a8daffff324"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/session-compact-reconcile.jsonl.txt",
+      "sha256": "25e29597c1092fee33767048a79f30c7e2a56749c6549525f16d0a1dbf6ce37e"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/session-after-resume.jsonl.txt",
+      "sha256": "c9646928eee01b8212d8be3847a6a77da883ade5f83f6f633b2ade033e241d9d"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/resume-identity-before.json.txt",
+      "sha256": "dace73fa6a5b481e8fee0125cc04414065696f1bfaca44c40b2ff6a92d95bc02"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/progress-1-operation.json.txt",
+      "sha256": "1e54d31f3f28b5ef297f66727425a60f4234025072b842c24149b466faabc024"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/compact.prompt.txt",
+      "sha256": "2c67173815b80d7452e9c4c200a458640ace2e53b7873e86da1dc3d242cb8b85"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/preserved-before-retirement.json.txt",
+      "sha256": "1812c51d1082eb20f8408c5c38b27da8368b3c60bc0fe33746b07dd3e6edce1d"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/progress-1-response.json.txt",
+      "sha256": "7e371597de3cd54b819fefb0626b3f305b2e86edf20f0e6732f3af9c091ff2b7"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/progress-1.prompt.txt",
+      "sha256": "9b05f436b0de0ce1814e86555245f659836317ab39a79b1549fab4b9a67e6108"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/launch-output.json.txt",
+      "sha256": "edaa47ec481d3af2093b79c0f7a919f88866ba4e46b339626ff580e30b43b596"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/checkpoint.md.txt",
+      "sha256": "dbde2a0e85e0e1490813456bea991a4495605b94e2d7efd82fcde4e7d6ec9443"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/session-after-baseline.jsonl.txt",
+      "sha256": "8035eaa74df308c73dfb24bd05ca60de818fe3e224ba017f83ddc228f49cb0e0"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/identity-start.json.txt",
+      "sha256": "4c401435593c29cc4f9133a3a7a11fbde16fdedaa7f38b8f016e4f2bc64eef3c"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/baseline-operation.json.txt",
+      "sha256": "665e2bfc99c1896600c793eddaa3cb40b9f238f4642a8e4505a3c7e3fc495032"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/mc02-start-subject.ts.txt",
+      "sha256": "c642369b3b19c6b0394e423affaa7dd9705d1a886252f8ab1c702c71f5bc79c8"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/resume-response.json.txt",
+      "sha256": "c55b32501b73ffa748a2d8cfc1e8994a35749de7d1387e28d8db02c122bcfe5f"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/measurements.json.txt",
+      "sha256": "c844528d0953d1b1f9c1fe446d7e523cad2fd77df56e057a8065e8b7c1778b48"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/progress-2.prompt.txt",
+      "sha256": "7f55d38d7082a097e1c462d9677c57dfe6d92c00e69edae0593247dc02c1b181"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/boundary-proof.json.txt",
+      "sha256": "67761ce2290eaccc704d5fa2f1f978bb8380ae72b45f5e35358c9549de9073eb"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/baseline-response.json.txt",
+      "sha256": "a823397e7bf59a45f4e72a81899da396745a4d2da86ed1b6bc4d589cd60992f3"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/launch-stderr.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/progress-3-operation.json.txt",
+      "sha256": "4722257c158799d9194818f31ae5d6fede7db639832813f6f29cc6624d1ebd1a"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/resume.prompt.txt",
+      "sha256": "c5a7758dd7a28c775d98add7b89edea6f1e39443dfd939d5e59c977562704919"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/mc02-dispatch.ts.txt",
+      "sha256": "f4941875ad1c8c535d53b59ee8aaec4ad349f180eb0f0a75d6645f031ba22eca"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/operator-envelope.json.txt",
+      "sha256": "a2c24f2012f41327e7954fea26436011b51c438a07c77bae4375a094061bbfa1"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/baseline-identity-before.json.txt",
+      "sha256": "4c401435593c29cc4f9133a3a7a11fbde16fdedaa7f38b8f016e4f2bc64eef3c"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/registration.json.txt",
+      "sha256": "76e0a3d38ec8f7b1b779eabcc7f43fb949c048f38e0882c38bd78212199955f9"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/resume-operation.json.txt",
+      "sha256": "98bb0def69d4acef16115d4e2c281ee29e608ed17bf7cb69f00c00d72e9050c3"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/retirement.json.txt",
+      "sha256": "8e7beb8a4480db0a124462d56e6f7a6293bc39ef1c4ecca4b262916d8d050a24"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/compact-reconcile-pane.txt",
+      "sha256": "b3bbf24f66052c057c1a6c768c54664d24ef6fdfe7d088a6f31372401ab6e381"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/compact-response.json.txt",
+      "sha256": "95fd6077d9168fd14e6da74df24df2ebfd1e62f1c9c3e02bed9e56ddddcb6fca"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/process-before-compact.json.txt",
+      "sha256": "008f1ee29eab23bc904d26de5f7f22be947a3465ced60bb36025cc59d0afa76c"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/session-before-compact.jsonl.txt",
+      "sha256": "9fe6380c3c8f584bc22ec7c252e36386b9ef14641ce366207f1910aa7fdbb593"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/execution-authorization.md.txt",
+      "sha256": "5e8da5cb1fc1d401f6474b1e2318aa184f0b2de9e68ec088957410dc857eb05e"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/actual-process-argv.txt",
+      "sha256": "d2d0f769c759e8ba9cd63c6401346c9933b0fb2ba9e5bca1594a6aa5db884c76"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/mc02-register-rehearsal.ts.txt",
+      "sha256": "7cb4ac564187b452072318e381fb4c893672bae376ea9e0a97bb7602e0cec672"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/mc02-inputs.ts.txt",
+      "sha256": "83f540354595f0174b2e8bf16fd2e625da1b825e59431f6c8565186357ae06c2"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/process-start.json.txt",
+      "sha256": "008f1ee29eab23bc904d26de5f7f22be947a3465ced60bb36025cc59d0afa76c"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/final-pane.txt",
+      "sha256": "6bc40b903c6fe07047e9c74afbbd02086b0004124f0e3678bbee7826ac10e5bd"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/progress-1-identity-before.json.txt",
+      "sha256": "b366df98fed4cbe5e55dbe53fd09d2ae87c1ac3adb5913d7f70b0cf37d257c4b"
+    },
+    {
+      "path": "docs/runs/RUN-20260913-08/launch.json.txt",
+      "sha256": "cd85986b2ff8b0e62d8b0c4caa22b28f96fb69f949e0a76005a12e1863705b41"
+    }
+  ]
+}

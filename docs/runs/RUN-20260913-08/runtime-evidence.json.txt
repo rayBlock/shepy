@@ -1,0 +1,56 @@
+{
+  "recordedAt": "2026-09-13T18:36:44.262Z",
+  "phase": "Post-run preservation/corroboration of earlier CLI/source observations; no model request",
+  "version": "0.84.3",
+  "model": {
+    "provider": "zai",
+    "id": "glm-5.3-flash",
+    "baseUrl": "https://api.z.ai/api/coding/paas/v4",
+    "api": "openai-completions",
+    "contextWindow": 1000000,
+    "maxTokens": 131072
+  },
+  "authConfigured": true,
+  "sdkSubscriptionClassification": false,
+  "secrets": "not exported; no credential changes",
+  "toolAllowlist": [
+    "read"
+  ],
+  "activeRegistryExport": false,
+  "capabilityEvidence": [
+    "launch-output.json.txt: executed --tools read and no-resource flags",
+    "actual-process-argv.txt: actual PID argv",
+    "dist/main.js: options.tools=[...parsed.tools]",
+    "dist/core/sdk.js: allowedToolNames=options.tools",
+    "dist/core/agent-session.js: _allowedToolNames filters registry and active list",
+    "baseline-response.json.txt: subject reports sole read tool",
+    "resume-response.json.txt: sole attempted tool is read on approved checkpoint"
+  ],
+  "nativeCompactionModelSource": "agent-session.js compact(): _getSummarizationRequestAuth(this.model); no extension summary, fromHook=false",
+  "sources": [
+    {
+      "path": "/Users/ray/.bun/install/global/node_modules/@earendil-works/pi-coding-agent/dist/main.js",
+      "sha256": "4b9b50c918dfd7b889c6fb781982d74808cd633e3fe99c641fb1943f6de8fdc5"
+    },
+    {
+      "path": "/Users/ray/.bun/install/global/node_modules/@earendil-works/pi-coding-agent/dist/core/sdk.js",
+      "sha256": "6969bd56ba8e1628cd033bb15cb15fe38299f00b5ad84f4f8ef37a33a98681c9"
+    },
+    {
+      "path": "/Users/ray/.bun/install/global/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.js",
+      "sha256": "ddf11c2792ea647174dfd271ccd692f135740b96777e14db230f06de02b282e7"
+    },
+    {
+      "path": "/Users/ray/.bun/install/global/node_modules/@earendil-works/pi-coding-agent/dist/core/resource-loader.js",
+      "sha256": "8e8a1bc1c5bc9e955f6a2314dd1db02071be56d48b1fea7b8b2cacb4fc9a0628"
+    },
+    {
+      "path": "/Users/ray/.bun/install/global/node_modules/@earendil-works/pi-coding-agent/dist/core/compaction/compaction.js",
+      "sha256": "4b3f965fbbe1a16f5f7ec80620fe30f5831b1925780458a7edabe062d85b1951"
+    },
+    {
+      "path": "/Users/ray/.bun/install/global/node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.js",
+      "sha256": "433097aefa47520f256f19b7b6ec2c954ef73b8024cc30507ba45a8931460fe5"
+    }
+  ]
+}

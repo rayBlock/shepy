@@ -1,0 +1,55 @@
+ Synthetic observation: the neutral sample tile was measured, its label was legible,
+ and its recorded shape stayed unchanged. No authority changed.
+ Synthetic observation: the neutral sample tile was measured, its label was legible,
+ and its recorded shape stayed unchanged. No authority changed.
+ Synthetic observation: the neutral sample tile was measured, its label was legible,
+ and its recorded shape stayed unchanged. No authority changed.
+ Synthetic observation: the neutral sample tile was measured, its label was legible,
+ and its recorded shape stayed unchanged. No authority changed.
+ Synthetic observation: the neutral sample tile was measured, its label was legible,
+ and its recorded shape stayed unchanged. No authority changed.
+ Synthetic observation: the neutral sample tile was measured, its label was legible,
+ and its recorded shape stayed unchanged. No authority changed.
+ Synthetic observation: the neutral sample tile was measured, its label was legible,
+ and its recorded shape stayed unchanged. No authority changed.
+ Synthetic observation: the neutral sample tile was measured, its label was legible,
+ and its recorded shape stayed unchanged. No authority changed.
+ Synthetic observation: the neutral sample tile was measured, its label was legible,
+ and its recorded shape stayed unchanged. No authority changed.
+ Synthetic observation: the neutral sample tile was measured, its label was legible,
+ and its recorded shape stayed unchanged. No authority changed.
+ Synthetic observation: the neutral sample tile was measured, its label was legible,
+ and its recorded shape stayed unchanged. No authority changed.
+ Synthetic observation: the neutral sample tile was measured, its label was legible,
+ and its recorded shape stayed unchanged. No authority changed.
+ Synthetic observation: the neutral sample tile was measured, its label was legible,
+ and its recorded shape stayed unchanged. No authority changed.
+ Synthetic observation: the neutral sample tile was measured, its label was legible,
+ and its recorded shape stayed unchanged. No authority changed.
+ Synthetic observation: the neutral sample tile was measured, its label was legible,
+ and its recorded shape stayed unchanged. No authority changed.
+ Synthetic observation: the neutral sample tile was measured, its label was legible,
+ and its recorded shape stayed unchanged. No authority changed.
+ Synthetic observation: the neutral sample tile was measured, its label was legible,
+ and its recorded shape stayed unchanged. No authority changed.
+ Synthetic observation: the neutral sample tile was measured, its label was legible,
+ and its recorded shape stayed unchanged. No authority changed.
+ Synthetic observation: the neutral sample tile was measured, its label was legible,
+ and its recorded shape stayed unchanged. No authority changed.
+
+
+ Final ledger, ≤10 words.
+
+ Receipt acknowledged: ledger 3/3 complete; inert observations; holding.
+
+
+ [compaction]
+
+ Compacted from 18,635 tokens (ctrl+o to expand)
+
+
+──────────────────────────────────────────────────────────────────────────────────────
+
+──────────────────────────────────────────────────────────────────────────────────────
+/private/tmp/RUN-20260913-08-synthetic
+↑21k ↓1.8k R20k CH68.8% $0.002 ?/1.0M (auto)                      glm-5.3-flash • high

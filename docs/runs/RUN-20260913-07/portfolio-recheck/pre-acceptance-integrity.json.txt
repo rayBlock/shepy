@@ -1,5 +1,5 @@
 {
-  "sealedAt": "2026-09-13T18:36:44.310Z",
+  "sealedAt": "2026-09-13T17:51:43.448Z",
   "status": "owned docs packaging authorized through normal hooks; no MC02 execution",
   "sourceCandidate": "481c56c",
   "checkerCandidateSha256": "a0f8cf92bea093cb042f263e745920db819d3695c64e80da7d23360826b2f94f",
@@ -14,7 +14,7 @@
       "path": "RUN-20260913-07-continuity-prep.md",
       "raw": "RUN-20260913-07/raw/pre-hook/RUN-20260913-07-continuity-prep.md.txt",
       "originalSha256": "7ab6880b5d51a3305f20638fdddae430a6fafefd573171c75203654c3188a475",
-      "currentSha256": "f80c79485ae12c2e7fb5c8f902ababa2a9a05d3c50fa992d35eac22f58196cd7"
+      "currentSha256": "a54fe9f610fa4e7b3bdd5d5e9392856e6516749fe514b3407d3580f24e67d63a"
     },
     {
       "path": "RUN-20260913-07/validation-receipt.json",
@@ -110,7 +110,7 @@
   "files": [
     {
       "path": "RUN-20260913-07-continuity-prep.md",
-      "sha256": "f80c79485ae12c2e7fb5c8f902ababa2a9a05d3c50fa992d35eac22f58196cd7"
+      "sha256": "a54fe9f610fa4e7b3bdd5d5e9392856e6516749fe514b3407d3580f24e67d63a"
     },
     {
       "path": "RUN-20260913-07/validation-receipt.json",
@@ -123,34 +123,6 @@
     {
       "path": "RUN-20260913-07/checker-results-01.json",
       "sha256": "13faffede82dc8e6be11aa6e7210482b943269a1619f57cc11d489a52f5fb702"
-    },
-    {
-      "path": "RUN-20260913-07/portfolio-recheck/pre-acceptance-integrity.json.txt",
-      "sha256": "5cdf62ada6d4d120131a79c9b1968a7c7989e094b29ea927774215f3ae2daa04"
-    },
-    {
-      "path": "RUN-20260913-07/portfolio-recheck/checker.ts.txt",
-      "sha256": "a0f8cf92bea093cb042f263e745920db819d3695c64e80da7d23360826b2f94f"
-    },
-    {
-      "path": "RUN-20260913-07/portfolio-recheck/probes.ts.txt",
-      "sha256": "d6dce8c56e5a23d10f0221d341e0087544cb5a3e2cc0484e49acc6e40f3ae52e"
-    },
-    {
-      "path": "RUN-20260913-07/portfolio-recheck/archive.json.txt",
-      "sha256": "2861f00460452db53d9b973ead98d477905343a19d1e87f6e5f3c426c2e5196f"
-    },
-    {
-      "path": "RUN-20260913-07/portfolio-recheck/results.json.txt",
-      "sha256": "88562af57e86a2cc77aff6ad2e043799cbe624834649075b70dc5aa65aa5a869"
-    },
-    {
-      "path": "RUN-20260913-07/portfolio-recheck/pre-acceptance-record.md.txt",
-      "sha256": "a54fe9f610fa4e7b3bdd5d5e9392856e6516749fe514b3407d3580f24e67d63a"
-    },
-    {
-      "path": "RUN-20260913-07/portfolio-recheck/candidate.json.txt",
-      "sha256": "85d810a6ed59822d2b4a3ab2278a22d7b20c3591e3887bb3d8725d7009b26711"
     },
     {
       "path": "RUN-20260913-07/checker.ts.txt",

@@ -1,0 +1,35 @@
+{
+  "at": "2026-09-13T18:17:08.628Z",
+  "checkpointEstimatedTokens": 592,
+  "estimator": "UTF-8 bytes / 4 rounded up; not tokenizer/billing",
+  "suppliedPromptBytes": 93915,
+  "progressMessages": 3,
+  "files": [
+    {
+      "path": "baseline.prompt.txt",
+      "bytes": 2660,
+      "sha256": "5d54838508f53dd2310b1566362bc1656ab33145ba25d208527087d6e9b50374"
+    },
+    {
+      "path": "progress-1.prompt.txt",
+      "bytes": 30051,
+      "sha256": "9b05f436b0de0ce1814e86555245f659836317ab39a79b1549fab4b9a67e6108"
+    },
+    {
+      "path": "progress-2.prompt.txt",
+      "bytes": 30051,
+      "sha256": "7f55d38d7082a097e1c462d9677c57dfe6d92c00e69edae0593247dc02c1b181"
+    },
+    {
+      "path": "progress-3.prompt.txt",
+      "bytes": 30051,
+      "sha256": "61ef7c3b5004032e5988677b19bc311a7385302fa49522d565d9ccc93dc6a053"
+    },
+    {
+      "path": "resume.prompt.txt",
+      "bytes": 1102,
+      "sha256": "c5a7758dd7a28c775d98add7b89edea6f1e39443dfd939d5e59c977562704919"
+    }
+  ],
+  "checkpointSha256": "dbde2a0e85e0e1490813456bea991a4495605b94e2d7efd82fcde4e7d6ec9443"
+}

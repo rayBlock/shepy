@@ -1,0 +1,70 @@
+{
+  "at": "2026-09-13T18:20:13.129Z",
+  "name": "progress-3",
+  "path": "/tmp/RUN-20260913-08-synthetic/sessions/2026-09-13T18-17-43-285Z_d82f5278-03c2-42ab-86e6-405affc87122.jsonl",
+  "sessionId": "d82f5278-03c2-42ab-86e6-405affc87122",
+  "ordinaryCalls": 4,
+  "compactions": 0,
+  "lastReportedPrompt": 18611,
+  "liveWindow": null,
+  "modelChanges": [
+    {
+      "type": "model_change",
+      "id": "92841f8f",
+      "parentId": null,
+      "timestamp": "2026-09-13T18:17:43.326Z",
+      "provider": "zai",
+      "modelId": "glm-5.3-flash"
+    },
+    {
+      "type": "thinking_level_change",
+      "id": "64327402",
+      "parentId": "92841f8f",
+      "timestamp": "2026-09-13T18:17:43.326Z",
+      "thinkingLevel": "high"
+    }
+  ],
+  "tools": [],
+  "lastMessage": {
+    "type": "message",
+    "id": "ed328fb0",
+    "parentId": "6416021b",
+    "timestamp": "2026-09-13T18:20:12.633Z",
+    "message": {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "Final ledger, ≤10 words.",
+          "thinkingSignature": "reasoning_content"
+        },
+        {
+          "type": "text",
+          "text": "Receipt acknowledged: ledger 3/3 complete; inert observations; holding."
+        }
+      ],
+      "api": "openai-completions",
+      "provider": "zai",
+      "model": "glm-5.3-flash",
+      "usage": {
+        "input": 5811,
+        "output": 24,
+        "cacheRead": 12800,
+        "cacheWrite": 0,
+        "reasoning": 7,
+        "totalTokens": 18635,
+        "cost": {
+          "input": 0.000435825,
+          "output": 0.000006,
+          "cacheRead": 0.00019199999999999998,
+          "cacheWrite": 0,
+          "total": 0.000633825
+        }
+      },
+      "stopReason": "stop",
+      "timestamp": 1789323608035,
+      "responseId": "20260914022008a93ebfb9186d4abc",
+      "rawStopReason": "stop"
+    }
+  }
+}

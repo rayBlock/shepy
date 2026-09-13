@@ -1,0 +1,183 @@
+{
+  "recordedAt": "2026-09-13T18:28:21.739Z",
+  "ordinaryCalls": 6,
+  "nativeCompactions": 1,
+  "summarizerUsage": {
+    "input": 1198,
+    "output": 1348,
+    "cacheRead": 64,
+    "cacheWrite": 0,
+    "reasoning": 639,
+    "totalTokens": 2610,
+    "cost": {
+      "input": 0.00008985,
+      "output": 0.000337,
+      "cacheRead": 9.6e-7,
+      "cacheWrite": 0,
+      "total": 0.00042781
+    }
+  },
+  "ordinary": [
+    {
+      "entryId": "95ab57e7",
+      "at": "2026-09-13T18:19:34.034Z",
+      "provider": "zai",
+      "model": "glm-5.3-flash",
+      "usage": {
+        "input": 1022,
+        "output": 340,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 114,
+        "totalTokens": 1362,
+        "cost": {
+          "input": 0.00007664999999999999,
+          "output": 0.00008499999999999999,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.00016165
+        }
+      },
+      "stopReason": "stop"
+    },
+    {
+      "entryId": "8bdd31e4",
+      "at": "2026-09-13T18:20:01.258Z",
+      "provider": "zai",
+      "model": "glm-5.3-flash",
+      "usage": {
+        "input": 6903,
+        "output": 22,
+        "cacheRead": 192,
+        "cacheWrite": 0,
+        "reasoning": 8,
+        "totalTokens": 7117,
+        "cost": {
+          "input": 0.000517725,
+          "output": 0.0000055,
+          "cacheRead": 0.0000028799999999999995,
+          "cacheWrite": 0,
+          "total": 0.000526105
+        }
+      },
+      "stopReason": "stop"
+    },
+    {
+      "entryId": "36c3b5b7",
+      "at": "2026-09-13T18:20:06.965Z",
+      "provider": "zai",
+      "model": "glm-5.3-flash",
+      "usage": {
+        "input": 5810,
+        "output": 28,
+        "cacheRead": 7040,
+        "cacheWrite": 0,
+        "reasoning": 11,
+        "totalTokens": 12878,
+        "cost": {
+          "input": 0.00043575,
+          "output": 0.000007,
+          "cacheRead": 0.00010559999999999999,
+          "cacheWrite": 0,
+          "total": 0.00054835
+        }
+      },
+      "stopReason": "stop"
+    },
+    {
+      "entryId": "ed328fb0",
+      "at": "2026-09-13T18:20:12.633Z",
+      "provider": "zai",
+      "model": "glm-5.3-flash",
+      "usage": {
+        "input": 5811,
+        "output": 24,
+        "cacheRead": 12800,
+        "cacheWrite": 0,
+        "reasoning": 7,
+        "totalTokens": 18635,
+        "cost": {
+          "input": 0.000435825,
+          "output": 0.000006,
+          "cacheRead": 0.00019199999999999998,
+          "cacheWrite": 0,
+          "total": 0.000633825
+        }
+      },
+      "stopReason": "stop"
+    },
+    {
+      "entryId": "8cad5f8f",
+      "at": "2026-09-13T18:22:48.881Z",
+      "provider": "zai",
+      "model": "glm-5.3-flash",
+      "usage": {
+        "input": 18602,
+        "output": 64,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 38,
+        "totalTokens": 18666,
+        "cost": {
+          "input": 0.00139515,
+          "output": 0.000016,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.00141115
+        }
+      },
+      "stopReason": "toolUse"
+    },
+    {
+      "entryId": "c5c91b0c",
+      "at": "2026-09-13T18:23:13.879Z",
+      "provider": "zai",
+      "model": "glm-5.3-flash",
+      "usage": {
+        "input": 18937,
+        "output": 937,
+        "cacheRead": 320,
+        "cacheWrite": 0,
+        "reasoning": 153,
+        "totalTokens": 20194,
+        "cost": {
+          "input": 0.001420275,
+          "output": 0.00023425,
+          "cacheRead": 0.0000048,
+          "cacheWrite": 0,
+          "total": 0.001659325
+        }
+      },
+      "stopReason": "stop"
+    }
+  ],
+  "ordinaryTotals": {
+    "input": 57085,
+    "output": 1415,
+    "cacheRead": 20352,
+    "cacheWrite": 0,
+    "totalTokens": 78852,
+    "configuredCatalogCost": 0.004940404999999999
+  },
+  "peakLastReportedPrompt": 19257,
+  "liveWindow": null,
+  "contextCapacityMetadata": 1000000,
+  "subjectStart": "2026-09-13T18:17:43.127Z",
+  "preservedBeforeRetirement": "2026-09-13T18:25:12.045Z",
+  "subjectSecondsUntilPreservation": 448.918,
+  "boundaryAt": "2026-09-13T18:21:22.865Z",
+  "manualResumeDeliveredAt": "2026-09-13T18:22:45.008Z",
+  "firstPostBoundaryAssistantAt": "2026-09-13T18:22:48.881Z",
+  "finalDecisionAt": "2026-09-13T18:23:13.879Z",
+  "boundaryToDurableFinalDecisionMs": 111014,
+  "manualResumeToDurableFinalDecisionMs": 28871,
+  "safeResumeLatencyMs": null,
+  "automaticNotice": "NOT RUN",
+  "actualBilledCost": null,
+  "subscriptionQuotaDelta": null,
+  "subscriptionConsumption": "6 ordinary requests plus one reported native summarizer request; usage recorded, no billing/quota API sampled; catalog costs are not billed charges",
+  "hiddenProviderRetryCount": null,
+  "unsafeToolAttempts": 0,
+  "allowedReadAttempts": 1,
+  "descendants": 0
+}

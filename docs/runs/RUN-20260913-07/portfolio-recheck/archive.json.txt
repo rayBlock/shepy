@@ -1,0 +1,25 @@
+{
+  "at": "2026-09-13T18:12:44.821Z",
+  "files": [
+    {
+      "source": "/tmp/portfolio-mc02-recheck-f956c90/checker.ts",
+      "archived": "checker.ts.txt",
+      "sha256": "a0f8cf92bea093cb042f263e745920db819d3695c64e80da7d23360826b2f94f"
+    },
+    {
+      "source": "/tmp/portfolio-mc02-recheck-f956c90/probes.ts",
+      "archived": "probes.ts.txt",
+      "sha256": "d6dce8c56e5a23d10f0221d341e0087544cb5a3e2cc0484e49acc6e40f3ae52e"
+    },
+    {
+      "source": "/tmp/portfolio-mc02-recheck-f956c90/candidate.json",
+      "archived": "candidate.json.txt",
+      "sha256": "85d810a6ed59822d2b4a3ab2278a22d7b20c3591e3887bb3d8725d7009b26711"
+    },
+    {
+      "source": "/tmp/portfolio-mc02-recheck-f956c90/results.json",
+      "archived": "results.json.txt",
+      "sha256": "88562af57e86a2cc77aff6ad2e043799cbe624834649075b70dc5aa65aa5a869"
+    }
+  ]
+}

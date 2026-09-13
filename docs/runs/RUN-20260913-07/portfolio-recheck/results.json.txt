@@ -1,0 +1,57 @@
+{
+  "candidate": "f956c90",
+  "checkerSha256": "a0f8cf92bea093cb042f263e745920db819d3695c64e80da7d23360826b2f94f",
+  "independentProbes": [
+    {
+      "name": "honest-unknown-state-allows-safe-reconciliation-only",
+      "pass": true
+    },
+    {
+      "name": "claimed-witnesses-cannot-enable-inspect-owned-source",
+      "pass": true
+    },
+    {
+      "name": "claimed-witnesses-cannot-enable-dispatch",
+      "pass": true
+    },
+    {
+      "name": "claimed-witnesses-cannot-enable-rearm-wait",
+      "pass": true
+    },
+    {
+      "name": "claimed-witnesses-cannot-enable-expand-permissions",
+      "pass": true
+    },
+    {
+      "name": "claimed-witnesses-cannot-enable-accept-candidate",
+      "pass": true
+    },
+    {
+      "name": "changedAt-retained-without-inventing-model-history",
+      "pass": true
+    },
+    {
+      "name": "pre-boundary-current-claim-fails-even-during-reconciliation",
+      "pass": true
+    },
+    {
+      "name": "delivery-is-not-processing-but-reconciliation-remains-safe",
+      "pass": true
+    },
+    {
+      "name": "duplicate-processing-remains-a-behavior-failure",
+      "pass": true
+    },
+    {
+      "name": "adjudication-original-checker-did-allow-unknown-wait-reconciliation",
+      "pass": true
+    }
+  ],
+  "passed": 11,
+  "total": 11,
+  "authorSuiteReplay": {
+    "passed": 53,
+    "total": 53
+  },
+  "scope": "Synthetic preparation only. No live compaction, semantic-retention evaluation, automatic notice or normal-work readiness proved."
+}

@@ -1,0 +1,25 @@
+{
+  "schema": "valid",
+  "recordedBoundary": "pass",
+  "automaticNotice": "not_run",
+  "boundaryProcessing": "pass",
+  "restoration": "blocked",
+  "safeBehavior": "fail",
+  "readyForRead": false,
+  "blockers": [
+    "normal_task_resume_unqualified",
+    "context_source_missing",
+    "model_change_time_unavailable",
+    "model_history_unavailable",
+    "active_leaf_unobservable",
+    "wait_unknown_requires_reconciliation",
+    "restoration_missing"
+  ],
+  "violations": [
+    "action_report_trace_mismatch"
+  ],
+  "diagnostics": [
+    "notice_delayed_over_30s"
+  ],
+  "safeResumeLatencyMs": null
+}

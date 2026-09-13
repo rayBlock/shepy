@@ -2,13 +2,13 @@
 
 ## Live
 
-- state: PREPARATION ACCEPTED by portfolio at candidate `f956c90`, reconciliation-only scope. Rehearsal has separate PORTFOLIO-MC02-REHEARSAL authority and a new owning run; no normal readiness or automatic-notice qualification.
+- state: CORRECTION READY FOR TARGETED RECHECK after Fable REVISE; reconciliation-only scope. MC02 execution NOT authorized
 - lead: Astra/Pi `w31:pS`, session `01a099f9-8c24-71e9-83ea-a82432e55d06`; temporary continuity-prep ownership only
 - workers: none; optional Flash child declined because this bounded source/contract task needs no extra dispatch
 - worktrees: none; clean Shepy checkout at `778549b` inspected before registration; writes restricted to this record and `docs/runs/RUN-20260913-07/`
 - waits armed by this lead: none; portfolio's parent wait/subscriptions remain portfolio-owned
-- next safe action: prep is closed. Portfolio independently replayed 53/53 and passed 11/11 probes; exact sources/results are archived in `RUN-20260913-07/portfolio-recheck/`. Results SHA `88562af57e86a2cc77aff6ad2e043799cbe624834649075b70dc5aa65aa5a869`, probe SHA `d6dce8c56e5a23d10f0221d341e0087544cb5a3e2cc0484e49acc6e40f3ae52e`. Root reproduced the justified unknown-wait/reconciliation disagreement. Earlier review and correction evidence are unchanged.
-- acceptance closure recorded: 2026-09-13; independent portfolio recheck archived before registering [RUN-08 rehearsal](RUN-20260913-08-continuity-rehearsal.md). Correction was frozen 17:49:36Z; source/tests completed 17:45:19Z and post-hook integrity verified 17:53:20Z. File creation metadata records registration at 16:49:14.446Z; first instrumented inspection 16:48:08Z. Conservative deadline 17:43:58Z from portfolio's pre-dispatch checkpoint; within the 60-minute envelope.
+- next safe action: package the frozen correction through normal hooks and return to portfolio for targeted recheck. Correction began 17:34:21Z; final source/tests checked at 17:45:19Z, hashes at 17:46:20Z. Code/source pass ends by 17:54:21Z, packaging by 17:59:21Z if needed. No child, live helper, wait, compaction or shared source/config change.
+- updated: 2026-09-13T17:49:36Z (correction frozen for targeted recheck; source/tests completed 17:45:19Z. Original normal-hook packaging was inspected 17:30:49Z). File creation metadata records registration at 16:49:14.446Z; first instrumented inspection 16:48:08Z. Conservative deadline 17:43:58Z from portfolio's pre-dispatch checkpoint; within the 60-minute envelope.
 
 ## Authority, scope and sources
 

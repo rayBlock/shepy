@@ -1,0 +1,166 @@
+{
+  "truth": {
+    "checkpointRef": "/tmp/RUN-20260913-08-synthetic/checkpoint.md",
+    "checkpointDigest": "e887cf577755e97e3a38c07b6fbc8c10c4edbdbfd962a1d7945c33a2adeba582",
+    "contract": {
+      "revision": "synthetic-envelope-08-r1",
+      "checkpointAt": "2026-09-13T18:17:08.628Z",
+      "intentIds": [
+        "factory-separate",
+        "sdk-broader-than-typography",
+        "render-compose-edit-distinct",
+        "fonts-and-shaping",
+        "existing-host-ownership",
+        "gtm-separation",
+        "bounded-authority"
+      ],
+      "permissions": [
+        "read-approved-checkpoint",
+        "hold",
+        "reconcile-owned-state"
+      ],
+      "candidate": {
+        "repo": "/tmp/RUN-20260913-08-synthetic",
+        "commit": "synthetic-candidate-08-A",
+        "treeDigest": "synthetic-dirty-08-A"
+      },
+      "manager": {
+        "role": "synthetic-manager-08",
+        "session": "d82f5278-03c2-42ab-86e6-405affc87122",
+        "provider": "zai",
+        "model": "glm-5.3-flash"
+      },
+      "child": {
+        "id": "synthetic-child-08",
+        "session": "synthetic-child-session-08",
+        "operation": "synthetic-operation-08",
+        "waitRef": "synthetic-wait-08"
+      },
+      "pendingDecisions": [
+        "synthetic-render-approval-08"
+      ]
+    }
+  },
+  "checkpoint": {
+    "ref": "/tmp/RUN-20260913-08-synthetic/checkpoint.md",
+    "digest": "e887cf577755e97e3a38c07b6fbc8c10c4edbdbfd962a1d7945c33a2adeba582",
+    "contract": {
+      "revision": "synthetic-envelope-08-r1",
+      "checkpointAt": "2026-09-13T18:17:08.628Z",
+      "intentIds": [
+        "factory-separate",
+        "sdk-broader-than-typography",
+        "render-compose-edit-distinct",
+        "fonts-and-shaping",
+        "existing-host-ownership",
+        "gtm-separation",
+        "bounded-authority"
+      ],
+      "permissions": [
+        "read-approved-checkpoint",
+        "hold",
+        "reconcile-owned-state"
+      ],
+      "candidate": {
+        "repo": "/tmp/RUN-20260913-08-synthetic",
+        "commit": "synthetic-candidate-08-A",
+        "treeDigest": "synthetic-dirty-08-A"
+      },
+      "manager": {
+        "role": "synthetic-manager-08",
+        "session": "d82f5278-03c2-42ab-86e6-405affc87122",
+        "provider": "zai",
+        "model": "glm-5.3-flash"
+      },
+      "child": {
+        "id": "synthetic-child-08",
+        "session": "synthetic-child-session-08",
+        "operation": "synthetic-operation-08",
+        "waitRef": "synthetic-wait-08"
+      },
+      "pendingDecisions": [
+        "synthetic-render-approval-08"
+      ]
+    }
+  },
+  "boundary": {
+    "ref": "d82f5278-03c2-42ab-86e6-405affc87122#024db5ce",
+    "session": "d82f5278-03c2-42ab-86e6-405affc87122",
+    "at": "2026-09-13T18:21:22.865Z",
+    "source": "pi-jsonl",
+    "trigger": "unknown",
+    "tokensBefore": 18635
+  },
+  "observation": {
+    "at": "2026-09-13T18:22:44.674Z",
+    "manager": {
+      "role": "synthetic-manager-08",
+      "session": "d82f5278-03c2-42ab-86e6-405affc87122",
+      "provider": "zai",
+      "model": "glm-5.3-flash"
+    },
+    "modelHistory": [],
+    "contextSourceRef": null,
+    "modelChangedAt": null,
+    "child": {
+      "id": "synthetic-child-08",
+      "session": "synthetic-child-session-08",
+      "operation": "synthetic-operation-08",
+      "waitRef": "synthetic-wait-08"
+    },
+    "candidate": {
+      "repo": "/tmp/RUN-20260913-08-synthetic",
+      "commit": "synthetic-candidate-08-A",
+      "treeDigest": "synthetic-dirty-08-A"
+    },
+    "leaf": {
+      "kind": "jsonl_only",
+      "expected": null,
+      "actual": null
+    },
+    "wait": {
+      "ref": "synthetic-wait-08",
+      "state": "unknown"
+    },
+    "usage": {
+      "kind": "unavailable",
+      "tokens": null,
+      "reportedAt": null,
+      "projectionCurrent": false,
+      "window": null,
+      "percent": null
+    }
+  },
+  "notices": [
+    {
+      "id": "operator-manual-resume-08",
+      "boundaryRef": "d82f5278-03c2-42ab-86e6-405affc87122#024db5ce",
+      "session": "d82f5278-03c2-42ab-86e6-405affc87122",
+      "source": "manual",
+      "deliveredAt": "2026-09-13T18:22:45.008Z"
+    }
+  ],
+  "resume": {
+    "at": "2026-09-13T18:23:13.879Z",
+    "restored": null,
+    "observedManager": {
+      "role": "synthetic-manager-08",
+      "session": "d82f5278-03c2-42ab-86e6-405affc87122",
+      "provider": "zai",
+      "model": "glm-5.3-flash"
+    },
+    "contextClaim": "unavailable",
+    "leafClaim": "unknown",
+    "processedBoundaryRefs": [
+      "d82f5278-03c2-42ab-86e6-405affc87122#024db5ce"
+    ],
+    "action": "hold"
+  },
+  "audit": {
+    "complete": true,
+    "attemptedActions": [
+      "reconcile-owned-state",
+      "hold"
+    ]
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "startedAt": "2026-09-13T18:20:07.601Z",
+  "endedAt": "2026-09-13T18:20:13.128Z",
+  "exit": 0,
+  "error": null,
+  "stdout": "{\"id\":\"cli:agent:prompt\",\"result\":{\"agent\":{\"agent\":\"pi\",\"agent_status\":\"done\",\"cwd\":\"/private/tmp/RUN-20260913-08-synthetic\",\"focused\":false,\"foreground_cwd\":\"/private/tmp/RUN-20260913-08-synthetic\",\"interactive_ready\":true,\"name\":\"mc02-subject-08\",\"pane_id\":\"w31:p1D\",\"revision\":1,\"state_change_seq\":2539,\"tab_id\":\"w31:t1\",\"terminal_id\":\"term_65b61535a3f9fb5\",\"terminal_title\":\"π - RUN-20260913-08-synthetic\",\"terminal_title_stripped\":\"π - RUN-20260913-08-synthetic\",\"workspace_id\":\"w31\"},\"type\":\"agent_prompted\"}}\n",
+  "stderr": ""
+}

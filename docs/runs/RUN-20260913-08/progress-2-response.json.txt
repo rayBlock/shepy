@@ -1,0 +1,70 @@
+{
+  "at": "2026-09-13T18:20:07.574Z",
+  "name": "progress-2",
+  "path": "/tmp/RUN-20260913-08-synthetic/sessions/2026-09-13T18-17-43-285Z_d82f5278-03c2-42ab-86e6-405affc87122.jsonl",
+  "sessionId": "d82f5278-03c2-42ab-86e6-405affc87122",
+  "ordinaryCalls": 3,
+  "compactions": 0,
+  "lastReportedPrompt": 12850,
+  "liveWindow": null,
+  "modelChanges": [
+    {
+      "type": "model_change",
+      "id": "92841f8f",
+      "parentId": null,
+      "timestamp": "2026-09-13T18:17:43.326Z",
+      "provider": "zai",
+      "modelId": "glm-5.3-flash"
+    },
+    {
+      "type": "thinking_level_change",
+      "id": "64327402",
+      "parentId": "92841f8f",
+      "timestamp": "2026-09-13T18:17:43.326Z",
+      "thinkingLevel": "high"
+    }
+  ],
+  "tools": [],
+  "lastMessage": {
+    "type": "message",
+    "id": "36c3b5b7",
+    "parentId": "50ef65e3",
+    "timestamp": "2026-09-13T18:20:06.965Z",
+    "message": {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "Second ledger, same acknowledgment format, ≤10 words.",
+          "thinkingSignature": "reasoning_content"
+        },
+        {
+          "type": "text",
+          "text": "Receipt acknowledged: ledger 2/3 received; inert observations; holding."
+        }
+      ],
+      "api": "openai-completions",
+      "provider": "zai",
+      "model": "glm-5.3-flash",
+      "usage": {
+        "input": 5810,
+        "output": 28,
+        "cacheRead": 7040,
+        "cacheWrite": 0,
+        "reasoning": 11,
+        "totalTokens": 12878,
+        "cost": {
+          "input": 0.00043575,
+          "output": 0.000007,
+          "cacheRead": 0.00010559999999999999,
+          "cacheWrite": 0,
+          "total": 0.00054835
+        }
+      },
+      "stopReason": "stop",
+      "timestamp": 1789323602239,
+      "responseId": "202609140220021bdf3da0e1e94425",
+      "rawStopReason": "stop"
+    }
+  }
+}

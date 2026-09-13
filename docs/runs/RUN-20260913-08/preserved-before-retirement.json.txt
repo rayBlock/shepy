@@ -1,0 +1,17 @@
+{
+  "at": "2026-09-13T18:25:12.045Z",
+  "sessionSha256": "c9646928eee01b8212d8be3847a6a77da883ade5f83f6f633b2ade033e241d9d",
+  "checkpointUnchanged": true,
+  "ordinaryCalls": 6,
+  "tools": [
+    {
+      "entryId": "8cad5f8f",
+      "name": "read",
+      "arguments": {
+        "path": "/tmp/RUN-20260913-08-synthetic/checkpoint.md"
+      }
+    }
+  ],
+  "source": "session-after-resume.jsonl.txt",
+  "subject": "w31:p1D"
+}

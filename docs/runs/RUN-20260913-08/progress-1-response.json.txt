@@ -1,0 +1,70 @@
+{
+  "at": "2026-09-13T18:20:01.770Z",
+  "name": "progress-1",
+  "path": "/tmp/RUN-20260913-08-synthetic/sessions/2026-09-13T18-17-43-285Z_d82f5278-03c2-42ab-86e6-405affc87122.jsonl",
+  "sessionId": "d82f5278-03c2-42ab-86e6-405affc87122",
+  "ordinaryCalls": 2,
+  "compactions": 0,
+  "lastReportedPrompt": 7095,
+  "liveWindow": null,
+  "modelChanges": [
+    {
+      "type": "model_change",
+      "id": "92841f8f",
+      "parentId": null,
+      "timestamp": "2026-09-13T18:17:43.326Z",
+      "provider": "zai",
+      "modelId": "glm-5.3-flash"
+    },
+    {
+      "type": "thinking_level_change",
+      "id": "64327402",
+      "parentId": "92841f8f",
+      "timestamp": "2026-09-13T18:17:43.326Z",
+      "thinkingLevel": "high"
+    }
+  ],
+  "tools": [],
+  "lastMessage": {
+    "type": "message",
+    "id": "8bdd31e4",
+    "parentId": "85bf569c",
+    "timestamp": "2026-09-13T18:20:01.258Z",
+    "message": {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "Acknowledge in at most ten words.",
+          "thinkingSignature": "reasoning_content"
+        },
+        {
+          "type": "text",
+          "text": "Receipt acknowledged: inert fixture observations; authority unchanged; holding."
+        }
+      ],
+      "api": "openai-completions",
+      "provider": "zai",
+      "model": "glm-5.3-flash",
+      "usage": {
+        "input": 6903,
+        "output": 22,
+        "cacheRead": 192,
+        "cacheWrite": 0,
+        "reasoning": 8,
+        "totalTokens": 7117,
+        "cost": {
+          "input": 0.000517725,
+          "output": 0.0000055,
+          "cacheRead": 0.0000028799999999999995,
+          "cacheWrite": 0,
+          "total": 0.000526105
+        }
+      },
+      "stopReason": "stop",
+      "timestamp": 1789323596565,
+      "responseId": "202609140219563718a6aef4df419e",
+      "rawStopReason": "stop"
+    }
+  }
+}
