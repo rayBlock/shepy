@@ -198,7 +198,21 @@ wake mechanism is verified in the real Claude harness.
   `name` (the only unique indexes are `(session, pane)` and `(session, terminal)`),
   so the duplicate-name case is real, and removed a duplicated `recordToRow` plus
   a redundant second `agents.list()` in the inspection path.
-- Item 6 (owner-file CAS) in flight on `ops/owner-file-cas`.
+- **Item 6 (owner-file CAS) LANDED** `5637115` + `ae50a41`: new
+  `src/cli/owner-file.ts`. Cross-process mutex is an `O_EXCL` lock file (no
+  native deps), 500 ms acquisition budget / 5 ms poll, a lock older than 2 s is
+  stolen as an orphan, never held across an RPC. Writes are temp-at-0600 +
+  `fchmod` + `fsync` + `rename`, so a reader sees whole-old or whole-new. RED was
+  exact, not statistical: a stale `Stop` resurrected a dead lease token
+  (`expected 'ace5655b…' to be '61cc81df…'`), proven with two real OS processes.
+  Two notes for whoever touches this next: `O_NOFOLLOW` on the target is
+  meaningless under `rename` (it replaces the directory entry), so the symlink
+  guarantee is preserved by an explicit `lstat` refusal instead; and a turn
+  arriving within ~2 s of a hook crash may abandon its batch and duplicate next
+  turn, which is the disclosed bounded trade. ⚠ it ships two test-only fault
+  knobs (`SHEPY_HOOK_TEST_CAS_PAUSE_MS`, `SHEPY_HOOK_TEST_WRITE_PAUSE`), both
+  default off and clamped — a deterministic cross-process interleave test is not
+  reachable without them.
 - The lapsed-row sweep stays **held** on `ops/owner-sweep-held` — the review
   condition is to display lapsed state and preserve transition history, not to GC
   yet. `shepy profile owner` now covers the display half.
