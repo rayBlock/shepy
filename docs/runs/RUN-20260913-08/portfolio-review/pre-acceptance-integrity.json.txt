@@ -1,19 +1,10 @@
 {
-  "sealedAt": "2026-09-13T18:56:21.097Z",
-  "scope": "Closed single rehearsal; immutable raw evidence preserved. This current manifest excludes itself; original seal archived.",
-  "originalSeal": {
-    "path": "docs/runs/RUN-20260913-08/portfolio-review/pre-acceptance-integrity.json.txt",
-    "sha256": "f06ea13a738f2cc1887b11046a2636cac45266fc0ab25cdc613a9c7c7a47f67a",
-    "verifiedEntries": 60
-  },
-  "independentReview": {
-    "path": "docs/runs/RUN-20260913-08/portfolio-review/semantic-review.md.txt",
-    "sha256": "cb408e0441fb23db2fd2c25b2323e9262d18973ae1c96a10a3f649513c72b494"
-  },
+  "sealedAt": "2026-09-13T18:36:44.290Z",
+  "scope": "One rehearsal; raw .txt files remain byte exact; this manifest excludes itself",
   "files": [
     {
       "path": "docs/runs/RUN-20260913-08-continuity-rehearsal.md",
-      "sha256": "266c48a588e2684c5f19d697cf48926552cfe94bdd43dc1da06b9db7a906d189"
+      "sha256": "9cf3c25da47205948f1c3e6fc876812bf7ae36943d2c55beb6e8747b41e0129d"
     },
     {
       "path": "docs/runs/RUN-20260913-08/compact-identity-before.json.txt",
@@ -250,22 +241,6 @@
     {
       "path": "docs/runs/RUN-20260913-08/launch.json.txt",
       "sha256": "cd85986b2ff8b0e62d8b0c4caa22b28f96fb69f949e0a76005a12e1863705b41"
-    },
-    {
-      "path": "docs/runs/RUN-20260913-08/portfolio-review/archive.json.txt",
-      "sha256": "cf136711f77654e6f054739735c088445afa95419c99efbe9ac04848eb43e995"
-    },
-    {
-      "path": "docs/runs/RUN-20260913-08/portfolio-review/pre-acceptance-integrity.json.txt",
-      "sha256": "f06ea13a738f2cc1887b11046a2636cac45266fc0ab25cdc613a9c7c7a47f67a"
-    },
-    {
-      "path": "docs/runs/RUN-20260913-08/portfolio-review/pre-acceptance-record.md.txt",
-      "sha256": "9cf3c25da47205948f1c3e6fc876812bf7ae36943d2c55beb6e8747b41e0129d"
-    },
-    {
-      "path": "docs/runs/RUN-20260913-08/portfolio-review/semantic-review.md.txt",
-      "sha256": "cb408e0441fb23db2fd2c25b2323e9262d18973ae1c96a10a3f649513c72b494"
     }
   ]
 }

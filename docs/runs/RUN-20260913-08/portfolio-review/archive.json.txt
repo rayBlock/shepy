@@ -1,0 +1,20 @@
+{
+  "archivedAt": "2026-09-13T18:54:00.272Z",
+  "files": [
+    {
+      "source": "/tmp/portfolio-mc02-semantic-review.md",
+      "path": "semantic-review.md.txt",
+      "sha256": "cb408e0441fb23db2fd2c25b2323e9262d18973ae1c96a10a3f649513c72b494"
+    },
+    {
+      "source": "/Users/ray/dev/shepy/docs/runs/RUN-20260913-08-continuity-rehearsal.md",
+      "path": "pre-acceptance-record.md.txt",
+      "sha256": "9cf3c25da47205948f1c3e6fc876812bf7ae36943d2c55beb6e8747b41e0129d"
+    },
+    {
+      "source": "/Users/ray/dev/shepy/docs/runs/RUN-20260913-08/artifact-integrity.json.txt",
+      "path": "pre-acceptance-integrity.json.txt",
+      "sha256": "f06ea13a738f2cc1887b11046a2636cac45266fc0ab25cdc613a9c7c7a47f67a"
+    }
+  ]
+}
