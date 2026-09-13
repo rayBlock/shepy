@@ -98,6 +98,36 @@ acceptance recommendation; portfolio owns cross-program acceptance.
   op_7a4a0062662bf9e824dde073 --json` in the lead's background (daemon
   pid 53303, buildStamp 2026-09-13T12:41:47.820Z). Outcome to be
   recorded here verbatim, separately from candidate acceptance.
+- 13:25Z — **acceptance clarification from portfolio (agent-origin, same
+  scope):** D4 mapped Claude `gitBranch` but not Pi conversation lineage;
+  and "model changed since reading" compared only the final model, so
+  A→B→A would pass. Ops verified in the installed Pi types/docs
+  (`dist/core/session-manager.d.ts`, `docs/sessions.md`): entries form a
+  tree (`id`/`parentId`); `/tree` moves the leaf and appends NOTHING
+  unless a `branch_summary` is chosen (`fromId` = abandoned leaf,
+  `parentId` = new position, `usage` = summariser call). So the only
+  provable active lineage is the parent walk from the last appended
+  entry; a silent leaf move is invisible until the next append → named
+  limitation, not a guess. No local session contains a `branch_summary`
+  (all synthetic fixtures). Also found: Claude writes subagent
+  transcripts into the same file with `isSidechain: true`, whose small
+  usage would be a false-current reading. → **Addendum 1**
+  (`/tmp/run-20260913-06/builder.addendum.md`): D8 active lineage with
+  `lineage_unresolved` / `branch_switched_since_reading` /
+  `no_usage_on_active_lineage` / `leaf_move_not_recorded_until_next_append`;
+  D9 any model-change event after the reading on the lineage; D10
+  sidechains excluded, `claude_lineage_by_file_order`. Verifier packet
+  gained R11–R13, mutations (9)–(11) and six probes.
+- 13:31:28Z — addendum pointer delivered to the working builder as a Pi
+  steering prompt (`agent_prompted`, status stayed `working`); the
+  existing Shepy wait untouched. Cheaper than spending the one corrective
+  cycle on a known miss; if the builder ignores it, the verifier's R11–R13
+  catch it and the corrective cycle is used.
+- Portfolio's separate observation preserved as a distinct timing case,
+  not acted on here: its late-armed 10 s `shepy wait` on the parent
+  operation `op_5ddd8e4583b23ed0e507ef7a` returned `wait_timeout` after
+  this lead's setup response; durable state `submitted`. Different case
+  from this run's early-armed, open-ended builder wait.
 
 ## Results
 
