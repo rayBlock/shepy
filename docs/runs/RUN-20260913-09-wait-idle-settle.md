@@ -175,6 +175,48 @@ replacement, row repair, re-arm or live experiment.
 - 20:30:30Z — verifier `verifier-wait` in `w31:p1F`, profile
   `run-09-verifier` `matched` on the third poll, `shepy dispatch` →
   `op_b06384435e04c4b91aa09391`; two single-shot instruments armed.
+- **Deadline correction (COA, 20:36Z):** the verifier started 20:30:30Z;
+  its 30-minute budget ends **21:00:30Z**, not 21:13Z. The 21:13Z figure
+  came from the reallocation plan's estimated 20:43Z dispatch; the actual
+  dispatch was 13 min earlier and the plan was not re-derived. Landing
+  window is therefore 21:00–21:28Z inside the 21:31Z envelope.
+- 20:36Z — **COA boundary counterexamples against the candidate's
+  `createdAt − 5 000` bound (`operation-wait-service.ts` ~81), both
+  valid on reading:** (P-A) op1 `to: working` at T−2 s, op2 created at
+  T, op1 settles at T+1 s on the same terminal → op2's query finds a
+  working row ≥ T−5 s followed by a settled row → op2 inherits op1's
+  completion; (P-B) a wholly prior epoch working T−4 s / idle T−1 s,
+  nothing after T → same false epoch. My far-apart overlap probe
+  (18:00 / 18:10) could not see this; the 5 s slack was the packet's
+  own mistake: it was justified as "clock skew between Herdr's
+  observation and the row", but both timestamps compared (`created_at`
+  of the event row and `createdAt` of the operation) are written by the
+  same daemon process on the same clock — there is no skew to cover.
+  Correct bound = `createdAt` with ZERO backward slack (the operation
+  row is written before the prompt is sent; no `submitted_at` column
+  exists — submission time goes to the mutable `updated_at`).
+  Residual after that fix, bounded by index lag (seconds): a working
+  transition that OCCURRED just before creation but was INDEXED after
+  it would still count; only Herdr's `state_change_seq` at prompt time
+  could close it, and that needs a schema change (out of scope; rollout
+  gate below).
+- 20:38:55Z — P-A and P-B delivered to the running verifier as REQUIRED
+  probes (argv steering, status stayed `working`), expected outcome:
+  must not settle; actual outcome to be reported verbatim.
+- **Plan under the envelope:** the verifier's report (by 21:00:30Z) is
+  expected to be REVISE on P-A/P-B. No third worker is allowed, so the
+  lead applies the zero-slack correction itself on the branch as attempt
+  2 with the verifier's P-A/P-B and the builder's tests, re-runs the
+  gate, and presents `candidate-2` as **lead-corrected, verified only by
+  the lead's re-run of the independent verifier's own probes**. It is
+  NOT landed on `shepy` in this run; it stays on `pilot/wait-idle-settle`
+  for the COA's independent recheck (as MC01 did), because an
+  independently unverified correction must not be integrated under a
+  "no speculative acceptance" rule.
+- Causal attribution note (COA): "seen tab → idle, unseen → done" is
+  Herdr's documented semantics plus two matched-code samples (COA's pane
+  `idle`, mine `done`); it is not a controlled focus experiment, and no
+  focus manipulation was or will be done here.
 - Still unqualified by design (recorded, not fixed here): Herdr's
   `state_change_seq` at prompt time is not stored (no schema change in
   scope), so the guard reasons from indexed rows, not from Herdr's own
