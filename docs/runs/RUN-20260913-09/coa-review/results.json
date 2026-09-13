@@ -1,0 +1,96 @@
+{
+  "candidate": "37c9b0ba54d30295ad5479bf6e4041be51bc6726",
+  "method": "Real stores/service, synthetic in-memory rows and stubbed Herdr boundary; no live operations or schema mutation",
+  "results": [
+    {
+      "name": "P-A prior start, later completion",
+      "actual": "target_not_started",
+      "expected": "target_not_started",
+      "pass": true,
+      "scope": "correction regression"
+    },
+    {
+      "name": "P-B wholly prior epoch",
+      "actual": "target_not_started",
+      "expected": "target_not_started",
+      "pass": true,
+      "scope": "correction regression"
+    },
+    {
+      "name": "prior start 1ms",
+      "actual": "target_not_started",
+      "expected": "target_not_started",
+      "pass": true,
+      "scope": "correction regression"
+    },
+    {
+      "name": "genuine indexed post-create epoch",
+      "actual": "settled",
+      "expected": "settled",
+      "pass": true,
+      "scope": "correction regression"
+    },
+    {
+      "name": "malformed start ignored",
+      "actual": "target_not_started",
+      "expected": "target_not_started",
+      "pass": true,
+      "scope": "correction regression"
+    },
+    {
+      "name": "malformed settled ignored",
+      "actual": "target_not_started",
+      "expected": "target_not_started",
+      "pass": true,
+      "scope": "correction regression"
+    },
+    {
+      "name": "foreign terminal completion",
+      "actual": "target_not_started",
+      "expected": "target_not_started",
+      "pass": true,
+      "scope": "correction regression"
+    },
+    {
+      "name": "foreign Herdr session epoch",
+      "actual": "target_not_started",
+      "expected": "target_not_started",
+      "pass": true,
+      "scope": "correction regression"
+    },
+    {
+      "name": "earliest epoch remains visible",
+      "actual": "settled",
+      "expected": "settled",
+      "pass": true,
+      "scope": "correction regression"
+    },
+    {
+      "name": "already-indexed old epoch shares creation millisecond",
+      "actual": "settled",
+      "expected": "target_not_started",
+      "pass": false,
+      "scope": "residual counterexample: no index lag"
+    },
+    {
+      "name": "replacement native session on same terminal",
+      "actual": "settled",
+      "expected": "target_not_started",
+      "pass": false,
+      "scope": "uncovered identity boundary; not claimed introduced by candidate"
+    },
+    {
+      "name": "two created operations share one execution",
+      "actual": "settled",
+      "expected": "target_not_started",
+      "pass": false,
+      "scope": "already disclosed unattributable overlap"
+    }
+  ],
+  "adapterReplacement": {
+    "kind": "settled",
+    "returnedSession": "original-session",
+    "actualStubSession": "replacement-session",
+    "note": "Adapter echoes requested identity; does not validate returned native session. Pre-existing behavior."
+  }
+}

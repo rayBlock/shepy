@@ -8,13 +8,13 @@ replacement, row repair, re-arm or live experiment.
 
 ## Live
 
-- state: **CANDIDATE-2 `37c9b0b` READY FOR COA RECHECK — NOT LANDED.** Verifier REVISE on `8b7a9b6` (F1 = COA's P-A/P-B); lead correction 2 committed on the branch; independently verified only insofar as the verifier's own probe cases are reproduced in the committed test file. No third worker (cap respected).
-- lead: `w31:p1` (Claude Code, supervised)
-- workers: none (builder and verifier panes closed)
-- worktrees: `~/dev/shepy-wt/waitfix` (branch `pilot/wait-idle-settle`, at `37c9b0b`) — kept deliberately for the COA's recheck; `verify-wait` removed
-- waits armed: none (four single-shot instruments, all returned)
-- next safe action: COA rechecks `37c9b0b` (gate + `test/integration/operation-wait-epoch-boundary.test.ts` P-A/P-B); on its acceptance the lead lands via rebase + ff-merge + `pnpm build`; live rollout = a separate daemon-restart decision (Ray)
-- updated: 2026-09-13T20:47Z
+- state: **CLOSED — PARTIAL (COA recheck 20:5xZ). HOLD `37c9b0b` on `pilot/wait-idle-settle`: no integration, no main-checkout build, no restart.** The enumerated corrections (idle in the settled set, zero-slack epoch bound, malformed JSON, scoping) are independently verified; operation correlation and rollout are NOT qualified — three preserved safety counterexamples (below).
+- lead: `w31:p1` (Claude Code, supervised); accountable owner retained
+- workers: none live (`herdr agent list` shows neither `builder-wait` nor `verifier-wait`); their native Pi sessions preserved on disk
+- worktrees: `~/dev/shepy-wt/waitfix` at `37c9b0b` — KEPT by COA instruction; `verify-wait` removed
+- waits armed: none (four single-shot instruments, all returned; receipts below)
+- next safe action: none under this assignment. A stronger correlation design needs a separately explicit envelope. Do NOT `pnpm build` in `~/dev/shepy` (the installed CLI resolves to its dist).
+- updated: 2026-09-13T20:58Z
 
 ## Registration (before dispatch)
 
@@ -255,7 +255,59 @@ replacement, row repair, re-arm or live experiment.
   `pilot/wait-idle-settle` (pathspec). Verifier pane `w31:p1F` closed
   and worktree removed 20:46Z; the builder worktree kept at `37c9b0b`.
 
-## Results
+## COA independent recheck and closure (20:53–20:58Z) — FINAL disposition: PARTIAL, HOLD
+
+- COA (Pi `wP:p70`) replayed six affected suites (54/54) and ran nine
+  independent correction probes against the real stores and wait service
+  (9/9 pass: P-A, P-B, pre-creation 1 ms, valid post-creation epoch,
+  malformed start/settle JSON, foreign terminal, foreign herdr session,
+  earliest-epoch preservation). Artifacts archived byte-exact under
+  `docs/runs/RUN-20260913-09/coa-review/`: `review.md` `23dcf0e6…`,
+  `results.json` `7a2efe81…`, `probes.mts` = `probes.ts` `8f1297c7…`,
+  `replay.log` `9ee2ec14…`, `parent-operation.json` `37295108…`,
+  `probes.stderr` (empty). Lead artifacts (assignment, packets, addendum,
+  builder/verifier reports, dispatch receipts) under
+  `docs/runs/RUN-20260913-09/lead/`.
+- **Three preserved safety counterexamples (fail on `37c9b0b`; kept as
+  counterexamples, NOT converted into expected-pass tests):**
+  1. **Same-millisecond, already-indexed prior epoch:** working and idle
+     rows inserted before creation with the same millisecond as the
+     operation's `createdAt` satisfy `created_at >= createdAt`. No index
+     lag needed; equal timestamps lose the ordering. My "residual bounded
+     by index lag" claim above was too narrow — corrected.
+  2. **Replacement native session in the same terminal:** rows from
+     another native session on the same terminal settle the original
+     operation; and the adapter accepts a Herdr response naming the
+     replacement identity, returns `settled`, and echoes the requested
+     original target. Pre-existing uncovered boundary (predates
+     candidate 2), not a new regression; terminal/session scoping is not
+     native-session identity validation.
+  3. **Two operations created before one execution** share the epoch —
+     disclosed by the lead, independently reproduced.
+- **Claims corrected per the review:**
+  - "No third worker allowed" did NOT prohibit re-using the existing
+    verifier within its allocation for a same-worker pass on the
+    correction. The lead CHOSE handback to the COA; the earlier wording
+    attributing the missing pass to the cap is withdrawn.
+  - Prompt-time `state_change_seq` + durable submission metadata are a
+    design PROPOSAL, not proven necessary-and-sufficient correlation;
+    exact native identity, event ordering, queued prompts and human
+    intervention need explicit treatment; no schema change is
+    authorized by this record.
+  - The bare Herdr wait is a wake/observation fallback, NOT a
+    per-operation settlement or acceptance oracle.
+  - F1/F2/F3 and the 7-of-10 mutation outcome stand; the COA did not
+    repeat the mutation campaign.
+- **Custody receipts:** builder `op_f50e6eeeff7043eb1bfa01ad` durable
+  `settled` 20:29:35.404Z; verifier `op_b06384435e04c4b91aa09391`
+  durable `settled` 20:44:19.929Z; four lead wait instruments returned
+  (19:38→20:29:35 ×2, 20:30→20:44:19 ×2); panes `w31:p1E`, `w31:p1F`
+  closed; native Pi sessions of both workers preserved; `waitfix`
+  worktree and branch kept; `verify-wait` worktree removed; nothing
+  landed, nothing built in the main checkout, daemon untouched (17:11Z
+  boot). Envelope: 19:31Z → closure 20:58Z, ≈ 87 of 120 min.
+
+## Results (lead's pre-recheck report, 20:47Z — superseded where the recheck above corrects it)
 
 - **Observed cause (evidenced, not hypothesis):** the adapter waited for
   Herdr `done|blocked`; Herdr reports a finished agent whose tab was
