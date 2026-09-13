@@ -43,20 +43,22 @@ part of this test.
 
 ### How to observe state — read this before running anything
 
-**There is no `shepy profile owner` CLI command.** The RPC exists; the verb was
-never exposed. Ownership is only observable by querying the daemon database
-directly:
+Ownership is visible with the CLI (added 2026-09-13):
 
 ```bash
-sqlite3 ~/.shepy/state.db \
-  "select profile_id, harness_kind, pane_id, subscriber_id,
-          datetime(lease_expires_at/1000,'unixepoch','localtime') as lease_until
-   from profile_owners;"
+shepy profile owner <profileId>          # human: pane, workspace, lease countdown + local expiry
+shepy profile owner <profileId> --json   # the public owner record, verbatim
 ```
 
-Expect stale rows from previous days: a lease that lapsed is not swept, only
-out-competed. A row whose `lease_until` is in the past means the profile is
-effectively unowned and claimable.
+The lease token never appears in this output. The lease reads as `valid`, in
+reconnect grace, or `lapsed — claimable`; an unowned profile says so and exits 0.
+
+Lapsed owner rows are **not** swept — a lease that lapsed is out-competed, not
+removed — so expect stale rows from previous days. A row whose lease is past
+means the profile is effectively unowned and claimable. (A startup sweep is
+written and held on `ops/owner-sweep-held`; it is deliberately unlanded until
+the long-Claude-turn lease semantics are settled, because sweeping a row that a
+still-working Claude turn depends on would break its closing ack.)
 
 Other observation points:
 
