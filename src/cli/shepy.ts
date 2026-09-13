@@ -17,7 +17,41 @@ import type { AgentGetResult, AgentListItem, AgentReadResult } from "@/observabi
 const CURRENT_HERDR_WORKSPACE_ERROR =
   "agent command requires HERDR_ENV=1 with HERDR_WORKSPACE_ID, --workspace <id>, --session <name>, or --all.";
 
-type DaemonAction = "restart" | "start" | "status" | "stop";
+/**
+ * The verbs each command group parses — the single source of truth for
+ * "what does this group accept". The parsers consult these tables for
+ * membership (parseAgentCommand/profile/inbox via their help-topic
+ * resolvers, parseOperationCommand and parseDaemonCommand via direct
+ * membership checks, parseCliArgs via TOP_LEVEL_COMMANDS), and the group
+ * help pages list them. test/unit/cli-census.test.ts holds the two in
+ * lockstep: a verb that parses must be listed, a listed verb must parse,
+ * and every parsed verb must have a detail help page.
+ */
+export const COMMAND_GROUP_VERBS = {
+  agent: ["get", "list", "read"],
+  daemon: ["restart", "start", "status", "stop"],
+  inbox: ["list", "retire", "retry"],
+  operation: ["get", "list"],
+  profile: ["context", "ensure", "list", "owner", "show", "subscribe", "unsubscribe"],
+} as const;
+
+export type CommandGroup = keyof typeof COMMAND_GROUP_VERBS;
+
+export type DaemonAction = (typeof COMMAND_GROUP_VERBS.daemon)[number];
+
+export const TOP_LEVEL_COMMANDS = [
+  "agent",
+  "claude-hook",
+  "daemon",
+  "dispatch",
+  "inbox",
+  "operation",
+  "profile",
+  "wait",
+] as const;
+
+export type TopLevelCommand = (typeof TOP_LEVEL_COMMANDS)[number];
+
 type HelpTopic =
   | "agent"
   | "agent-get"
@@ -120,14 +154,26 @@ export function parseCliArgs(
     return { command: "version" };
   }
 
-  if (command === "daemon") return parseDaemonCommand(rest);
-  if (command === "agent") return parseAgentCommand(rest, environment);
-  if (command === "profile") return parseProfileCommand(rest);
-  if (command === "inbox") return parseInboxCommand(rest);
-  if (command === "dispatch") return parseDispatchCommand(rest);
-  if (command === "wait") return parseWaitCommand(rest);
-  if (command === "operation") return parseOperationCommand(rest);
-  if (command === "claude-hook") return parseClaudeHookCommand(rest);
+  if (isTopLevelCommand(command)) {
+    switch (command) {
+      case "agent":
+        return parseAgentCommand(rest, environment);
+      case "claude-hook":
+        return parseClaudeHookCommand(rest);
+      case "daemon":
+        return parseDaemonCommand(rest);
+      case "dispatch":
+        return parseDispatchCommand(rest);
+      case "inbox":
+        return parseInboxCommand(rest);
+      case "operation":
+        return parseOperationCommand(rest);
+      case "profile":
+        return parseProfileCommand(rest);
+      case "wait":
+        return parseWaitCommand(rest);
+    }
+  }
 
   throw new CliUsageError(`Unknown command: ${command}`, "root");
 }
@@ -189,6 +235,9 @@ function parseWaitCommand(args: string[]): CliCommand {
 function parseOperationCommand(args: string[]): CliCommand {
   const [subcommand, ...rest] = args;
   if (!subcommand || isHelpFlag(subcommand)) return { command: "help", topic: "operation" };
+  if (!isCommandGroupVerb("operation", subcommand)) {
+    throw new CliUsageError(`Unknown operation command: ${subcommand}`, "operation");
+  }
   if (subcommand === "get") {
     if (rest.some(isHelpFlag)) return { command: "help", topic: "operation-get" };
     const json = takeFlag(rest, "--json");
@@ -644,6 +693,7 @@ Usage:
 
 Commands:
   list <profileId>          List obligations for a profile
+  retire <profileId>        Retire a stale pending backlog
   retry <obligationId>      Retry a dead-lettered obligation
 
 Options:
@@ -1181,7 +1231,15 @@ function rejectExtra(args: string[], helpTopic: HelpTopic): void {
 }
 
 function isDaemonAction(value: string): value is DaemonAction {
-  return value === "restart" || value === "start" || value === "status" || value === "stop";
+  return isCommandGroupVerb("daemon", value);
+}
+
+function isTopLevelCommand(value: string): value is TopLevelCommand {
+  return TOP_LEVEL_COMMANDS.some((command) => command === value);
+}
+
+function isCommandGroupVerb(group: CommandGroup, verb: string): boolean {
+  return (COMMAND_GROUP_VERBS[group] as readonly string[]).includes(verb);
 }
 
 export function formatCliError(error: unknown): string {
@@ -1201,32 +1259,18 @@ export function formatCliError(error: unknown): string {
 }
 
 function agentHelpTopic(subcommand: string): HelpTopic | undefined {
-  if (subcommand === "get" || subcommand === "list" || subcommand === "read") {
-    return `agent-${subcommand}`;
-  }
-  return undefined;
+  return isCommandGroupVerb("agent", subcommand) ? (`agent-${subcommand}` as HelpTopic) : undefined;
 }
 
 function profileHelpTopic(subcommand: string): HelpTopic | undefined {
-  if (
-    subcommand === "context" ||
-    subcommand === "ensure" ||
-    subcommand === "list" ||
-    subcommand === "owner" ||
-    subcommand === "show" ||
-    subcommand === "subscribe" ||
-    subcommand === "unsubscribe"
-  ) {
-    return subcommand === "unsubscribe" ? "profile-subscribe" : `profile-${subcommand}`;
-  }
-  return undefined;
+  if (!isCommandGroupVerb("profile", subcommand)) return undefined;
+  return subcommand === "unsubscribe"
+    ? "profile-subscribe"
+    : (`profile-${subcommand}` as HelpTopic);
 }
 
 function inboxHelpTopic(subcommand: string): HelpTopic | undefined {
-  if (subcommand === "list" || subcommand === "retire" || subcommand === "retry") {
-    return `inbox-${subcommand}`;
-  }
-  return undefined;
+  return isCommandGroupVerb("inbox", subcommand) ? (`inbox-${subcommand}` as HelpTopic) : undefined;
 }
 
 function daemonActionHelp(action: DaemonAction, description: string): string {
