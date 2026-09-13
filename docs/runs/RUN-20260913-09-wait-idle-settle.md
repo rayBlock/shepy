@@ -213,6 +213,17 @@ replacement, row repair, re-arm or live experiment.
   for the COA's independent recheck (as MC01 did), because an
   independently unverified correction must not be integrated under a
   "no speculative acceptance" rule.
+- 20:40–20:42Z — **lead correction prepared in the builder worktree,
+  UNCOMMITTED (candidate `8b7a9b6` stays frozen for the verifier):** new
+  `test/integration/operation-wait-epoch-boundary.test.ts` (real stores,
+  backdated rows, real `OperationWaitService`): P-A, P-B, "working at
+  exactly createdAt counts", "working 1 ms before createdAt does not".
+  **RED against `8b7a9b6`:** P-A, P-B and the 1-ms case all `settled`
+  (`expected 'settled' to be 'target_not_started'`) — the COA's
+  counterexamples reproduce. Correction: `sinceMs = createdAt` (zero
+  slack), comment rewritten with the same-clock argument and the
+  index-lag residual; the one builder unit pin of `createdAt - 5_000`
+  updated. **GREEN:** gate exit 0, 62 files / 690 tests.
 - Causal attribution note (COA): "seen tab → idle, unseen → done" is
   Herdr's documented semantics plus two matched-code samples (COA's pane
   `idle`, mine `done`); it is not a controlled focus experiment, and no
