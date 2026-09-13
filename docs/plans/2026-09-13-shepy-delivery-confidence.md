@@ -265,9 +265,14 @@ wake mechanism is verified in the real Claude harness.
   than `matched`; Pi `pendingCount` is the batch size; `retire` writes
   `acked` without a reason — and the `Observability RPC socket closed`
   failure seen by the typography lead at 11:36Z.
-- **`shepy wait` defect (found in RUN-04) → RUN-20260913-05** in flight:
-  Herdr 0.8 answers `agent wait` with `{type:"agent_info", agent:{agent_status}}`,
-  the adapter threw and the operation stayed `submitted` untraced.
+- **`shepy wait` defect (found in RUN-04) LANDED `ea1163e`** as
+  RUN-20260913-05 (`docs/runs/`): Herdr 0.8 answers `agent wait` with
+  `{type:"agent_info", agent:{agent_status}}`; the adapter threw and the
+  operation stayed `submitted` untraced. Now the live key is read first, an
+  unreadable response is a `transport_unknown` outcome that records
+  `error_summary` and leaves the operation re-waitable, and
+  `recordWaitError` refuses non-`submitted` rows. Daemon-side; live only
+  after the next `shepy daemon restart`.
 - The lapsed-row sweep stays **held** on `ops/owner-sweep-held` — the review
   condition is to display lapsed state and preserve transition history, not to GC
   yet. `shepy profile owner` now covers the display half.
