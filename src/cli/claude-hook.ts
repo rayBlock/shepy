@@ -204,11 +204,18 @@ class ExpectedHookError extends Error {
    * transient daemon trouble.
    */
   readonly userWarning: string | undefined;
+  /**
+   * The daemon's stable refusal code (error envelope), when the rejection
+   * carried one — the classifier the hook branches on instead of matching
+   * prose (e.g. inbox.lease's owner_lapsed triggers Stop recovery).
+   */
+  readonly code: string | undefined;
 
-  constructor(message: string, userWarning?: string) {
+  constructor(message: string, userWarning?: string, code?: string) {
     super(message);
     this.name = "ExpectedHookError";
     this.userWarning = userWarning;
+    this.code = code;
   }
 }
 
@@ -366,6 +373,22 @@ export function claimRejectionWarning(input: {
     return `shepy: profile ${plainText(input.profileId)} rejected this pane's persisted lease token (stale or superseded; the current lease is still alive) — this pane recovers automatically once the lease lapses (lease + grace, 5 min + 30 s at defaults) and will not receive worker outcomes until then`;
   }
   return `shepy: profile ${plainText(input.profileId)} is owned by pane ${plainText(input.owner?.paneId)} (${plainText(input.owner?.harnessKind, 24)}); this pane will not receive worker outcomes`;
+}
+
+/**
+ * The Stop-recovery contention line. A lapsed owner tried the one recovery
+ * attempt — re-claim by proof of possession — and lost the race: a rival
+ * pane claimed during the lapse, rotated the token, and answered the re-claim
+ * with lease_active. Mirrors the claimRejectionWarning shape: one short line,
+ * user-facing only, naming the rival pane/harness. Recovery itself needs none:
+ * the next UserPromptSubmit already re-claims (by the expiry rule once the
+ * rival's lease lapses).
+ */
+export function lapsedRecoveryWarning(input: {
+  owner?: { harnessKind?: string; paneId?: string } | undefined;
+  profileId: string;
+}): string {
+  return `shepy: profile ${plainText(input.profileId)} lapsed mid-turn and pane ${plainText(input.owner?.paneId)} (${plainText(input.owner?.harnessKind, 24)}) claimed it before this pane could recover — this pane will not receive worker outcomes until its next claim succeeds`;
 }
 
 async function handlePromptSubmit(
@@ -673,11 +696,86 @@ async function handleStop(
     // Deliver fresh mid-turn outcomes the same way UserPromptSubmit does:
     // lease, mark delivered under this prompt id, inject the same bounded
     // summary. The injection is what continues the conversation.
-    const lease = await request<unknown>("inbox.lease", {
-      leaseToken: file.leaseToken,
-      maxBatch: LEASE_MAX_BATCH,
-      profileId: input.profileId,
-    });
+    let lease: unknown;
+    try {
+      lease = await request<unknown>("inbox.lease", {
+        leaseToken: file.leaseToken,
+        maxBatch: LEASE_MAX_BATCH,
+        profileId: input.profileId,
+      });
+    } catch (error) {
+      // A long Claude turn outlives lease + grace: Stop runs on a row that
+      // still carries this pane's token but whose lease is dead, and since
+      // the admission tightening the lease is refused owner_lapsed — the
+      // same instant claim would hand the profile away. Recover EXACTLY
+      // ONCE: re-claim presenting the persisted token (proof of possession;
+      // uncontended, the fast path answers reclaimed with a fresh token),
+      // persist it through the guarded CAS write, then lease once more and
+      // fall through to the normal delivery path below. A rival that
+      // claimed during the lapse rotates the token: the re-claim is
+      // rejected lease_active, we warn the operator with the rival's
+      // identity, leave the owner file untouched, and inject nothing — no
+      // second attempt; the next UserPromptSubmit claim already handles
+      // rejection.
+      if (!(error instanceof ExpectedHookError) || error.code !== "owner_lapsed") throw error;
+      const { paneId, workspaceId } = requireHerdrIdentity(input.environment, input.profileId);
+      const herdrSessionName = await resolveHerdrSessionName(request, paneId, workspaceId);
+      const reclaim = await request<{
+        result?: {
+          kind?: string;
+          leaseToken?: string;
+          owner?: { harnessKind?: string; paneId?: string };
+          reason?: string;
+        };
+      }>("profile.claim", {
+        currentLeaseToken: file.leaseToken,
+        harnessKind: "claude",
+        harnessSessionRefJson: file.ownerSessionRefJson,
+        herdrSessionName,
+        paneId,
+        profileId: input.profileId,
+        subscriberId: payload.session_id,
+        terminalId: paneId,
+        workspaceId,
+      });
+      const reclaimResult = reclaim.result ?? {};
+      if (
+        (reclaimResult.kind !== "claimed" && reclaimResult.kind !== "reclaimed") ||
+        !reclaimResult.leaseToken
+      ) {
+        if (reclaimResult.kind === "rejected") {
+          warnings.push(
+            lapsedRecoveryWarning({ owner: reclaimResult.owner, profileId: input.profileId }),
+          );
+        }
+        throw new ExpectedHookError(
+          `lapsed-owner re-claim rejected (${reclaimResult.kind ?? "unknown"})`,
+        );
+      }
+      const freshToken = reclaimResult.leaseToken;
+      // Persist the rotated token through the guarded CAS write. Expected
+      // on-disk state is "no unsettled record" (the ack block above cleared
+      // it); a lost race abandons the recovery — a concurrent invocation
+      // owns the record now, and the batch stays pending and re-delivers.
+      if (
+        !writeOwnerFileIfUnchanged(
+          input.homeDir,
+          payload.session_id,
+          input.profileId,
+          { ...file, leaseToken: freshToken },
+          handled,
+        )
+      ) {
+        return null;
+      }
+      file.leaseToken = freshToken;
+      // The one recovery lease; a refusal here is ordinary daemon trouble.
+      lease = await request<unknown>("inbox.lease", {
+        leaseToken: freshToken,
+        maxBatch: LEASE_MAX_BATCH,
+        profileId: input.profileId,
+      });
+    }
     if (!Value.Check(leaseResponseSchema, lease)) {
       // Same boundary rule as UserPromptSubmit: an unrenderable lease
       // response is an expected no-op, never a TypeError after promotion.
@@ -764,7 +862,13 @@ function requestWithDeadline(
       client.request(method, params).catch((error: unknown) => {
         // Any daemon-side failure — down, refused, hung (deadline), protocol
         // error — is an expected condition for a hook: degrade to a no-op.
-        throw new ExpectedHookError(`shepy daemon request failed: ${describe(error)}`);
+        // A stable refusal code rides along for classification.
+        const code = (error as { code?: unknown }).code;
+        throw new ExpectedHookError(
+          `shepy daemon request failed: ${describe(error)}`,
+          undefined,
+          typeof code === "string" ? code : undefined,
+        );
       }),
     ) as Promise<T>;
 }

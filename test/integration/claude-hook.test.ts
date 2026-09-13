@@ -305,6 +305,36 @@ function hookClaimParams(): Record<string, string> {
   };
 }
 
+/** Lapses the profile's owner lease directly in the fixture's sqlite (the
+ * same injection the superseded-token tests use): a long Claude turn
+ * outlives lease + grace without any clock mocking. */
+function lapseOwnerLease(fixture: Fixture, profileId = "driffs"): void {
+  const lapsed = openSqlite(join(fixture.dir, "test.sqlite"));
+  openDbs.push(lapsed.sqlite);
+  lapsed.sqlite
+    .prepare(
+      "update profile_owners set lease_expires_at = 0, last_seen_at = 0 where profile_id = ?",
+    )
+    .run(profileId);
+}
+
+/** Keeps the owner's lease ahead of a simulated future clock inside an
+ * inboxLease patch. The scenarios this serves are LIVING owners whose
+ * delivery handoff keeps failing — not lapsed owners — and since the
+ * admission tightening inboxLease judges the owner's lease at the same
+ * injected `now` that expires obligation rows. */
+function keepOwnerLeaseAheadOfSimulatedNow(
+  fixture: Fixture,
+  simulatedNow: number,
+  profileId = "driffs",
+): void {
+  const db = openSqlite(join(fixture.dir, "test.sqlite"));
+  openDbs.push(db.sqlite);
+  db.sqlite
+    .prepare("update profile_owners set lease_expires_at = ? where profile_id = ?")
+    .run(simulatedNow + 5 * 60_000, profileId);
+}
+
 describe("claude-hook CLI surface", () => {
   test("parses the claude-hook command, help topic, and required profile", () => {
     expect(parseCliArgs(["claude-hook", "--profile", "driffs"])).toEqual({
@@ -901,6 +931,57 @@ describe("claude-hook lease-token re-claim (proof of possession)", () => {
       expect(fixture.owners.get("driffs")?.subscriberId).toBe("other-subscriber");
     },
   );
+
+  test.runIf(schemaAcceptsCurrentLeaseToken)(
+    "a lapsed owner reclaims on the next prompt by proof of possession and is delivered",
+    async () => {
+      const fixture = await openHookServer();
+      projectOutcome(fixture, "lapse-prompt-1", "first turn outcome");
+      await runHook(fixture, promptPayload({ prompt_id: "lp-1" }));
+      const staleToken = readOwnerFile(fixture).leaseToken;
+      expect(staleToken).toBeTruthy();
+
+      // The long turn outlives lease + grace, uncontested: no rival ever
+      // claimed, so the row still holds the pane's token.
+      projectOutcome(fixture, "lapse-prompt-2", "outcome during the lapse");
+      lapseOwnerLease(fixture);
+
+      const claims: Array<{ method: string; params: Record<string, unknown>; result: unknown }> =
+        [];
+      const realRequest = ObservabilityRpcClient.prototype.request;
+      vi.spyOn(ObservabilityRpcClient.prototype, "request").mockImplementation(function (
+        this: ObservabilityRpcClient,
+        method: string,
+        params: unknown,
+      ) {
+        return realRequest.call(this, method, params).then((result) => {
+          if (method === "profile.claim") {
+            claims.push({ method, params: params as Record<string, unknown>, result });
+          }
+          return result;
+        });
+      });
+
+      const { code, stdout } = await runHook(fixture, promptPayload({ prompt_id: "lp-2" }));
+      expect(code).toBe(0);
+      // The claim PRESENTED the persisted token and the fast path answered
+      // reclaimed — BEFORE any lease, so the tightened lease admission rule
+      // never sees a lapsed owner on the prompt path.
+      expect(claims[0]?.params.currentLeaseToken).toBe(staleToken);
+      const claimResult =
+        (claims[0]?.result as { result?: { kind?: string } } | undefined)?.result ?? {};
+      expect(claimResult.kind).toBe("reclaimed");
+      const parsed = JSON.parse(stdout) as {
+        hookSpecificOutput?: { additionalContext?: string };
+        systemMessage?: string;
+      };
+      expect(parsed.systemMessage).toBeUndefined();
+      expect(parsed.hookSpecificOutput?.additionalContext).toContain("outcome during the lapse");
+      expect(fixture.delivery.inboxList({ profileId: "driffs", state: "delivered" })).toHaveLength(
+        1,
+      );
+    },
+  );
 });
 
 describe("claude-hook claim-rejection warnings", () => {
@@ -1005,6 +1086,131 @@ describe("claude-hook Stop", () => {
     const { code, stdout } = await runHook(fixture, stopPayload({ stop_hook_active: true }));
     expect(code).toBe(0);
     expect(stdout).toBe("");
+  });
+
+  test("a Stop on a lapsed owner recovers exactly once by proof of possession: re-claims, persists the new token, delivers", async () => {
+    const fixture = await openHookServer();
+    projectOutcome(fixture, "stop-lapse-1", "delivered before the lapse");
+    await runHook(fixture, promptPayload({ prompt_id: "lapse-p1" }));
+    const staleToken = readOwnerFile(fixture).leaseToken;
+    expect(staleToken).toBeTruthy();
+
+    // Outcomes land mid-turn; the long turn then outlives lease + grace
+    // uncontested — the row still holds this pane's token.
+    projectOutcome(fixture, "stop-lapse-2", "mid-turn outcome after the lapse");
+    lapseOwnerLease(fixture);
+
+    const claims: Array<{ method: string; params: Record<string, unknown>; result: unknown }> = [];
+    const realRequest = ObservabilityRpcClient.prototype.request;
+    vi.spyOn(ObservabilityRpcClient.prototype, "request").mockImplementation(function (
+      this: ObservabilityRpcClient,
+      method: string,
+      params: unknown,
+    ) {
+      return realRequest.call(this, method, params).then((result) => {
+        if (method === "profile.claim") {
+          claims.push({ method, params: params as Record<string, unknown>, result });
+        }
+        return result;
+      });
+    });
+
+    const { code, stdout } = await runHook(fixture, stopPayload());
+    expect(code).toBe(0);
+
+    // EXACTLY ONE recovery attempt: the re-claim presented the persisted
+    // token, the fast path answered reclaimed, and the fresh token is what
+    // the owner file now holds.
+    expect(claims).toHaveLength(1);
+    const claim = claims[0];
+    if (claim === undefined) throw new Error("unreachable: no recovery claim captured");
+    expect(claim.params.currentLeaseToken).toBe(staleToken);
+    const claimResult =
+      (claim.result as { result?: { kind?: string; leaseToken?: string } } | undefined)?.result ??
+      {};
+    expect(claimResult.kind).toBe("reclaimed");
+
+    const parsed = JSON.parse(stdout) as {
+      hookSpecificOutput?: { additionalContext?: string; hookEventName?: string };
+      systemMessage?: string;
+    };
+    expect(parsed.hookSpecificOutput?.hookEventName).toBe("Stop");
+    expect(parsed.hookSpecificOutput?.additionalContext).toContain(
+      "mid-turn outcome after the lapse",
+    );
+    // A clean recovery is silent: no operator warning.
+    expect(parsed.systemMessage).toBeUndefined();
+
+    // The rotated token is persisted and matches the server's row...
+    const record = readOwnerFile(fixture);
+    expect(record.leaseToken).not.toBe(staleToken);
+    expect(fixture.owners.get("driffs")?.leaseToken).toBe(record.leaseToken);
+    // ...and the batch was delivered exactly once under it.
+    const delivered = fixture.delivery.inboxList({ profileId: "driffs", state: "delivered" });
+    expect(delivered).toHaveLength(1);
+    expect(record.delivered?.ids).toEqual(delivered.map((row) => row.id));
+  });
+
+  test("a rival claiming during the lapse wins the Stop recovery race: the warning names the rival and nothing is injected", async () => {
+    const fixture = await openHookServer();
+    projectOutcome(fixture, "stop-race-1", "delivered before the lapse");
+    await runHook(fixture, promptPayload({ prompt_id: "race-p1" }));
+    const staleToken = readOwnerFile(fixture).leaseToken;
+    expect(staleToken).toBeTruthy();
+
+    projectOutcome(fixture, "stop-race-2", "mid-turn outcome, contested");
+    lapseOwnerLease(fixture);
+
+    // The rival (a Pi lead pane) claims INSIDE the recovery window: between
+    // the owner_lapsed refusal and the hook's re-claim. The spy takes the
+    // profile first, so the re-claim meets a rotated token and a live rival
+    // lease — rejected lease_active.
+    const realRequest = ObservabilityRpcClient.prototype.request;
+    let recoveryClaims = 0;
+    vi.spyOn(ObservabilityRpcClient.prototype, "request").mockImplementation(function (
+      this: ObservabilityRpcClient,
+      method: string,
+      params: unknown,
+    ) {
+      if (method === "profile.claim") {
+        recoveryClaims += 1;
+        const takeover = fixture.delivery.claim({
+          harnessKind: "pi",
+          harnessSessionRefJson: "{}",
+          herdrSessionName: "lane-b",
+          paneId: "w9:p9",
+          profileId: "driffs",
+          subscriberId: "rival-subscriber",
+          terminalId: "w9:p9",
+          workspaceId: "w9",
+        });
+        expect(takeover.kind).toBe("reclaimed");
+      }
+      return realRequest.call(this, method, params);
+    });
+
+    const { code, stdout } = await runHook(fixture, stopPayload());
+    // An expected-failure surface, not a crash.
+    expect(code).toBe(0);
+
+    // No second attempt, nothing injected, nothing acked beyond what the
+    // prompt itself delivered and Stop settled above.
+    expect(recoveryClaims).toBe(1);
+    const parsed = JSON.parse(stdout) as {
+      hookSpecificOutput?: unknown;
+      systemMessage?: string;
+    };
+    expect(parsed.hookSpecificOutput).toBeUndefined();
+    expect(parsed.systemMessage).toContain("driffs");
+    expect(parsed.systemMessage).toContain("w9:p9");
+    expect(parsed.systemMessage).toContain("(pi)");
+
+    // The owner file's token is untouched; the rival owns the row; the
+    // fresh outcome was never leased — the next prompt's claim handles it.
+    expect(readOwnerFile(fixture).leaseToken).toBe(staleToken);
+    expect(fixture.owners.get("driffs")?.subscriberId).toBe("rival-subscriber");
+    expect(fixture.delivery.inboxList({ profileId: "driffs", state: "pending" })).toHaveLength(1);
+    expect(fixture.delivery.inboxList({ profileId: "driffs", state: "leased" })).toHaveLength(0);
   });
 });
 
@@ -1408,10 +1614,12 @@ describe("claude-hook expected-failure surfaces", () => {
     let leaseCalls = 0;
     fixture.delivery.inboxLease = (input) => {
       leaseCalls += 1;
-      const leased = realLease({ ...input, now: Date.now() + leaseCalls * 3 * 60_000 });
+      const simulatedNow = Date.now() + leaseCalls * 3 * 60_000;
+      keepOwnerLeaseAheadOfSimulatedNow(fixture, simulatedNow);
       // The excerpt shape is invalid on purpose — the cast exists to let the
       // test put a wire-level lie past TypeScript, which is exactly the
       // version skew a real daemon upgrade could produce.
+      const leased = realLease({ ...input, now: simulatedNow });
       const obligations = leased.obligations.map((obligation) => ({
         ...obligation,
         outcome:
@@ -1467,7 +1675,9 @@ describe("claude-hook expected-failure surfaces", () => {
     let leaseCalls = 0;
     fixture.delivery.inboxLease = (input) => {
       leaseCalls += 1;
-      return realLease({ ...input, now: Date.now() + leaseCalls * 3 * 60_000 });
+      const simulatedNow = Date.now() + leaseCalls * 3 * 60_000;
+      keepOwnerLeaseAheadOfSimulatedNow(fixture, simulatedNow);
+      return realLease({ ...input, now: simulatedNow });
     };
 
     const turns: string[] = [];
@@ -1516,7 +1726,9 @@ describe("claude-hook expected-failure surfaces", () => {
     let leaseCalls = 0;
     fixture.delivery.inboxLease = (input) => {
       leaseCalls += 1;
-      return realLease({ ...input, now: Date.now() + leaseCalls * 3 * 60_000 });
+      const simulatedNow = Date.now() + leaseCalls * 3 * 60_000;
+      keepOwnerLeaseAheadOfSimulatedNow(fixture, simulatedNow);
+      return realLease({ ...input, now: simulatedNow });
     };
 
     const prompt = await runHook(fixture, promptPayload());
