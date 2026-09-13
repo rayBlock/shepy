@@ -11,13 +11,13 @@ acceptance recommendation; portfolio owns cross-program acceptance.
 
 ## Live
 
-- state: **LANDED** `36fe131` (shepy branch), retired; accepted within scope by the lead, portfolio owns cross-program acceptance
+- state: **RETURNED FOR CORRECTION by portfolio (14:2xZ)** — lead's initial acceptance at `36fe131` stands as history; two portfolio findings P1/P2 reproduced by ops; correction 2 building (4th and last child)
 - lead: `w31:p1` (Claude Code, supervised)
-- workers: none (all panes closed)
-- worktrees: none (both removed; branch `pilot/context-health` deleted)
-- waits armed: none
-- next safe action: the next `shepy daemon restart` (not authorized in this run) makes `contextHealth` visible on the live `agent.get`; then the controlled continuity experiment in Interpretation
-- updated: 2026-09-13T14:15Z
+- workers: `builder-ctx-r2` (fresh) — pane/operation in lineage, profile `run-06-builder`
+- worktrees: `~/dev/shepy-wt/ctx-fix` (branch `pilot/context-health-r2`, base `a8b522c`)
+- waits armed: ONE `shepy wait <opId> --json` (background) — see lineage
+- next safe action: when the wait returns, record it; re-run the archived portfolio probe against a rebuilt dist from the candidate (in the worktree, `pnpm build` there); gate; land; hand the candidate to portfolio for its recheck
+- updated: 2026-09-13T14:25Z
 
 ## Registration (before dispatch)
 
@@ -236,7 +236,52 @@ acceptance recommendation; portfolio owns cross-program acceptance.
   `shepy agent get w31:p1 --json` has no `contextHealth` key, as
   expected. The projection becomes live at the next restart.
 
-## Results
+## Portfolio acceptance review — RETURNED FOR CORRECTION (14:2xZ)
+
+- Portfolio (Pi `wP:p70`) inspected `36fe131` and ran two deterministic
+  synthetic probes against the built module; both failed. Ops verified
+  the premise: probe hashes match (`997ca83a…` ts, `49de3be7…` json),
+  the lead's own run of the probe against the landed dist produced
+  byte-identical output (same sha256), archived at
+  `docs/runs/RUN-20260913-06/portfolio-review/`.
+  - **P1 `[probe]` — Pi branch invalidation disappears too early.**
+    Reading `a` (100) → abandoned `b` (200) → `branch_summary r
+    {parentId:a, fromId:b}` → user `u {parentId:r}`. With `r` as leaf:
+    `current:false`/`branch_switched_since_reading` (correct). With `u`
+    appended: `current:true`, `reason:null`. Cause: `leafIsBranchSummary`
+    tests only the leaf, not "a branch boundary after the reading on the
+    lineage". Missed by builder, verifier (probe P13/P14 only tested the
+    summary AS the leaf), and the lead's O3 probe (which used an
+    assistant, not a user, after the summary).
+  - **P2 `[probe]` — Claude sidechain contaminates manager identity.** A
+    sidechain assistant with `sessionId: child`, `gitBranch: child-branch`
+    is excluded from tokens/model/boundaries but still sets `sessionId`
+    and `branch` (the identity loop ran before the sidechain guard), and
+    the foreign branch then flips the manager's reading to
+    `branch_changed_since_reading`. Missed by all three checks; the
+    verifier's P16 (all-sidechain) asserted only usage/model.
+- **Source assumptions recorded, not copied from the fixture:** no
+  Claude session file on this machine contains an `isSidechain:true`
+  entry (33 files scanned, keys only, 14:23Z), so whether real sidechain
+  entries carry the child's or the parent's identity is unknown; the fix
+  excludes sidechains from identity by construction, correct under
+  either. No local Pi file has a `branch_summary` (verified 13:27Z); the
+  shape is the installed Pi type definition.
+- **Bounded extension granted by portfolio:** one further correction
+  worker (4th Flash child of at most four; the researcher was skipped),
+  same 150-min envelope (ends 15:45Z), no verifier child, portfolio
+  rechecks the returned candidate itself. Lead's initial acceptance is
+  kept below as history, not erased.
+- 14:23Z — worktree `~/dev/shepy-wt/ctx-fix`, branch
+  `pilot/context-health-r2` from `a8b522c`. Packet
+  `/tmp/run-20260913-06/correction-2.packet.md`: D11 `branch_summary`
+  position on the lineage (marker until a new reading after it,
+  precedence unchanged), D12 sidechains skipped before any observation
+  (identity, branch, `sourceUpdatedAt`; all-sidechain →
+  `no_manager_entries`), RED-first tests including both portfolio
+  fixtures verbatim and an RPC-surface case.
+
+## Results (lead's initial acceptance, 14:13Z — superseded by the portfolio review above)
 
 - **Accepted within scope and landed** `36fe131`. Gate 60 files / 660
   tests at the tip. 15 + 6 files; one corrective cycle; zero Ray or
