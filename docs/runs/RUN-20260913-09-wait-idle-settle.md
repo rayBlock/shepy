@@ -8,13 +8,13 @@ replacement, row repair, re-arm or live experiment.
 
 ## Live
 
-- state: verifying (candidate `8b7a9b6` frozen 20:29Z; ops adjudication 4/4 against the epoch query already done)
+- state: **CANDIDATE-2 `37c9b0b` READY FOR COA RECHECK — NOT LANDED.** Verifier REVISE on `8b7a9b6` (F1 = COA's P-A/P-B); lead correction 2 committed on the branch; independently verified only insofar as the verifier's own probe cases are reproduced in the committed test file. No third worker (cap respected).
 - lead: `w31:p1` (Claude Code, supervised)
-- workers: `verifier-wait` in `w31:p1F` (`zai/glm-5.3-flash`), profile `run-09-verifier`, operation `op_b06384435e04c4b91aa09391` (dispatched 20:30:30Z)
-- worktrees: `~/dev/shepy-wt/verify-wait` (detached at `8b7a9b6`), `~/dev/shepy-wt/waitfix` (branch `pilot/wait-idle-settle`, builder done, pane closed)
-- waits armed: same two single-shot instruments on the verifier: `shepy wait op_b06384435e04c4b91aa09391 --json` (task `bv4mqaqlq`, old-filter daemon, measurement) and bare `herdr agent wait verifier-wait` (task `b6ubbhkxh`, wake). No re-arm, no polling.
-- next safe action: when the herdr wait returns (deadline 21:13Z), record which instruments returned, read sentinel + `/tmp/run-20260913-09/verifier-report.md`, adjudicate; ACCEPT → gate at the tip, rebase, ff-merge, build, retire, report by 21:28Z; REVISE → land nothing, return the finding list
-- updated: 2026-09-13T20:32Z
+- workers: none (builder and verifier panes closed)
+- worktrees: `~/dev/shepy-wt/waitfix` (branch `pilot/wait-idle-settle`, at `37c9b0b`) — kept deliberately for the COA's recheck; `verify-wait` removed
+- waits armed: none (four single-shot instruments, all returned)
+- next safe action: COA rechecks `37c9b0b` (gate + `test/integration/operation-wait-epoch-boundary.test.ts` P-A/P-B); on its acceptance the lead lands via rebase + ff-merge + `pnpm build`; live rollout = a separate daemon-restart decision (Ray)
+- updated: 2026-09-13T20:47Z
 
 ## Registration (before dispatch)
 
@@ -228,6 +228,97 @@ replacement, row repair, re-arm or live experiment.
   Herdr's documented semantics plus two matched-code samples (COA's pane
   `idle`, mine `done`); it is not a controlled focus experiment, and no
   focus manipulation was or will be done here.
+- 20:44:19Z — **both verifier instruments returned within one second**
+  (native `shepy wait` `settled`; herdr `agent_info` `done`, `focused:
+  false`) — the verifier's pane, like the builder's, was never seen and
+  finished as `done`. Sentinel `VERIFY DONE`; honest clock `20:30:36Z →
+  20:44:02Z` (≈ 14 min of 30). **REVISE.** Gate at `8b7a9b6` exit 0,
+  61 / 686. 10 mutations: 7 caught by named tests, 3 survived (M4
+  latest-working, M5 pane-only, M6 session scope — the tests trimmed by
+  the checkpoint steer). 13 probes: P-A and P-B `settled` (required: not
+  settle) = **F1 MEDIUM**, the COA's counterexamples confirmed
+  independently; P9a malformed `payload_json` makes `json_extract`
+  THROW = F2 LOW; F3 LOW the three unpinned scopings; F4 INFO (R4-d had
+  no candidate test; packet grep name was stale). P4b recorded as a
+  residual: two operations both submitted before the same execution
+  rows are unattributable (rows carry no operation id). Verifier ran
+  P-A/P-B at the service+store level (identical `applyLifecycle` call
+  the RPC handler makes), disclosed.
+- 20:45Z — **lead correction 2** (no third worker): `sinceMs =
+  createdAt` (zero slack) + `json_valid(payload_json)` in both epoch
+  queries + committed pins for P-A, P-B, exact-createdAt, 1-ms-before,
+  M4 (next operation's working row after this epoch's settle does not
+  hide it), M5 (other terminal on the same pane), M6 (other herdr
+  session), F2 (malformed rows neither throw nor count). RED for
+  P-A/P-B/1-ms captured at 20:41Z against `8b7a9b6` (see above). Gate
+  exit 0, **62 files / 694 tests**. Commit `37c9b0b` on
+  `pilot/wait-idle-settle` (pathspec). Verifier pane `w31:p1F` closed
+  and worktree removed 20:46Z; the builder worktree kept at `37c9b0b`.
+
+## Results
+
+- **Observed cause (evidenced, not hypothesis):** the adapter waited for
+  Herdr `done|blocked`; Herdr reports a finished agent whose tab was
+  seen in the focused UI as `idle`. The COA's worker ended `idle` twice
+  (rows 18605, 18636); the settling MC02 worker ended `done` (18586);
+  both RUN-09 workers, unseen, ended `done` and their old-filter waits
+  settled. Restart, socket loss, envelope shape and late-armed timeout
+  are excluded for the sample and remain distinct cases.
+- **Candidate-2 `37c9b0b`** (= `4bf7de5` + `8b7a9b6` + `37c9b0b`, base
+  `c518663`): until `["idle","done","blocked"]`; execution-epoch guard
+  from the daemon's own `agent_events` (earliest `to: working` at/after
+  the operation's `createdAt`, then a later settled row, same terminal,
+  same herdr session, `json_valid`); `target_not_started` re-waitable
+  outcome; help text and design-doc line corrected. No schema change,
+  no packages, no dispatch change.
+- **Independent verdict:** verifier REVISE on `8b7a9b6` (F1–F4); the
+  correction addresses F1, F2, F3 and reproduces the verifier's decisive
+  probes as committed tests. **The correction itself has no independent
+  verifier** (cap of one builder + one verifier respected); the COA's
+  recheck is the independent step.
+- **Still unqualified:** live behaviour on the running daemon (12:41
+  build; not restarted); the index-lag residual (a working transition
+  that occurred just before creation but was indexed after it counts);
+  P4b (two operations submitted before the same execution rows —
+  unattributable without an operation id in the rows or Herdr's
+  `state_change_seq` at prompt time, both schema changes); a human
+  typing into a dispatched pane creates an indistinguishable epoch.
+- **First safe rollout step:** COA recheck of `37c9b0b` → land on
+  `shepy` (rebase + ff-merge + `pnpm build`) → Ray's `shepy daemon
+  restart` → one Shepy-dispatched run whose worker pane IS focused
+  (seen) must settle its native wait; that is the discriminating live
+  qualification the samples lacked. Rollout gate for the residuals: a
+  schema change persisting `submitted_at` and the prompt-time
+  `state_change_seq` on the operation row.
+- **Measured (no subscription billing invented):** builder ↑173k ↓169k
+  tokens (pane counter at 20:23Z), 51 min; verifier ≈ 14 min; lead ≈ 75
+  min wall (19:31→20:47) of the 120-min envelope; four native waits
+  armed as instruments (two per worker), all settled because both panes
+  were unseen — which is itself the second matched-code sample.
+
+## Experience and retirement
+
+- Builder phase overran 40 → 51 min (tests-first without source at the
+  47-min mark); a checkpoint steer at 20:24Z produced a green candidate
+  by 20:29Z with honest untested-claims. Verifier 14 of 30 min. Two
+  COA challenges (guard semantics at 19:45Z; boundary slack at 20:36Z)
+  were both correct and both absorbed without a retry-to-green: the
+  first by a mid-run addendum, the second by a lead correction after the
+  verifier's independent confirmation.
+- Retired: builder and verifier panes; `verify-wait` worktree. Kept:
+  `waitfix` worktree at `37c9b0b` for the recheck. Nothing landed.
+
+## Interpretation
+
+- Idle-vs-done is a UI-focus artefact leaking into a machine contract;
+  any Herdr wait filter narrower than Herdr's own settled set is wrong
+  by construction. Global skill/playbook wording about "done" waits
+  (run-lead skill, playbook) needs the same correction — NOT edited in
+  this run per the assignment; listed for the owner.
+- The epoch guard's honest limit is that event rows carry no operation
+  identity. The durable fix is at dispatch time (persist submission time
+  and Herdr's `state_change_seq` from the prompt receipt), not at wait
+  time; that is a small schema change and a separate decision.
 - Still unqualified by design (recorded, not fixed here): Herdr's
   `state_change_seq` at prompt time is not stored (no schema change in
   scope), so the guard reasons from indexed rows, not from Herdr's own
@@ -236,14 +327,3 @@ replacement, row repair, re-arm or live experiment.
   index lag can produce one `target_not_started` before a genuine settle
   (fail-closed, self-heals on the next wait).
 
-## Results
-
-_(appended at acceptance)_
-
-## Experience and retirement
-
-_(appended at retirement)_
-
-## Interpretation
-
-_(appended at synthesis)_
