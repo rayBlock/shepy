@@ -1,15 +1,13 @@
-import {
-  closeSync,
-  fchmodSync,
-  constants as fsConstants,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  writeSync,
-} from "node:fs";
-import { dirname, join } from "node:path";
 import { Type } from "@sinclair/typebox";
 import { Value } from "@sinclair/typebox/value";
+import {
+  casOwnerRecord,
+  type HandledRecord,
+  OwnerFileStorageError,
+  type OwnerRecord,
+  plainText,
+  readOwnerRecord,
+} from "@/cli/owner-file.js";
 import { ObservabilityRpcClient } from "@/daemon/client.js";
 import { profileClaimInputSchema } from "@/observability/schemas.js";
 
@@ -42,6 +40,20 @@ import { profileClaimInputSchema } from "@/observability/schemas.js";
  * expire, and are re-delivered. A duplicate delivery is the accepted cost;
  * acking rows nobody ever saw (the round-2 single-phase record) destroyed
  * them.
+ *
+ * The record lives in <home>/owners/claude-<encoded session>.<encoded
+ * profile>.json (see owner-file.ts for the collision-free derivation — the
+ * old `claude-<session>-<profile>` scheme collapsed distinct profile ids
+ * onto one file) and every transition is an atomic compare-and-swap:
+ * written via temp file + rename (a crash leaves the whole old or the whole
+ * new record, never a truncated one) and guarded by a per-(session,
+ * profile) lock with a hard acquisition budget, because Claude Code does
+ * not serialize hooks and a read-check-write that two processes can
+ * interleave erases records. The lock never spans an RPC. When the lock
+ * cannot be taken quickly the invocation abandons its batch — the rows stay
+ * leased server-side, expire, and are re-delivered; a duplicate is the
+ * accepted trade, a blocked editor is not. A record from the old filename
+ * scheme reads as absent: the hook re-claims, the rows re-deliver.
  *
  * Hard rules:
  *  - Exit 0 on every expected condition. The hook runs inside the user's turn
@@ -111,47 +123,6 @@ const hookPayloadSchema = Type.Object(
   { additionalProperties: true },
 );
 
-const ownerFileSchema = Type.Object(
-  {
-    delivered: Type.Union([
-      Type.Null(),
-      Type.Object(
-        {
-          ids: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
-          // Two-phase commit marker. "leased" = the batch was leased and this
-          // record written, but inbox.delivered has NOT committed: nobody has
-          // seen these outcomes. "delivered" = the daemon accepted the batch
-          // and the hook injected it: safe to ack. `phase` is REQUIRED on
-          // purpose — a record written by the previous round (no phase) fails
-          // this schema, reads back as null, and is discarded WITHOUT acking,
-          // which is the only safe reading of an unknown record. Never
-          // "upgrade" a phase-less record to delivered.
-          phase: Type.Union([Type.Literal("leased"), Type.Literal("delivered")]),
-          promptId: Type.Union([Type.Null(), Type.String({ minLength: 1 })]),
-        },
-        { additionalProperties: false },
-      ),
-    ]),
-    // Consecutive post-lease delivery-handoff failures (see recordHandoff-
-    // Failure): the ids of the last failed batch and how many turns in a row
-    // a batch sharing those ids has failed. Optional — absent on every
-    // healthy and phase-1/phase-2 record.
-    failedDelivery: Type.Optional(
-      Type.Object(
-        {
-          attempts: Type.Integer({ minimum: 1 }),
-          ids: Type.Array(Type.String({ minLength: 1 })),
-        },
-        { additionalProperties: false },
-      ),
-    ),
-    leaseToken: Type.String({ minLength: 1 }),
-    ownerSessionRefJson: Type.String({ minLength: 1 }),
-    profileId: Type.String({ minLength: 1 }),
-  },
-  { additionalProperties: false },
-);
-
 type HookPayload = {
   hook_event_name: string;
   prompt_id?: string | undefined;
@@ -205,19 +176,6 @@ const leaseResponseSchema = Type.Object(
   },
   { additionalProperties: true },
 );
-
-type OwnerFile = {
-  delivered: {
-    ids: string[];
-    phase: "leased" | "delivered";
-    promptId: string | null;
-  } | null;
-  /** See ownerFileSchema.failedDelivery. */
-  failedDelivery?: { attempts: number; ids: string[] } | undefined;
-  leaseToken: string;
-  ownerSessionRefJson: string;
-  profileId: string;
-};
 
 type OutcomeSnapshot = {
   agent: string | null;
@@ -275,8 +233,20 @@ export async function runClaudeHook(input: ClaudeHookInput): Promise<number> {
       writeOutput(input, null, error.userWarning ? [...warnings, error.userWarning] : warnings);
       return 0;
     }
+    if (error instanceof OwnerFileStorageError) {
+      // Owner-record storage is degraded: the turn still exits 0, the batch
+      // stays leased server-side and re-delivers after expiry (a duplicate,
+      // never a loss), and the operator hears why instead of the hook being
+      // silently deaf (verify-b V2).
+      writeOutput(input, null, [...warnings, ownerStorageWarning(error.profileId)]);
+      return 0;
+    }
     throw error;
   }
+}
+
+function ownerStorageWarning(profileId: string): string {
+  return `shepy: cannot write the shepy owner file for profile ${plainText(profileId)}; outcomes may repeat or lapse — if they vanish, check shepy inbox list ${plainText(profileId)} --state dead_letter`;
 }
 
 type HookEmission = { context: string; event: "Stop" | "UserPromptSubmit" } | null;
@@ -419,7 +389,7 @@ async function handlePromptSubmit(
     // The owner-file read sits ABOVE the claim on purpose: the persisted
     // record (and its lease token) must be in scope at the profile.claim
     // call site below, where the token is presented as proof of possession.
-    const previous = readOwnerFile(input.homeDir, payload.session_id, input.profileId, warnings);
+    const previous = readOwnerRecord(input.homeDir, payload.session_id, input.profileId, warnings);
     const previousFailedDelivery = previous?.failedDelivery;
     const claim = await request<{
       result?: {
@@ -524,7 +494,7 @@ async function handlePromptSubmit(
       previous.delivered = null;
     }
 
-    const cleared: OwnerFile = {
+    const cleared: OwnerRecord = {
       delivered: null,
       leaseToken,
       ownerSessionRefJson,
@@ -582,7 +552,7 @@ async function handlePromptSubmit(
     // acking, the rows expire server-side, and the outcome is re-delivered.
     // Duplicate delivery is the correct failure mode here; acking an unseen
     // batch would destroy it.
-    const record: NonNullable<OwnerFile["delivered"]> = {
+    const record: NonNullable<OwnerRecord["delivered"]> = {
       ids,
       phase: "leased",
       promptId: payload.prompt_id ?? null,
@@ -658,7 +628,7 @@ async function handleStop(
     // though Stop never re-claims. A "leased"-phase record — its process died
     // before inbox.delivered committed — is discarded without acking, exactly
     // like on UserPromptSubmit.
-    const file = readOwnerFile(input.homeDir, payload.session_id, input.profileId, warnings);
+    const file = readOwnerRecord(input.homeDir, payload.session_id, input.profileId, warnings);
     const previousFailedDelivery = file?.failedDelivery;
     let handled: HandledRecord = null;
     if (file && file.profileId === input.profileId && file.delivered) {
@@ -716,7 +686,7 @@ async function handleStop(
     const ids = obligations.map((obligation) => obligation.id);
     // Two-phase record, same as UserPromptSubmit: persist "leased" before
     // the commit, promote to "delivered" only after inbox.delivered succeeds.
-    const record: NonNullable<OwnerFile["delivered"]> = {
+    const record: NonNullable<OwnerRecord["delivered"]> = {
       ids,
       phase: "leased",
       promptId: payload.prompt_id ?? null,
@@ -830,138 +800,31 @@ async function resolveHerdrSessionName(
   }
 }
 
-function ownerFilePath(homeDir: string, sessionId: string, profileId: string): string {
-  // Both ids come from untrusted input (hook payload / CLI argv); keep them
-  // from escaping the owners directory. Keying on profile too keeps one
-  // Claude session that owns several profiles from clobbering records —
-  // each profile gets its own delivered record and lease token.
-  const safeSession = sessionId.replace(/[^A-Za-z0-9_-]/g, "_");
-  const safeProfile = profileId.replace(/[^A-Za-z0-9_-]/g, "_");
-  return join(homeDir, "owners", `claude-${safeSession}-${safeProfile}.json`);
-}
-
-function writeOwnerFile(
-  homeDir: string,
-  sessionId: string,
-  profileId: string,
-  file: OwnerFile,
-): void {
-  const path = ownerFilePath(homeDir, sessionId, profileId);
-  const payload = `${JSON.stringify(file, null, 2)}\n`;
-  try {
-    mkdirSync(dirname(path), { mode: 0o700, recursive: true });
-    // O_NOFOLLOW refuses to write through a symlink planted at the
-    // predictable path; fchmod re-enforces 0600 on every write, because a
-    // create-time mode does not touch a pre-existing file.
-    const fd = openSync(
-      path,
-      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | fsConstants.O_NOFOLLOW,
-      0o600,
-    );
-    try {
-      writeSync(fd, payload);
-      fchmodSync(fd, 0o600);
-    } finally {
-      closeSync(fd);
-    }
-  } catch (error) {
-    // The lease and delivery already succeeded server-side; a lost ack
-    // record self-heals at lease expiry. Never fail a turn over storage —
-    // but do tell the operator instead of being silently deaf (verify-b V2:
-    // seven silent turns marched an obligation into dead_letter).
-    throw new ExpectedHookError(
-      `owner file unwritable: ${describe(error)}`,
-      `shepy: cannot write the shepy owner file for profile ${plainText(profileId)}; outcomes may repeat or lapse — if they vanish, check shepy inbox list ${plainText(profileId)} --state dead_letter`,
-    );
-  }
-}
-
-function readOwnerFile(
-  homeDir: string,
-  sessionId: string,
-  profileId: string,
-  warnings: string[] = [],
-): OwnerFile | null {
-  let raw: string;
-  try {
-    raw = readFileSync(ownerFilePath(homeDir, sessionId, profileId), "utf8");
-  } catch (error) {
-    // Missing is the normal state (first turn, stateless recovery). Any
-    // other read failure is a storage problem the operator should hear about.
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      warnings.push(
-        `shepy: cannot read the shepy owner file for profile ${plainText(profileId)}; a pending ack record was ignored`,
-      );
-    }
-    return null;
-  }
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    return Value.Check(ownerFileSchema, parsed) ? (parsed as OwnerFile) : null;
-  } catch {
-    return null;
-  }
-}
-
 /**
- * One-line-safe rendering of untrusted-ish text (profile ids from argv, pane
- * ids and harness kinds from the daemon) for user-facing warning lines:
- * control bytes and line separators become spaces so a value can never forge
- * additional lines in the systemMessage.
- */
-function plainText(value: string | null | undefined, max = 64): string {
-  const collapsed = (value ?? "")
-    // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional stripping — untrusted values must never carry control bytes or line breaks into a user-facing warning line
-    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (collapsed.length === 0) return "unknown";
-  return collapsed.length > max ? `${collapsed.slice(0, max - 1)}…` : collapsed;
-}
-
-/**
- * The record an invocation has already settled (acked or discarded): its
- * lease token and batch ids. Null means the invocation expects no unsettled
- * record on disk at all.
+ * The compare-and-swap on the owner record. All of the durability machinery —
+ * the bounded per-(session, profile) cross-process lock, the read-check-write
+ * exclusion, and the temp-file + rename atomic replacement — lives in
+ * owner-file.ts; this wrapper keeps the hook's call sites readable.
  *
- * Note the comment above writeOwnerFileIfUnchanged: the guard compares only
- * the delivered field, so a failedDelivery marker rides along untouched.
- */
-type HandledRecord = { ids: string[]; leaseToken: string } | null;
-
-function sameUnsettledRecord(current: OwnerFile | null, handled: HandledRecord): boolean {
-  const currentDelivered = current?.delivered ?? null;
-  if (handled === null) return currentDelivered === null;
-  if (currentDelivered === null) return false;
-  return (
-    current?.leaseToken === handled.leaseToken &&
-    currentDelivered.ids.length === handled.ids.length &&
-    currentDelivered.ids.every((id, index) => id === handled.ids[index])
-  );
-}
-
-/**
- * Read-modify-write against the current on-disk state. Claude Code does not
- * serialize hooks: the Stop for turn N can still be running when the
- * UserPromptSubmit for turn N+1 finishes. A write derived from a stale
- * in-memory read would erase a record this invocation never settled,
- * orphaning a delivered batch — it expires, is re-leased, and the model
- * sees it twice. So every write re-reads the file first and proceeds only
- * when the on-disk record is still exactly the one this invocation settled
- * (or there is no unsettled record to protect). A lost race leaves the
- * newer record alone; the caller's own batch, if it had one, is abandoned
- * and expires back to pending server-side — a duplicate, never a loss.
+ * Claude Code does not serialize hooks: the Stop for turn N can still be
+ * running when the UserPromptSubmit for turn N+1 finishes. A write derived
+ * from a stale in-memory read would erase a record this invocation never
+ * settled, orphaning a delivered batch — so the check and the write run
+ * under the record lock, indivisibly. A lost race (another invocation owns
+ * the record now) or a lock that could not be acquired within the bounded
+ * budget returns false: the caller abandons its own batch, the rows stay
+ * leased server-side, expire, and re-deliver — a duplicate, never a loss,
+ * and never a blocked editor. Storage failures throw OwnerFileStorageError:
+ * expected, exit 0, operator-facing warning.
  */
 function writeOwnerFileIfUnchanged(
   homeDir: string,
   sessionId: string,
   profileId: string,
-  next: OwnerFile,
+  next: OwnerRecord,
   handled: HandledRecord,
 ): boolean {
-  if (!sameUnsettledRecord(readOwnerFile(homeDir, sessionId, profileId), handled)) return false;
-  writeOwnerFile(homeDir, sessionId, profileId, next);
-  return true;
+  return casOwnerRecord({ homeDir, sessionId, profileId, next, handled });
 }
 
 /**
@@ -1076,9 +939,9 @@ function outcomeLine(obligation: LeasedObligation): string {
 function recordHandoffFailure(
   input: ClaudeHookInput,
   sessionId: string,
-  base: OwnerFile,
+  base: OwnerRecord,
   handled: HandledRecord,
-  previous: OwnerFile["failedDelivery"],
+  previous: OwnerRecord["failedDelivery"],
   ids: string[] | null,
   reason: string,
 ): never {

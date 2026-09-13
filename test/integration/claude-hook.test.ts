@@ -1,9 +1,11 @@
+import { spawn } from "node:child_process";
 import {
   chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -12,6 +14,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { createAgentHistoryService } from "@/agent-history/service.js";
 import {
@@ -23,6 +26,7 @@ import {
   runClaudeHook,
   SYSTEM_MESSAGE_MAX_CHARS,
 } from "@/cli/claude-hook.js";
+import { ownerLockPath, ownerRecordPath } from "@/cli/owner-file.js";
 import { formatCliError, helpText, parseCliArgs } from "@/cli/shepy.js";
 import { ObservabilityRpcClient } from "@/daemon/client.js";
 import { ObservabilityRpcServer } from "@/daemon/observability-server.js";
@@ -59,6 +63,9 @@ import { profileClaimInputSchema } from "@/observability/schemas.js";
 const SESSION_ID = "6f7f8f36-8771-4c99-8da1";
 const PROMPT_ID = "prompt-1";
 
+/** Repo root — the working directory real hook child processes run from. */
+const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
+
 const tempDirs: string[] = [];
 const servers: ObservabilityRpcServer[] = [];
 const openDbs: { close(): void }[] = [];
@@ -83,7 +90,9 @@ type Fixture = {
 async function openHookServer(): Promise<Fixture> {
   const dir = mkdtempSync(join(tmpdir(), "shepy-claude-hook-"));
   tempDirs.push(dir);
-  const socketPath = join(dir, "rpc.sock");
+  // "shepy.sock" is what a real hook child resolves from SHEPY_HOME when no
+  // daemon runtime record exists — the cross-process tests rely on it.
+  const socketPath = join(dir, "shepy.sock");
   const { sqlite } = openSqlite(join(dir, "test.sqlite"));
   openDbs.push(sqlite);
   applyMigrations(sqlite, { migrationsFolder: "drizzle" });
@@ -258,7 +267,9 @@ function stopPayload(overrides: Record<string, unknown> = {}): Record<string, un
 }
 
 function ownerFilePath(fixture: Fixture, profileId = "driffs"): string {
-  return join(fixture.dir, "owners", `claude-${SESSION_ID}-${profileId}.json`);
+  // The hook's real derivation — imported, not replicated, so tests can
+  // never drift from the storage code they observe.
+  return ownerRecordPath(fixture.dir, SESSION_ID, profileId);
 }
 
 function readOwnerFile(
@@ -1560,5 +1571,345 @@ describe("claude-hook expected-failure surfaces", () => {
     expect(third.code).toBe(0);
     const parsed = JSON.parse(third.stdout || "{}") as { systemMessage?: string };
     expect(parsed.systemMessage).toContain("dead_letter");
+  });
+});
+
+describe("claude-hook owner-file cross-process durability", () => {
+  /**
+   * The owner record is the durable state of a STATELESS hook: whatever it
+   * says is what the next turn acks. Everything in this block exercises the
+   * record under REAL cross-process conditions — two separate `shepy
+   * claude-hook` OS processes against the same daemon socket and the same
+   * owners directory — because sequential in-process calls can never observe
+   * a check→write interleave. `SHEPY_HOOK_TEST_CAS_PAUSE_MS` widens the
+   * check→write window of the compare-and-write so the race is deterministic
+   * instead of statistical; it defaults to 0 and is set only here.
+   */
+
+  type HookChildExit = {
+    code: number | null;
+    signal: string | null;
+    stderr: string;
+    stdout: string;
+  };
+
+  function spawnHookChild(
+    fixture: Fixture,
+    payload: unknown,
+    extraEnv: Record<string, string> = {},
+  ): { exit: Promise<HookChildExit>; kill: (signal: NodeJS.Signals) => boolean } {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const child = spawn(
+      process.execPath,
+      ["--import", "tsx", "src/cli/shepy.ts", "claude-hook", "--profile", "driffs"],
+      {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          SHEPY_HOME: fixture.dir,
+          HERDR_PANE_ID: "w1:p1",
+          HERDR_WORKSPACE_ID: "w1",
+          SHEPY_HOOK_TEST_CAS_PAUSE_MS: "",
+          ...extraEnv,
+        },
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => stdout.push(chunk));
+    child.stderr.on("data", (chunk: string) => stderr.push(chunk));
+    child.stdin.write(JSON.stringify(payload));
+    child.stdin.end();
+    const exit = new Promise<HookChildExit>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        child.kill("SIGKILL");
+        reject(new Error(`hook child did not exit in 60s; stderr: ${stderr.join("")}`));
+      }, 60_000);
+      child.on("exit", (code, signal) => {
+        clearTimeout(timer);
+        resolve({ code, signal, stderr: stderr.join(""), stdout: stdout.join("") });
+      });
+      child.on("error", (error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+    });
+    return { exit, kill: (signal) => child.kill(signal) };
+  }
+
+  async function pollUntil(what: string, timeoutMs: number, condition: () => boolean) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (condition()) return;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    throw new Error(`timed out after ${timeoutMs}ms: ${what}`);
+  }
+
+  /** Path of the per-(session, profile) owner-record lock file. */
+  function lockFilePath(fixture: Fixture): string {
+    return ownerLockPath(fixture.dir, SESSION_ID, "driffs");
+  }
+
+  test("two real hook processes race the same owner record: the later write must not destroy the other's record and no batch is acked unseen", {
+    timeout: 90_000,
+  }, async () => {
+    const fixture = await openHookServer();
+    // Turn N committed record R0 = { delivered [O1], token T0 }.
+    projectOutcome(fixture, "hook-race-a", "race outcome one");
+    await runHook(fixture, promptPayload({ prompt_id: "race-p0" }));
+    const o1Id = readOwnerFile(fixture).delivered?.ids?.[0];
+    expect(o1Id).toBeTruthy();
+    // A fresh mid-turn outcome O2 is pending when the two processes fire.
+    projectOutcome(fixture, "hook-race-b", "race outcome two");
+    const o2Id = fixture.delivery.inboxList({ profileId: "driffs", state: "pending" })[0]?.id;
+    expect(o2Id).toBeTruthy();
+
+    // Gate 1: park the Stop child at its inbox.ack, AFTER its initial read
+    // of R0 (handleStop reads before it acks) but BEFORE its final
+    // check→write — Claude Code does not serialize hooks.
+    const realAck = fixture.delivery.inboxAck.bind(fixture.delivery);
+    let releaseAck!: () => void;
+    const ackGate = new Promise<void>((resolve) => {
+      releaseAck = resolve;
+    });
+    let ackCalls = 0;
+    Object.assign(fixture.delivery, {
+      inboxAck: async (input: Parameters<ProfileDeliveryService["inboxAck"]>[0]) => {
+        ackCalls += 1;
+        if (ackCalls === 1) await ackGate;
+        return realAck(input);
+      },
+    });
+    const stopChild = spawnHookChild(fixture, stopPayload({ prompt_id: "race-stop" }), {
+      SHEPY_HOOK_TEST_CAS_PAUSE_MS: "300",
+    });
+    await vi.waitFor(() => expect(ackCalls).toBe(1), { timeout: 30_000, interval: 20 });
+
+    // Gate 2: park the prompt child at inbox.delivered. The prompt child's
+    // settle-ack is the SECOND ack and passes straight through — once it is
+    // observed, the prompt child is inside its own widened check→write
+    // window, holding a record it has not written yet.
+    const realDelivered = fixture.delivery.inboxDelivered.bind(fixture.delivery);
+    let releaseDelivered!: () => void;
+    const deliveredGate = new Promise<void>((resolve) => {
+      releaseDelivered = resolve;
+    });
+    let deliveredCalls = 0;
+    Object.assign(fixture.delivery, {
+      inboxDelivered: async (input: Parameters<ProfileDeliveryService["inboxDelivered"]>[0]) => {
+        deliveredCalls += 1;
+        if (deliveredCalls === 1) await deliveredGate;
+        return realDelivered(input);
+      },
+    });
+    const upsChild = spawnHookChild(fixture, promptPayload({ prompt_id: "race-ups" }), {
+      SHEPY_HOOK_TEST_CAS_PAUSE_MS: "300",
+    });
+    await vi.waitFor(() => expect(ackCalls).toBe(2), { timeout: 30_000, interval: 20 });
+
+    // Both processes are now between check and write on the same record.
+    // Let the Stop child proceed: it re-checks (still R0 — the prompt child
+    // has not written), passes, and pauses inside its own window.
+    releaseAck();
+    // The prompt child's pause lapses first (it started earlier): it wins
+    // the file, writes { leased [O2], T1 }, and parks at inbox.delivered.
+    await vi.waitFor(() => expect(deliveredCalls).toBe(1), { timeout: 30_000, interval: 20 });
+
+    // The Stop child now finishes its stale write against the record the
+    // prompt child just installed. Then both drain.
+    const stop = await stopChild.exit;
+    releaseDelivered();
+    const ups = await upsChild.exit;
+
+    expect(stop.code).toBe(0);
+    expect(stop.stdout).toBe("");
+    expect(ups.code).toBe(0);
+    expect(ups.stdout).toContain("race outcome two");
+
+    // THE INVARIANTS. The prompt child's record must survive: its lease
+    // token is the live daemon token, and its delivered batch is on disk.
+    const file = readOwnerFile(fixture);
+    const daemonToken = fixture.owners.get("driffs")?.leaseToken;
+    expect(file.leaseToken).toBe(daemonToken);
+    expect(file.delivered?.phase).toBe("delivered");
+    expect(file.delivered?.ids).toEqual([o2Id]);
+    // ...and server-side: O1 acked exactly once, O2 delivered, nothing
+    // acked that never reached a "delivered" record.
+    expect(
+      fixture.delivery.inboxList({ profileId: "driffs", state: "acked" }).map((r) => r.id),
+    ).toEqual([o1Id]);
+    expect(
+      fixture.delivery.inboxList({ profileId: "driffs", state: "delivered" }).map((r) => r.id),
+    ).toEqual([o2Id]);
+    expect(fixture.delivery.inboxList({ profileId: "driffs", state: "pending" })).toHaveLength(0);
+    expect(fixture.delivery.inboxList({ profileId: "driffs", state: "leased" })).toHaveLength(0);
+  });
+
+  test("profiles a:b and a_b in one session get two distinct owner files (no filename collision)", async () => {
+    const fixture = await openHookServer();
+    fixture.profiles.createProfile({ displayName: "Colon", profileId: "a:b", projectRoots: [] });
+    fixture.profiles.addSubscription({
+      agentSelectorJson: JSON.stringify({ kind: "name", value: "builder" }),
+      herdrSessionName: "lane-b",
+      profileId: "a:b",
+      workspaceSelectorJson: JSON.stringify({ herdrSession: "lane-b", workspaceId: "w2" }),
+    });
+    fixture.profiles.createProfile({
+      displayName: "Underscore",
+      profileId: "a_b",
+      projectRoots: [],
+    });
+    fixture.profiles.addSubscription({
+      agentSelectorJson: JSON.stringify({ kind: "name", value: "builder" }),
+      herdrSessionName: "lane-b",
+      profileId: "a_b",
+      workspaceSelectorJson: JSON.stringify({ herdrSession: "lane-b", workspaceId: "w2" }),
+    });
+    projectOutcome(fixture, "hook-colon", "colon outcome");
+    projectOutcome(fixture, "hook-under", "underscore outcome");
+
+    const first = await runHook(fixture, promptPayload({ prompt_id: "col-1" }), {
+      profileId: "a:b",
+    });
+    expect(first.code).toBe(0);
+    const second = await runHook(fixture, promptPayload({ prompt_id: "col-2" }), {
+      profileId: "a_b",
+    });
+    expect(second.code).toBe(0);
+
+    // The two profile ids are distinct; under a sanitizer that collapses
+    // non-alphanumerics both map onto ONE file and the second turn clobbers
+    // the first record (and acks through the wrong profile's identity).
+    const colonFile = readOwnerFile(fixture, "a:b");
+    const underFile = readOwnerFile(fixture, "a_b");
+    expect(colonFile.delivered?.ids).toHaveLength(2);
+    expect(underFile.delivered?.ids).toHaveLength(2);
+    expect(colonFile.delivered?.ids).not.toEqual(underFile.delivered?.ids);
+    // Both deliveries stand server-side, per profile.
+    expect(fixture.delivery.inboxList({ profileId: "a:b", state: "delivered" })).toHaveLength(2);
+    expect(fixture.delivery.inboxList({ profileId: "a_b", state: "delivered" })).toHaveLength(2);
+  });
+
+  test("a lock that cannot be taken quickly makes the hook abandon its batch: exit 0, nothing recorded as delivered, rows stay leased", {
+    timeout: 30_000,
+  }, async () => {
+    const fixture = await openHookServer();
+    projectOutcome(fixture, "hook-lock", "contended outcome");
+    mkdirSync(dirname(ownerFilePath(fixture)), { recursive: true });
+    // A lock freshly minted by another live process: never stale within the
+    // acquisition budget, so the hook must give up, not wait it out.
+    writeFileSync(lockFilePath(fixture), `${process.pid}\n`, { mode: 0o600 });
+
+    const { code, stdout } = await runHook(fixture, promptPayload({ prompt_id: "lock-1" }));
+    expect(code).toBe(0);
+    expect(stdout).toBe("");
+    // Nothing was recorded — the record that would let a later turn ack the
+    // batch was never written.
+    expect(existsSync(ownerFilePath(fixture))).toBe(false);
+    // The rows were leased before the abandonment: they stay leased
+    // server-side, expire, and re-deliver — a duplicate, never a loss.
+    expect(fixture.delivery.inboxList({ profileId: "driffs", state: "leased" })).toHaveLength(1);
+    expect(fixture.delivery.inboxList({ profileId: "driffs", state: "delivered" })).toHaveLength(0);
+    expect(fixture.delivery.inboxList({ profileId: "driffs", state: "acked" })).toHaveLength(0);
+  });
+
+  test("a SIGKILL between the temp write and the rename leaves the old record readable, never a partial", {
+    timeout: 90_000,
+  }, async () => {
+    const fixture = await openHookServer();
+    projectOutcome(fixture, "hook-crashw-1", "crash window one");
+    await runHook(fixture, promptPayload({ prompt_id: "crashw-0" }));
+    const o1Id = readOwnerFile(fixture).delivered?.ids?.[0];
+    expect(o1Id).toBeTruthy();
+    projectOutcome(fixture, "hook-crashw-2", "crash window two");
+
+    // A real hook process, paused inside the atomic replacement (temp file
+    // written and fsynced, rename not yet run), then killed hard.
+    const child = spawnHookChild(fixture, promptPayload({ prompt_id: "crashw-1" }), {
+      SHEPY_HOOK_TEST_WRITE_PAUSE: "before-rename",
+    });
+    const ownersDir = dirname(ownerFilePath(fixture));
+    await pollUntil(
+      "no atomic temp stage appeared — the owner file was written in place (truncate-then-write), not replaced by rename",
+      15_000,
+      () => readdirSync(ownersDir).some((name) => name.endsWith(".tmp")),
+    );
+    child.kill("SIGKILL");
+    const killed = await child.exit;
+    expect(killed.signal).toBe("SIGKILL");
+
+    // The previous record is exactly intact: whole old file or whole new
+    // file, never a truncated hybrid.
+    const before = JSON.parse(readFileSync(ownerFilePath(fixture), "utf8")) as {
+      delivered: { ids: string[]; phase: string } | null;
+      leaseToken: string;
+    };
+    expect(before.delivered?.ids).toEqual([o1Id]);
+    expect(before.delivered?.phase).toBe("delivered");
+
+    // Server-side: the killed batch was leased, never delivered, never acked.
+    expect(fixture.delivery.inboxList({ profileId: "driffs", state: "leased" })).toHaveLength(1);
+    expect(fixture.delivery.inboxList({ profileId: "driffs", state: "delivered" })).toHaveLength(0);
+
+    // Recovery: the killed child left an ORPHANED LOCK (a crashed holder can-
+    // not release). Real recovery is two-fold: the crashed turn's claim lease
+    // must lapse before the pane can re-claim (server-side, below), and the
+    // orphaned lock is stolen once it ages past OWNER_LOCK_STALE_MS — no live
+    // holder can hold it that long, holds are filesystem-scale microseconds.
+    // Wait out the staleness window, then lapse the claim lease.
+    const lockPath = lockFilePath(fixture);
+    await pollUntil("orphaned lock never aged past the steal threshold", 10_000, () => {
+      try {
+        return Date.now() - statSync(lockPath).mtimeMs > 2_100;
+      } catch {
+        return true;
+      }
+    });
+    const lapsed = openSqlite(join(fixture.dir, "test.sqlite"));
+    openDbs.push(lapsed.sqlite);
+    lapsed.sqlite
+      .prepare(
+        "update profile_owners set lease_expires_at = 0, last_seen_at = 0 where profile_id = ?",
+      )
+      .run("driffs");
+    const realLease = fixture.delivery.inboxLease.bind(fixture.delivery);
+    fixture.delivery.inboxLease = (input) => realLease({ ...input, now: Date.now() + 3 * 60_000 });
+    const next = await runHook(fixture, promptPayload({ prompt_id: "crashw-2" }));
+    fixture.delivery.inboxLease = realLease;
+    expect(next.code).toBe(0);
+    expect(next.stdout).toContain("crash window two");
+    const recovered = readOwnerFile(fixture);
+    expect(recovered.delivered?.phase).toBe("delivered");
+    expect(recovered.delivered?.ids).not.toEqual([o1Id]);
+    expect(
+      fixture.delivery.inboxList({ profileId: "driffs", state: "delivered" }).map((r) => r.id),
+    ).not.toContain(o1Id as string);
+  });
+
+  test("the owner file is replaced by rename, never truncated in place", async () => {
+    const fixture = await openHookServer();
+    projectOutcome(fixture, "hook-ino-1", "inode one");
+    await runHook(fixture, promptPayload({ prompt_id: "ino-1" }));
+    const before = statSync(ownerFilePath(fixture));
+    expect(before.mode & 0o777).toBe(0o600);
+
+    projectOutcome(fixture, "hook-ino-2", "inode two");
+    const { code } = await runHook(fixture, promptPayload({ prompt_id: "ino-2" }));
+    expect(code).toBe(0);
+
+    // rename(2) swaps the directory entry: the written record lives on a NEW
+    // inode. An in-place truncate-then-write would keep the old inode and
+    // leave a crash window with no readable file at all.
+    const after = statSync(ownerFilePath(fixture));
+    expect(after.ino).not.toBe(before.ino);
+    expect(after.mode & 0o777).toBe(0o600);
+    const file = JSON.parse(readFileSync(ownerFilePath(fixture), "utf8")) as {
+      delivered: { ids: string[]; phase: string } | null;
+    };
+    expect(file.delivered?.phase).toBe("delivered");
+    expect(file.delivered?.ids).toHaveLength(1);
   });
 });
