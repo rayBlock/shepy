@@ -113,6 +113,33 @@ replacement, row repair, re-arm or live experiment.
 - 19:46:48Z — addendum pointer delivered to the working builder as a Pi
   steering prompt (`agent_prompted`, status stayed `working`, seq 2615
   unchanged). Instruments untouched.
+- 20:22Z — COA status check: builder past its 40-min phase (started
+  19:38Z). **Ops inspection 20:23:53Z (one read, no polling):** status
+  `working`, seq 2615 (no state change since dispatch — the addendum and
+  this steer were consumed as Pi steering, not as new turns), ~173k tokens
+  in; worktree has NO commits and NO source changes; 246 lines of RED
+  tests across `test/unit/herdr-orchestration-transport-adapter.test.ts`,
+  `test/unit/operation-wait-service.test.ts`,
+  `test/integration/operation-wait-rpc.test.ts` and a new
+  `test/integration/agent-events-store.test.ts`; a read-only run shows 8
+  named RED tests, some still phrased in the superseded any-row
+  semantics. **Original overrun preserved:** 40-min phase → 47 min at the
+  steer with zero source.
+- 20:24:12Z — **checkpoint steer** (argv, Pi steering, status stayed
+  `working`): hard stop 20:40Z; implement the source for D1/D2'/D3'/D4;
+  make existing tests GREEN under epoch semantics; required minimum R1,
+  R2'(a–e), R3', R4'(a)(b)(c)(e); everything else under Untested claims;
+  `pnpm check`; commit; report; sentinel — or BLOCKED with exact failing
+  names.
+- **Reallocation inside the original 120-min envelope (ends 21:31Z):**
+  builder to 20:40Z (62 min total, overrun recorded); freeze + verifier
+  dispatch by 20:43Z; verifier 30 min (packet budget reduced from 35) to
+  21:13Z; lead adjudication + gate + landing to 21:28Z. No corrective
+  cycle fits; a REVISE verdict lands nothing and returns the exact
+  finding list as the candidate report. If the builder reports BLOCKED
+  with green tests but incomplete source, the lead implements the
+  remaining source lines itself on the builder's tests (no new worker),
+  still followed by the fresh verifier.
 - Still unqualified by design (recorded, not fixed here): Herdr's
   `state_change_seq` at prompt time is not stored (no schema change in
   scope), so the guard reasons from indexed rows, not from Herdr's own
