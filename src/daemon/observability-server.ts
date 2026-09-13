@@ -300,8 +300,17 @@ export class ObservabilityRpcServer {
       const result = await this.#dispatch(socket, request.method, request.params ?? {});
       this.#write(socket, { id: request.id, result });
     } catch (error) {
+      // Stable machine-readable code when the failure carries one (e.g.
+      // InboxRefusedError's not_owner / owner_lapsed): callers branch on the
+      // code instead of parsing prose. Message text stays the prose contract
+      // existing clients match on.
       this.#write(socket, {
-        error: { message: error instanceof Error ? error.message : String(error) },
+        error: {
+          ...(typeof (error as { code?: unknown }).code === "string"
+            ? { code: (error as { code?: string }).code }
+            : {}),
+          message: error instanceof Error ? error.message : String(error),
+        },
         id: request.id,
       });
     }

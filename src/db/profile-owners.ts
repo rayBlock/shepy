@@ -7,14 +7,25 @@ import type { DatabaseSync } from "node:sqlite";
  * claim by a new terminal replaces it and invalidates the old lease token.
  */
 
-/**
- * Lease defaults shared by claim and renew (vault §8.2). Renew MUST derive
- * its expiry judgement from the same grace claim uses — the two paths decide
- * "is this lease alive" at the same instants, or a heartbeat could revive a
- * lease a claimant was entitled to take.
- */
 const DEFAULT_LEASE_MS = 5 * 60_000;
 export const DEFAULT_LEASE_GRACE_MS = 30_000;
+
+/**
+ * The ONE lease-liveness rule (vault §8.2): a lease is alive strictly until
+ * `lease_expires_at + grace`. Every path that decides "may this lease still
+ * act" — claim's expiry rule, renew's fail-closed heartbeat, and the inbox
+ * lease fence — must derive its answer from this predicate, at the same
+ * instants, or one path could revive (or admit) a lease another path was
+ * right to treat as dead. `graceMs` stays a parameter because claim already
+ * exposed it; the other callers take the default.
+ */
+export function isLeaseAlive(
+  owner: { leaseExpiresAt: number },
+  now: number,
+  graceMs: number = DEFAULT_LEASE_GRACE_MS,
+): boolean {
+  return owner.leaseExpiresAt + graceMs > now;
+}
 
 export type OwnerRow = {
   claimed_at: number;
@@ -129,7 +140,7 @@ export class ProfileOwnerStore {
       // outlives its session id) must still take the fast path.
       const holdsLease =
         input.currentLeaseToken !== undefined && input.currentLeaseToken === existing.leaseToken;
-      const leaseAlive = existing.leaseExpiresAt + graceMs > now;
+      const leaseAlive = isLeaseAlive(existing, now, graceMs);
       if (!holdsLease && leaseAlive) {
         // The active owner's identity is public; its token is not. A
         // rejected claimant must never receive the capability that
@@ -188,8 +199,9 @@ export class ProfileOwnerStore {
     // nobody contested the lapse: claim would hand the profile to the next
     // claimant at exactly this instant, so a returning owner's heartbeat
     // must fail closed — token equality alone would silently resurrect an
-    // expired lease no sweeper ever removes.
-    if (owner.leaseExpiresAt + DEFAULT_LEASE_GRACE_MS <= this.#now()) return false;
+    // expired lease no sweeper ever removes. Same predicate as claim: the
+    // two paths must agree at every instant.
+    if (!isLeaseAlive(owner, this.#now())) return false;
     const expiresAt = this.#now() + (input.leaseMs ?? DEFAULT_LEASE_MS);
     this.#sqlite
       .prepare(

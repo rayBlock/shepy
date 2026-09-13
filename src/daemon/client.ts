@@ -3,7 +3,20 @@ import { encodeJsonLine, JsonLineDecoder } from "@/shared/json-lines.js";
 
 type Pending = { reject(error: Error): void; resolve(value: unknown): void };
 
-type RpcResponse = { error?: { message?: string }; id?: number | string; result?: unknown };
+type RpcResponse = {
+  error?: { code?: string; message?: string };
+  id?: number | string;
+  result?: unknown;
+};
+
+/** A rejection carrying the daemon's stable error code, when it sent one. */
+type CodedError = Error & { code?: string };
+
+function codedError(message: string | undefined, code: string | undefined): CodedError {
+  const error = new Error(message ?? "Observability RPC failed") as CodedError;
+  if (code !== undefined) error.code = code;
+  return error;
+}
 
 export class ObservabilityRpcClient {
   readonly #decoder = new JsonLineDecoder();
@@ -43,7 +56,7 @@ export class ObservabilityRpcClient {
       }
       this.#pending.delete(String(response.id));
       if (response.error) {
-        pending.reject(new Error(response.error.message ?? "Observability RPC failed"));
+        pending.reject(codedError(response.error.message, response.error.code));
       } else {
         pending.resolve(response.result);
       }

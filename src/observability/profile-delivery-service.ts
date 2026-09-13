@@ -6,6 +6,7 @@ import type { OrchestratorProfileStore } from "@/db/orchestrator-profiles.js";
 import type { ProfileOwnerStore } from "@/db/profile-owners.js";
 import {
   type ClaimResult,
+  isLeaseAlive,
   type PublicProfileOwner,
   toPublicProfileOwner,
 } from "@/db/profile-owners.js";
@@ -45,6 +46,27 @@ export const NOTIFIABLE_EVENT_TYPES: ReadonlySet<AgentEventType> = new Set([
  * orchestrator wake path (wake.ts AGENT_UPDATE_EXCERPT_CHARS).
  */
 export const INBOX_OUTCOME_EXCERPT_CHARS = 2_000;
+
+/**
+ * A classified inbox.lease refusal. The RPC envelope serialises `code`, so
+ * callers can branch on the refusal kind without parsing prose:
+ *  - `not_owner` — the presented token is not the active owner's (arbitrary
+ *    string, or superseded by a re-claim). Nothing to recover; a new claim
+ *    (or the expiry rule) decides who owns the profile.
+ *  - `owner_lapsed` — the token MATCHES the row but the lease died past
+ *    grace. The holder can recover: re-claim presenting the same token as
+ *    proof of possession, then lease again with the fresh token (the hook's
+ *    Stop does exactly that, once).
+ */
+export class InboxRefusedError extends Error {
+  readonly code: "not_owner" | "owner_lapsed";
+
+  constructor(code: "not_owner" | "owner_lapsed", message: string) {
+    super(message);
+    this.name = "InboxRefusedError";
+    this.code = code;
+  }
+}
 
 /**
  * The immutable event snapshot a leased obligation refers to. Built ONLY
@@ -128,6 +150,7 @@ export function projectInboxOutcome(event: AgentEventRecord): InboxOutcomeSnapsh
 export class ProfileDeliveryService {
   readonly #agents: AgentStore;
   readonly #agentEvents: AgentEventStore | undefined;
+  readonly #now: () => number;
   readonly #obligations: DeliveryObligationStore;
   readonly #owners: ProfileOwnerStore;
   readonly #profiles: OrchestratorProfileStore;
@@ -135,12 +158,17 @@ export class ProfileDeliveryService {
   constructor(options: {
     agentEvents?: AgentEventStore;
     agents: AgentStore;
+    /** The clock the lease-admission fence reads when a call does not pass
+     * `now` explicitly. Must be the same clock the owners store was built
+     * with — claim, renew and lease must judge liveness at one instant. */
+    now?: () => number;
     obligations: DeliveryObligationStore;
     owners: ProfileOwnerStore;
     profiles: OrchestratorProfileStore;
   }) {
     this.#agents = options.agents;
     this.#agentEvents = options.agentEvents;
+    this.#now = options.now ?? Date.now;
     this.#obligations = options.obligations;
     this.#owners = options.owners;
     this.#profiles = options.profiles;
@@ -249,12 +277,18 @@ export class ProfileDeliveryService {
    * Leasing is a mutation — it stamps rows, increments attempts and removes
    * the batch from every other harness's reach — so it is fenced to the
    * token that currently owns the profile. A stale token (superseded by a
-   * re-claim) or an arbitrary string is refused outright; before this fence
-   * any presented token could pull a profile's pending batch under itself,
-   * double-delivering it beside the legitimate owner's pump. Ack/delivered/
-   * nack need no such fence: they can only touch rows already stamped with
-   * the presented token, so their authority is the stamp, not live
-   * ownership (inboxAck documents the superseded-token decision).
+   * re-claim) or an arbitrary string is refused outright (`not_owner`);
+   * before this fence any presented token could pull a profile's pending
+   * batch under itself, double-delivering it beside the legitimate owner's
+   * pump. The fence is also the ONE liveness rule claim and renew use: a
+   * token that still matches the row but whose lease died past grace is
+   * refused `owner_lapsed` — claim would hand the profile to the next
+   * claimant at this instant, so leasing must fail closed too, and the
+   * lapsed holder's recovery is a proof-of-possession re-claim, not a
+   * resurrection. Ack/delivered/nack need no such fence: they can only
+   * touch rows already stamped with the presented token, so their authority
+   * is the stamp, not live ownership (inboxAck documents the
+   * superseded-token decision).
    */
   inboxLease(input: { leaseToken: string; maxBatch?: number; now?: number; profileId: string }): {
     expired: number;
@@ -262,8 +296,15 @@ export class ProfileDeliveryService {
   } {
     const owner = this.#owners.get(input.profileId);
     if (!owner || owner.leaseToken !== input.leaseToken) {
-      throw new Error(
+      throw new InboxRefusedError(
+        "not_owner",
         `inbox.lease refused: the presented lease token is not the active owner of profile ${input.profileId}`,
+      );
+    }
+    if (!isLeaseAlive(owner, input.now ?? this.#now())) {
+      throw new InboxRefusedError(
+        "owner_lapsed",
+        `inbox.lease refused: the lease of profile ${input.profileId} lapsed past lease + grace — re-claim the profile before leasing`,
       );
     }
     const sweep = this.#obligations.sweepExpired({

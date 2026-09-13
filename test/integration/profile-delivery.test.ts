@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { createAgentHistoryService } from "@/agent-history/service.js";
 import { runCliCommand } from "@/cli/shepy.js";
+import { ObservabilityRpcClient } from "@/daemon/client.js";
 import { ObservabilityRpcServer } from "@/daemon/observability-server.js";
 import { AgentContextSnapshotStore } from "@/db/agent-context-snapshots.js";
 import { AgentEventStore } from "@/db/agent-events.js";
@@ -16,11 +17,14 @@ import { DeliveryObligationStore, MAX_DELIVERY_ATTEMPTS } from "@/db/delivery-ob
 import { HerdrSessionStore } from "@/db/herdr-sessions.js";
 import { HerdrWorkspaceStore } from "@/db/herdr-workspaces.js";
 import { OrchestratorProfileStore } from "@/db/orchestrator-profiles.js";
-import { ProfileOwnerStore } from "@/db/profile-owners.js";
+import { isLeaseAlive, ProfileOwnerStore } from "@/db/profile-owners.js";
 import { AgentContextService } from "@/observability/agent-context-service.js";
 import { AgentOrchestratorService } from "@/observability/agent-orchestrator-service.js";
 import type { AgentEventRecord, AgentIndexRecord } from "@/observability/contracts.js";
-import { ProfileDeliveryService } from "@/observability/profile-delivery-service.js";
+import {
+  InboxRefusedError,
+  ProfileDeliveryService,
+} from "@/observability/profile-delivery-service.js";
 import type { AgentSelector } from "@/observability/profile-selectors.js";
 import { ProfileService } from "@/observability/profile-service.js";
 import { RpcTestClient } from "./rpc-test-client.js";
@@ -104,6 +108,9 @@ function build(path: string, overrides: { now?: () => number } = {}) {
   const delivery = new ProfileDeliveryService({
     agentEvents,
     agents,
+    // Same clock as the owners store: the lease-admission fence must judge
+    // liveness at the same instant claim and renew do.
+    ...(overrides.now ? { now: overrides.now } : {}),
     obligations,
     owners,
     profiles,
@@ -1115,6 +1122,132 @@ describe("inbox mutates only for the token that currently owns the profile", () 
       })) as { obligations: Array<{ id: string }> };
       expect(stillLeased.obligations.map((row) => row.id)).toEqual([newRowId]);
     } finally {
+      client.close();
+      await server.stop();
+      built.sqlite.close();
+    }
+  });
+});
+
+describe("lease admission — one liveness rule for claim, renew and inbox.lease", () => {
+  test("isLeaseAlive is the exact claim boundary: alive strictly before lease + grace", () => {
+    // One predicate, three consumers: claim, renew and the inbox.lease fence
+    // must answer "is this lease alive" identically at every instant, or a
+    // path could revive (or admit) a lease a claimant was entitled to take.
+    expect(isLeaseAlive({ leaseExpiresAt: 1_000_000 }, 1_000_000 + 30_000 - 1)).toBe(true);
+    expect(isLeaseAlive({ leaseExpiresAt: 1_000_000 }, 1_000_000 + 30_000)).toBe(false);
+    expect(isLeaseAlive({ leaseExpiresAt: 1_000_000 }, 1_000_000 + 30_000 + 1)).toBe(false);
+  });
+
+  test("inbox.lease refuses the owner's own token with owner_lapsed once the lease lapsed past grace", () => {
+    // The defect under repair: admission looked ONLY at the token. An owner
+    // whose lease died at t=0 could still lease at t=1,000,000 — after claim
+    // would already have handed the profile to someone else. Admission must
+    // apply the same liveness rule claim and renew use, and refuse with a
+    // stable code so a caller can recover (re-claim by proof of possession).
+    let clock = 1_000_000;
+    const { agents, delivery } = fixture({ now: () => clock });
+    const worker = agents.list().find((row) => row.name === "driffs-worker");
+    if (!worker) throw new Error("fixture: driffs-worker missing");
+    delivery.projectAgentEvent({
+      ...eventFor({ eventId: 80, worker: "driffs" }),
+      agentId: worker.id,
+    });
+    const claim = delivery.claim({
+      harnessKind: "pi",
+      harnessSessionRefJson: "{}",
+      herdrSessionName: "default",
+      paneId: "wX:p1",
+      profileId: "driffs",
+      subscriberId: "sub-1",
+      terminalId: "tX",
+    });
+    if (claim.kind !== "claimed") throw new Error("claim failed");
+    clock += 5 * 60_000 + 30_000 + 1_000; // past lease + grace, uncontested
+    let refused: unknown;
+    try {
+      delivery.inboxLease({ leaseToken: claim.leaseToken, now: clock, profileId: "driffs" });
+    } catch (error) {
+      refused = error;
+    }
+    expect(refused).toBeInstanceOf(InboxRefusedError);
+    expect((refused as InboxRefusedError).code).toBe("owner_lapsed");
+    // Nothing moved: the batch stays pending for whoever legitimately
+    // re-claims the profile.
+    expect(delivery.inboxList({ profileId: "driffs", state: "pending" })).toHaveLength(1);
+    expect(delivery.inboxList({ profileId: "driffs", state: "leased" })).toHaveLength(0);
+  });
+
+  test("a rival's rotated token is not_owner even when the lease it superseded lapsed", () => {
+    // Classification order: token mismatch is decided FIRST. A stale token
+    // presented against a rival's live lease is not_owner (there is nothing
+    // to recover by proof of possession); owner_lapsed is reserved for a
+    // token that still MATCHES the row but whose lease died past grace.
+    let clock = 1_000_000;
+    const { delivery } = fixture({ now: () => clock });
+    const first = delivery.claim({
+      harnessKind: "pi",
+      harnessSessionRefJson: "{}",
+      herdrSessionName: "default",
+      paneId: "wX:p1",
+      profileId: "driffs",
+      subscriberId: "sub-1",
+      terminalId: "tX",
+    });
+    if (first.kind !== "claimed") throw new Error("claim failed");
+    clock += 10 * 60_000; // the lease lapses, uncontested so far
+    const rival = delivery.claim({
+      harnessKind: "pi",
+      harnessSessionRefJson: "{}",
+      herdrSessionName: "default",
+      paneId: "wY:p1",
+      profileId: "driffs",
+      subscriberId: "sub-2",
+      terminalId: "tY",
+    });
+    expect(rival.kind).toBe("reclaimed");
+    let refused: unknown;
+    try {
+      delivery.inboxLease({ leaseToken: first.leaseToken, now: clock, profileId: "driffs" });
+    } catch (error) {
+      refused = error;
+    }
+    expect(refused).toBeInstanceOf(InboxRefusedError);
+    expect((refused as InboxRefusedError).code).toBe("not_owner");
+    expect((refused as Error).message).toMatch(/not the active owner/);
+  });
+
+  test("inbox.lease refusals carry a machine-readable code on the wire", async () => {
+    const { built, client, server } = await rpcFixture();
+    const raw = new ObservabilityRpcClient({ socketPath: join(dirname(built.path), "rpc.sock") });
+    try {
+      const claim = (await client.request("profile.claim", CLAIM_PANE_X)) as {
+        result: { kind: string; leaseToken: string };
+      };
+      expect(claim.result.kind).toBe("claimed");
+      const refusal = async (leaseToken: string) =>
+        raw.request("inbox.lease", { leaseToken, profileId: "driffs" }).then(
+          () => null,
+          (error: unknown) => error as Error & { code?: string },
+        );
+
+      // Existing prose, new code: an arbitrary token is not_owner.
+      const notOwner = await refusal("attacker-string");
+      expect(notOwner?.message).toMatch(/not the active owner/);
+      expect(notOwner?.code).toBe("not_owner");
+
+      // Token matches but the lease died (lapsed directly in the fixture's
+      // sqlite — the wire never injects now): owner_lapsed.
+      built.sqlite
+        .prepare("update profile_owners set lease_expires_at = 1 where profile_id = ?")
+        .run("driffs");
+      const lapsed = await refusal(claim.result.leaseToken);
+      if (lapsed === null) {
+        throw new Error("inbox.lease admitted a lapsed owner — the admission rule is missing");
+      }
+      expect(lapsed.code).toBe("owner_lapsed");
+    } finally {
+      raw.close();
       client.close();
       await server.stop();
       built.sqlite.close();
