@@ -16,6 +16,39 @@ type FakeClient = {
   request(method: string, params: unknown): Promise<unknown>;
 };
 
+function contextHealthClient(history: Record<string, unknown>): FakeClient {
+  return {
+    calls: [],
+    close: () => undefined,
+    async request(method) {
+      if (method === "agent.get") {
+        return {
+          agent: {
+            agent: "pi",
+            agentStatus: "working",
+            herdrSessionName: "default",
+            history,
+            name: "worker",
+            paneId: "wB:p1",
+            terminalId: "term_1",
+            workspaceId: "wB",
+          },
+        };
+      }
+      return {};
+    },
+  };
+}
+
+const baseHistory = {
+  lastAssistantMessage: null,
+  lastToolResult: null,
+  lastUserMessage: null,
+  messageCount: 3,
+  source: "pi-jsonl",
+  updatedAt: "2026-09-13T10:03:00.000Z",
+};
+
 describe("shepy CLI", () => {
   test("parses agent list with current Herdr workspace", () => {
     expect(parseCliArgs(["agent", "list"], { HERDR_ENV: "1", HERDR_WORKSPACE_ID: "wB" })).toEqual({
@@ -535,6 +568,246 @@ describe("shepy CLI", () => {
     expect(output[0]).toContain("status\tname\tagent\tpane\tlast user\tlast assistant\tupdated");
     expect(output[0]).toContain("idle\treviewer\tcodex\twB:p1\tfix bug\tdone");
     expect(output[0]).toContain("idle\t\tcodex\twB:p2");
+  });
+
+  test("renders the context block for a last_reported reading", async () => {
+    const output: string[] = [];
+    await runCliCommand(
+      { command: "agent-get", json: false, target: "pi", workspaceId: "wB" },
+      {
+        connect: async () =>
+          contextHealthClient({
+            ...baseHistory,
+            contextHealth: {
+              branch: null,
+              compactionCount: 1,
+              lastCompaction: {
+                durationMs: null,
+                ref: "/tmp/pi.jsonl#entry=c1",
+                timestamp: "2026-09-13T10:04:00.000Z",
+                tokensAfter: null,
+                tokensBefore: 311646,
+                trigger: "unknown",
+              },
+              limitations: [
+                "compaction_outcome_not_recorded",
+                "context_window_not_recorded",
+                "leaf_move_not_recorded_until_next_append",
+              ],
+              model: { changedAt: null, id: "gpt-6-astra", provider: "openai-codex" },
+              sessionId: "pi-session-1",
+              source: "pi-jsonl",
+              sourceUpdatedAt: "2026-09-13T10:04:00.000Z",
+              usage: {
+                current: true,
+                kind: "last_reported",
+                percent: null,
+                reason: null,
+                ref: "/tmp/pi.jsonl#entry=m3",
+                reportedAt: "2026-09-13T10:03:00.000Z",
+                tokens: 4440,
+                window: null,
+              },
+            },
+          }),
+        output: (line) => output.push(line),
+        socketPath: "/tmp/s.sock",
+      },
+    );
+    const text = output[0] ?? "";
+    expect(text).toContain("context:");
+    expect(text).toContain("  session: pi-session-1");
+    expect(text).toContain("  model: gpt-6-astra (openai-codex)");
+    expect(text).toContain("  usage: last_reported 4 440 tokens at 2026-09-13T10:03:00.000Z");
+    expect(text).toContain(
+      "  last compaction: unknown trigger, 311 646 tokens before, at 2026-09-13T10:04:00.000Z",
+    );
+    expect(text).toContain("  compactions: 1");
+    expect(text).toContain(
+      "  limitations: compaction_outcome_not_recorded, context_window_not_recorded",
+    );
+  });
+
+  test("renders an unavailable reading", async () => {
+    const output: string[] = [];
+    await runCliCommand(
+      { command: "agent-get", json: false, target: "pi", workspaceId: "wB" },
+      {
+        connect: async () =>
+          contextHealthClient({
+            ...baseHistory,
+            contextHealth: {
+              branch: null,
+              compactionCount: 0,
+              lastCompaction: null,
+              limitations: ["context_window_not_recorded"],
+              model: null,
+              sessionId: null,
+              source: "pi-jsonl",
+              sourceUpdatedAt: null,
+              usage: {
+                current: true,
+                kind: "unavailable",
+                percent: null,
+                reason: "no_usage_recorded",
+                ref: null,
+                reportedAt: null,
+                tokens: null,
+                window: null,
+              },
+            },
+          }),
+        output: (line) => output.push(line),
+        socketPath: "/tmp/s.sock",
+      },
+    );
+    const text = output[0] ?? "";
+    expect(text).toContain("  usage: unavailable (no_usage_recorded)");
+    expect(text).toContain("  model: unknown");
+    expect(text).toContain("  last compaction: none");
+  });
+
+  test("renders a stale reading and a manual boundary", async () => {
+    const output: string[] = [];
+    await runCliCommand(
+      { command: "agent-get", json: false, target: "claude", workspaceId: "wB" },
+      {
+        connect: async () =>
+          contextHealthClient({
+            ...baseHistory,
+            contextHealth: {
+              branch: "feature",
+              compactionCount: 1,
+              lastCompaction: {
+                durationMs: 106150,
+                ref: "/tmp/claude.jsonl#entry=b1",
+                timestamp: "2026-09-13T11:04:00.000Z",
+                tokensAfter: 18079,
+                tokensBefore: 505689,
+                trigger: "manual",
+              },
+              limitations: ["claude_lineage_by_file_order", "context_window_not_recorded"],
+              model: {
+                changedAt: "2026-09-13T11:02:00.000Z",
+                id: "claude-fable-5-1",
+                provider: null,
+              },
+              sessionId: "s1",
+              source: "claude-jsonl",
+              sourceUpdatedAt: "2026-09-13T11:04:00.000Z",
+              usage: {
+                current: false,
+                kind: "last_reported",
+                percent: null,
+                reason: "branch_changed_since_reading",
+                ref: "/tmp/claude.jsonl#entry=a3",
+                reportedAt: "2026-09-13T11:03:00.000Z",
+                tokens: 400000,
+                window: null,
+              },
+            },
+          }),
+        output: (line) => output.push(line),
+        socketPath: "/tmp/s.sock",
+      },
+    );
+    const text = output[0] ?? "";
+    expect(text).toContain(
+      "  usage: last_reported 400 000 tokens at 2026-09-13T11:03:00.000Z (stale: branch_changed_since_reading)",
+    );
+    expect(text).toContain(
+      "  last compaction: manual 505 689 → 18 079 tokens at 2026-09-13T11:04:00.000Z",
+    );
+    expect(text).toContain("  model: claude-fable-5-1 changed at 2026-09-13T11:02:00.000Z");
+  });
+
+  test("a hostile model id renders on one line without control bytes", async () => {
+    const output: string[] = [];
+    const hostile = "gpt\n\u001b[31m-evil\r\u0007";
+    await runCliCommand(
+      { command: "agent-get", json: false, target: "pi", workspaceId: "wB" },
+      {
+        connect: async () =>
+          contextHealthClient({
+            ...baseHistory,
+            contextHealth: {
+              branch: null,
+              compactionCount: 0,
+              lastCompaction: null,
+              limitations: [],
+              model: { changedAt: null, id: hostile, provider: null },
+              sessionId: null,
+              source: "pi-jsonl",
+              sourceUpdatedAt: null,
+              usage: {
+                current: true,
+                kind: "unavailable",
+                percent: null,
+                reason: "no_usage_recorded",
+                ref: null,
+                reportedAt: null,
+                tokens: null,
+                window: null,
+              },
+            },
+          }),
+        output: (line) => output.push(line),
+        socketPath: "/tmp/s.sock",
+      },
+    );
+    const text = output[0] ?? "";
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional control-byte assertion — the renderer must strip all of these.
+    expect(text).not.toMatch(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/);
+    const contextLines = text.split("\n").filter((line) => line.startsWith("  model:"));
+    expect(contextLines).toHaveLength(1);
+    expect(contextLines[0]).toContain("gpt [31m-evil");
+  });
+
+  test("--json passes the agent object through untouched", async () => {
+    const output: string[] = [];
+    const history = {
+      ...baseHistory,
+      contextHealth: {
+        branch: null,
+        compactionCount: 0,
+        lastCompaction: null,
+        limitations: ["context_window_not_recorded"],
+        model: null,
+        sessionId: null,
+        source: "pi-jsonl" as const,
+        sourceUpdatedAt: null,
+        usage: {
+          current: true,
+          kind: "unavailable" as const,
+          percent: null,
+          reason: "no_usage_recorded",
+          ref: null,
+          reportedAt: null,
+          tokens: null,
+          window: null,
+        },
+      },
+    };
+    await runCliCommand(
+      { command: "agent-get", json: true, target: "pi", workspaceId: "wB" },
+      {
+        connect: async () => contextHealthClient(history),
+        output: (line) => output.push(line),
+        socketPath: "/tmp/s.sock",
+      },
+    );
+    expect(JSON.parse(output[0] ?? "")).toEqual({
+      agent: {
+        agent: "pi",
+        agentStatus: "working",
+        herdrSessionName: "default",
+        history,
+        name: "worker",
+        paneId: "wB:p1",
+        terminalId: "term_1",
+        workspaceId: "wB",
+      },
+    });
   });
 
   test("renders separate live name and agent kind in human get and read output", async () => {

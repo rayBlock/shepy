@@ -15,7 +15,12 @@ import {
   stopDaemonProcess,
 } from "@/daemon/process-manager.js";
 import { DEFAULT_LEASE_GRACE_MS, type PublicProfileOwner } from "@/db/profile-owners.js";
-import type { AgentGetResult, AgentListItem, AgentReadResult } from "@/observability/contracts.js";
+import type {
+  AgentGetResult,
+  AgentListItem,
+  AgentReadResult,
+  CompactAgentHistory,
+} from "@/observability/contracts.js";
 import type { ProfileDiagnoseReport } from "@/observability/profile-diagnose-service.js";
 
 const CURRENT_HERDR_WORKSPACE_ERROR =
@@ -1164,7 +1169,7 @@ function formatAgentList(result: { agents?: AgentListItem[] }): string {
 function formatAgentGet(result: { agent?: AgentGetResult }): string {
   const agent = result.agent;
   if (!agent) return "Agent not found.";
-  return [
+  const lines = [
     `name: ${agent.name ?? "unnamed"}`,
     `agent: ${agent.agent ?? "unknown"}`,
     `status: ${agent.agentStatus}`,
@@ -1177,7 +1182,57 @@ function formatAgentGet(result: { agent?: AgentGetResult }): string {
     `last user: ${oneLine(agent.history.lastUserMessage?.text ?? "")}`,
     `last assistant: ${oneLine(agent.history.lastAssistantMessage?.text ?? "")}`,
     `last tool: ${agent.history.lastToolResult ? `${agent.history.lastToolResult.toolName} ${oneLine(agent.history.lastToolResult.text)}` : ""}`,
-  ].join("\n");
+  ];
+  if (agent.history.contextHealth) lines.push(...formatContextHealth(agent.history.contextHealth));
+  return lines.join("\n");
+}
+
+function formatContextHealth(health: NonNullable<CompactAgentHistory["contextHealth"]>): string[] {
+  const clean = (value: string) => oneLine(stripControlChars(value));
+  const lines = ["context:"];
+  lines.push(`  session: ${health.sessionId ? clean(health.sessionId) : "unknown"}`);
+  if (health.model) {
+    const provider = health.model.provider ? ` (${clean(health.model.provider)})` : "";
+    const changed = health.model.changedAt ? ` changed at ${clean(health.model.changedAt)}` : "";
+    lines.push(`  model: ${clean(health.model.id ?? "unknown")}${provider}${changed}`);
+  } else {
+    lines.push("  model: unknown");
+  }
+  const usage = health.usage;
+  if (usage.kind === "last_reported" && usage.tokens !== null) {
+    const at = usage.reportedAt ? ` at ${clean(usage.reportedAt)}` : "";
+    const stale = usage.current ? "" : ` (stale: ${clean(usage.reason ?? "stale")})`;
+    lines.push(`  usage: last_reported ${groupDigits(usage.tokens)} tokens${at}${stale}`);
+  } else {
+    lines.push(`  usage: unavailable (${clean(usage.reason ?? "unknown")})`);
+  }
+  const boundary = health.lastCompaction;
+  if (boundary) {
+    const at = boundary.timestamp ? ` at ${clean(boundary.timestamp)}` : "";
+    if (boundary.tokensBefore !== null && boundary.tokensAfter !== null) {
+      lines.push(
+        `  last compaction: ${boundary.trigger} ${groupDigits(boundary.tokensBefore)} → ${groupDigits(boundary.tokensAfter)} tokens${at}`,
+      );
+    } else if (boundary.tokensBefore !== null) {
+      const before = boundary.timestamp ? `, at ${clean(boundary.timestamp)}` : "";
+      lines.push(
+        `  last compaction: ${boundary.trigger} trigger, ${groupDigits(boundary.tokensBefore)} tokens before${before}`,
+      );
+    } else {
+      lines.push(`  last compaction: ${boundary.trigger} trigger${at}`);
+    }
+  } else {
+    lines.push("  last compaction: none");
+  }
+  lines.push(`  compactions: ${health.compactionCount}`);
+  lines.push(
+    `  limitations: ${health.limitations.length > 0 ? health.limitations.join(", ") : "none"}`,
+  );
+  return lines;
+}
+
+function groupDigits(value: number): string {
+  return String(value).replace(/\B(?=(\d{3})+(?!\d))/g, " ");
 }
 
 function formatAgentRead(result: { agent?: AgentReadResult }): string {
