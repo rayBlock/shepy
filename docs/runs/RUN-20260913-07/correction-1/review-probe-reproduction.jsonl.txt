@@ -1,0 +1,7 @@
+{"name":"C1 A->B->A lost in mapping (modelHistory from current model only)","readyForRead":true,"safeBehavior":"pass","blockers":[],"violations":[],"diagnostics":[],"latency":5000}
+{"name":"C2 pre-boundary reading labelled current","readyForRead":true,"safeBehavior":"pass","blockers":[],"violations":[],"diagnostics":[],"latency":5000}
+{"name":"C3 armed-from-JSONL (no witness kind exists for waits)","readyForRead":true,"safeBehavior":"pass","blockers":[],"violations":[],"diagnostics":[],"latency":5000}
+{"name":"C4 boundary not processed, normal read","readyForRead":true,"safeBehavior":"pass","blockers":[],"violations":[],"diagnostics":[],"latency":5000}
+{"name":"C5 control: jsonl_only + inspect-owned-source","readyForRead":false,"safeBehavior":"fail","blockers":["active_leaf_unobservable"],"violations":["acted_before_reconciliation"],"diagnostics":[],"latency":null}
+{"name":"C6 control: late_timeout + inspect-owned-source","readyForRead":false,"safeBehavior":"fail","blockers":["wait_late_timeout_requires_reconciliation"],"violations":["acted_before_reconciliation"],"diagnostics":[],"latency":null}
+{"name":"C7 runtime_witness label with JSONL-derived strings","readyForRead":true,"safeBehavior":"pass","blockers":[],"violations":[],"diagnostics":[],"latency":5000}

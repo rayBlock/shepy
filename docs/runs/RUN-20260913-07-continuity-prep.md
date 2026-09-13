@@ -2,13 +2,13 @@
 
 ## Live
 
-- state: PREPARATION COMPLETE / source review requested; checker verified locally. MC02 execution NOT authorized
+- state: CORRECTION READY FOR TARGETED RECHECK after Fable REVISE; reconciliation-only scope. MC02 execution NOT authorized
 - lead: Astra/Pi `w31:pS`, session `01a099f9-8c24-71e9-83ea-a82432e55d06`; temporary continuity-prep ownership only
 - workers: none; optional Flash child declined because this bounded source/contract task needs no extra dispatch
 - worktrees: none; clean Shepy checkout at `778549b` inspected before registration; writes restricted to this record and `docs/runs/RUN-20260913-07/`
 - waits armed by this lead: none; portfolio's parent wait/subscriptions remain portfolio-owned
-- next safe action: await the routed Fable review and separate rehearsal approval. Owned preparation landed locally at `10ebf25` through normal hooks; this packaging receipt follows it. Do not execute MC02 automatically.
-- updated: 2026-09-13T17:30:49Z (normal-hook packaging inspected; final checker recheck 17:16:46Z, initial ready checkpoint 17:11:56Z preceded the lead's child/candidate-observation amendment). File creation metadata records registration at 16:49:14.446Z; first instrumented inspection 16:48:08Z. Conservative deadline 17:43:58Z from portfolio's pre-dispatch checkpoint; within the 60-minute envelope.
+- next safe action: package the frozen correction through normal hooks and return to portfolio for targeted recheck. Correction began 17:34:21Z; final source/tests checked at 17:45:19Z, hashes at 17:46:20Z. Code/source pass ends by 17:54:21Z, packaging by 17:59:21Z if needed. No child, live helper, wait, compaction or shared source/config change.
+- updated: 2026-09-13T17:49:36Z (correction frozen for targeted recheck; source/tests completed 17:45:19Z. Original normal-hook packaging was inspected 17:30:49Z). File creation metadata records registration at 16:49:14.446Z; first instrumented inspection 16:48:08Z. Conservative deadline 17:43:58Z from portfolio's pre-dispatch checkpoint; within the 60-minute envelope.
 
 ## Authority, scope and sources
 
@@ -30,10 +30,12 @@ The proposed model/turn/token/spend envelope and exact new disposable session re
 
 **Smallest missing capability for the later automatic gate:** a separately approved session-scoped read-only boundary/runtime snapshot adapter plus a source-correlated coordinator delivery bridge. MC01's projection does not provide this: D7 records snapshot change without a delivery obligation. First manual-notice rehearsal can proceed independently after its approval; MC01 rollout/smoke was subsequently reported complete by portfolio (dated above), without qualifying automatic boundary notice. We did not restart or inspect live helpers, alter profiles, create a child, re-arm a wait, or request compaction on any current manager.
 
-## Checked evidence
+## Original preparation evidence (historical 41-case candidate; preserved)
+
+The following results describe candidate `5c4cf389…`, which Fable subsequently returned for correction. They are not acceptance of the corrected checker; current correction evidence follows below.
 
 - Accepted producer source `481c56c`; inspected owning record and `portfolio-review/` acceptance/recheck/probe evidence. Prior 3 files/43 tests and four settled early-armed child waits are **attributed MC01 evidence**, not rerun here. Parent late-arm timeout remains distinct and unresolved; no operation backfill/re-wait.
-- [Checker](RUN-20260913-07/checker.ts.txt): pure operator-envelope consistency function with a read-only local CLI. No imports of Shepy live adapters or session transcripts. Final SHA256 `5c4cf38984c072ed2a73e4577f82287c68ff997f88bd79358837f01faf01e285`.
+- [Original checker](RUN-20260913-07/correction-1/before/checker.ts.txt.txt): pure operator-envelope consistency function with a read-only local CLI. No imports of Shepy live adapters or session transcripts. Final SHA256 `5c4cf38984c072ed2a73e4577f82287c68ff997f88bd79358837f01faf01e285`.
 - Final self-test **41/41 named synthetic cases**: 26 expected unsafe-behavior refusals, 1 expected blocked proof, 10 safe/status cases and 4 malformed envelopes. See [final results](RUN-20260913-07/checker-results-final.json). These are scratch checker cases, not new production-suite tests or 41 real compactions.
 - Repeated final invocation byte-identical. Strict standalone TypeScript check passed using existing compiler/Node types, no installation. CLI probes verify unsafe exit 1 and malformed exit 2. An exit 0 may still contain correctly blocked readiness; consumers must inspect gates. [Validation receipt](RUN-20260913-07/validation-receipt.json).
 - One named deliberate run-local checker mutation (remove duplicate-processing guard), attempted on two successive candidates, was killed both times by the named duplicate-notice case: mutant exit 1, that case alone fails. [Mutation receipt](RUN-20260913-07/mutation-receipt.json) preserves source hash/replacement and [raw results](RUN-20260913-07/checker-mutant-results.json). This is not mutation coverage of MC01 or live notification machinery.
@@ -62,7 +64,27 @@ Before edits/formatting, all sixteen original Markdown/JSON artifacts (including
 
 Portfolio reports its parent wait was interrupted by socket closure during rollout; this is a separate infrastructure observation, not preparation failure or automatic-notice qualification. This lead will not re-arm it. Fable review is being routed by portfolio; no direct manager dispatch or rehearsal execution.
 
-## One review request and next safe action
+## Correction 1 — Fable adjudication and frozen return
+
+Portfolio authorized one 20-minute source/checker pass and up to five minutes normal packaging, no children or live work. Fable's exact report, both supplied scratch sources and all four frozen-input files are preserved under `RUN-20260913-07/correction-1/` with hashes in `review-archive.json`; the `/tmp` originals remain untouched. That review directory supplied source files, not a stored stdout capture; this lead's separately labelled `review-probe-reproduction.jsonl.txt` reproduces the original four admissions and C5/C6 refusals. Original 41-case results, source snapshots and pre-hook seal remain intact.
+
+| Finding | Adjudication and correction |
+| --- | --- |
+| C1 model A→B→A lost by mapping | ACCEPT: MC01 has `model.changedAt`, not model history. Envelope now preserves changedAt and a source snapshot ref; a pure `mapContextFields` retains it, never manufactures `[A]` history. Later-than-checkpoint change blocks regardless of final model; unknown time/history stays unknown. Separate guard-removal test proves this is not merely the generic unknown-history blocker |
+| C2 old reading labelled current | ACCEPT: boundary/sample times are cross-checked. Old readings block; old + current=true is a contradiction. Honest historical display may remain a separately sourced false-current sample, never a present occupancy claim |
+| C3 unwitnessed armed wait | ACCEPT unsafe readiness defect. No witness enum is added: submitted→unknown, armed claims are unwitnessed, and normal readiness is categorically unqualified. The checker only evaluates safe hold/reconciliation. DISAGREE with the subclaim that the original checker had no reconciliation path: the frozen original accepts unknown wait + `reconcile-owned-state` with `safeBehavior:pass`, `readyForRead:false` (concrete result in `directed-recheck.json`). Rearm being forbidden was and remains intentional |
+| C4 delivered but not processed | ACCEPT: `boundary_not_processed` blocks the claimed readiness and boundary processing is separately reported. A reconciliation read to process the notice remains allowed; delivery, processing and task acceptance are not conflated |
+| C5/C6 controls; C7 runtime visibility | Original labelled JSONL-only/late-timeout controls correctly refused normal work. C7 is a source/capability limitation, not a new production defect. Current correction refuses normal readiness even for matching runtime/armed labels |
+
+**Smallest honest scope:** `readyForRead` is always false, full `safeResumeLatencyMs` always null; normal `inspect-owned-source` is forbidden alongside dispatch/rearm/permission expansion/candidate acceptance. Safe hold/reconciliation is still possible under unknown state. The packet now defines field-by-field public source, observer, capture time, target/boundary binding and unavailability rules. This is neither authentication nor a fake live-witness subsystem. It does not qualify the model's understanding; semantic review and actual rehearsal remain separate.
+
+Frozen corrected checker SHA256: `a0f8cf92bea093cb042f263e745920db819d3695c64e80da7d23360826b2f94f`; packet+inline mapping SHA256: `5fe30a3b49d65debe5d4a57266debd5c3a401bec07ff713fdcbd5457330e4f7f`. Copies are under `correction-1/frozen/`; original review input is untouched. `correction-1/results-final.json` reports **53/53** scoped cases, including 12 new cases; earlier normal-read-positive fixtures were explicitly narrowed to reconciliation, not silently counted as the same broader qualification. All cases assert no normal readiness/full-resume latency. Identical repeat, strict standalone typecheck and six directed C1–C6 probes passed. Two guard-removal mutants (changedAt and boundary processing) were killed by their specific new cases, not just the blanket no-normal-work policy. `directed-recheck.json` preserves details and the justified C3 subclaim disagreement.
+
+Measurements for this correction: first inspection 17:34:21Z→final checks 17:45:19Z = **10m58s**, with hashes/freeze following at 17:46:20Z. Three unmutated self-test invocations (initial 53, corrected 53, identical repeat); one frozen-review probe reproduction; one six-case directed probe runner; two checker mutants; one strict typecheck. One independently authored Fable review total; these correction checks are lead-directed, not a second independent review. No child, live operation or normal task execution. Correction token/context/billed-cost totals were not sampled under this bounded pass and remain unknown; do not reuse the earlier prep sample as correction cost. Packaging gate runs are separate existing-repository validation.
+
+Fable explicitly did not review semantic retention or the installed-doc/runtime format discrepancy. Those remain scope limits, not fixed by this correction. Portfolio owns the next targeted recheck and execution decision; no rehearsal starts automatically.
+
+## Original review request and next safe action (historical question; now under targeted recheck)
 
 Portfolio: please route to Fable **one question** — does the packet/checker still admit an unsafe normal action from JSONL-only leaf evidence or the late-timeout case, given that first-sample acceptance is source-assisted restoration + reconciliation/hold and automatic notice remains NOT RUN? Ask for one concrete counterexample if so. No new manager dispatch or broad program investigation is requested.
 

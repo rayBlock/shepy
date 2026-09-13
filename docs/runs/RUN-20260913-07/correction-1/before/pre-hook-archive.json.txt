@@ -82,13 +82,6 @@
       "source": "RUN-20260913-07/checker-mutant-results-03.json",
       "raw": "RUN-20260913-07/raw/pre-hook/checker-mutant-results-03.json.txt",
       "sha256": "1979164c755599fc05b97f99312a7b556c8e27a44b7f902762d9d327f048f23f"
-    },
-    {
-      "source": "RUN-20260913-07/checker.ts.txt",
-      "raw": "RUN-20260913-07/correction-1/before/checker.ts.txt.txt",
-      "sha256": "5c4cf38984c072ed2a73e4577f82287c68ff997f88bd79358837f01faf01e285",
-      "stage": "before correction 1; preserves original 41-case candidate"
     }
-  ],
-  "supplementalArchiveAt": "2026-09-13T17:49:36.827Z"
+  ]
 }

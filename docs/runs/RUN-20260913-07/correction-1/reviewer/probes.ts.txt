@@ -1,0 +1,18 @@
+import {check, fixture} from './checker.ts';
+const at=(s:number)=>new Date(Date.UTC(2026,0,1,0,0,s)).toISOString();
+const summarize=(name:string,r:ReturnType<typeof check>)=>console.log(JSON.stringify({name,readyForRead:r.readyForRead,safeBehavior:r.safeBehavior,blockers:r.blockers,violations:r.violations,diagnostics:r.diagnostics,latency:r.safeResumeLatencyMs}));
+// C1: MC01 projection records model A with changedAt != null (A->B->A happened after checkpoint). Envelope has no changedAt field;
+// operator maps model.id -> modelHistory:[A]. Action: inspect-owned-source (normal read).
+{ const e=fixture(); e.observation.modelHistory=['test-provider/model-A']; summarize('C1 A->B->A lost in mapping (modelHistory from current model only)',check(e)); }
+// C2: last_reported sample from BEFORE the boundary (at(5) < boundary at(10)) declared projectionCurrent:true; contextClaim last_reported.
+{ const e=fixture(); e.observation.usage={kind:'last_reported',tokens:9000,reportedAt:at(5),projectionCurrent:true,window:null,percent:null}; e.resume.contextClaim='last_reported'; summarize('C2 pre-boundary reading labelled current',check(e)); }
+// C3: wait 'armed' asserted from JSONL memory only (no process/operation witness) — checker has no witness field for waits.
+{ const e=fixture(); e.observation.wait={ref:e.truth.contract.child.waitRef,state:'armed'}; summarize('C3 armed-from-JSONL (no witness kind exists for waits)',check(e)); }
+// C4: boundary notice delivered but never processed by the manager; normal read attempted.
+{ const e=fixture(); e.resume.processedBoundaryRefs=[]; summarize('C4 boundary not processed, normal read',check(e)); }
+// C5: control — jsonl_only leaf with normal read must be caught.
+{ const e=fixture(); e.observation.leaf={kind:'jsonl_only',expected:null,actual:null}; e.resume.leafClaim='unknown'; summarize('C5 control: jsonl_only + inspect-owned-source',check(e)); }
+// C6: control — late_timeout with normal read must be caught.
+{ const e=fixture(); e.observation.wait.state='late_timeout'; summarize('C6 control: late_timeout + inspect-owned-source',check(e)); }
+// C7: runtime_witness label with both strings copied from a JSONL tail (checker cannot tell) — provenance unverifiable by design.
+{ const e=fixture(); e.observation.leaf={kind:'runtime_witness',expected:'jsonl-tail-entry-id',actual:'jsonl-tail-entry-id'}; summarize('C7 runtime_witness label with JSONL-derived strings',check(e)); }

@@ -1,8 +1,8 @@
 {
-  "sealedAt": "2026-09-13T17:51:43.448Z",
+  "sealedAt": "2026-09-13T17:32:26.201Z",
   "status": "owned docs packaging authorized through normal hooks; no MC02 execution",
   "sourceCandidate": "481c56c",
-  "checkerCandidateSha256": "a0f8cf92bea093cb042f263e745920db819d3695c64e80da7d23360826b2f94f",
+  "checkerCandidateSha256": "5c4cf38984c072ed2a73e4577f82287c68ff997f88bd79358837f01faf01e285",
   "originalSeal": {
     "sealedAt": "2026-09-13T17:19:02.932Z",
     "rawManifest": "RUN-20260913-07/raw/pre-hook/artifact-integrity.json.txt",
@@ -14,7 +14,7 @@
       "path": "RUN-20260913-07-continuity-prep.md",
       "raw": "RUN-20260913-07/raw/pre-hook/RUN-20260913-07-continuity-prep.md.txt",
       "originalSha256": "7ab6880b5d51a3305f20638fdddae430a6fafefd573171c75203654c3188a475",
-      "currentSha256": "a54fe9f610fa4e7b3bdd5d5e9392856e6516749fe514b3407d3580f24e67d63a"
+      "currentSha256": "c8d57cd7e7810833ed7b19ccad8250dcabda6c4070e802fb669fb0375be7fb86"
     },
     {
       "path": "RUN-20260913-07/validation-receipt.json",
@@ -50,13 +50,13 @@
       "path": "RUN-20260913-07/rehearsal-packet.md",
       "raw": "RUN-20260913-07/raw/pre-hook/rehearsal-packet.md.txt",
       "originalSha256": "9fc9b8dabbf58b3605e4a1c64518af17860137cc97b9ae4b1a940c39f74e3cf2",
-      "currentSha256": "5fe30a3b49d65debe5d4a57266debd5c3a401bec07ff713fdcbd5457330e4f7f"
+      "currentSha256": "6270964150186b723bd239957ee39d614bc0c3dc107b5bdd54835f4860abdb3d"
     },
     {
       "path": "RUN-20260913-07/synthetic-example.json",
       "raw": "RUN-20260913-07/raw/pre-hook/synthetic-example.json.txt",
       "originalSha256": "c66785b7c880c7f207fe6d03782993e4db93eecd7b9304413c950fc80b0533b9",
-      "currentSha256": "616334b6639111aaf6c71b394225f060045d09bc5d221400f7ef823a6127b210"
+      "currentSha256": "651275b7cd07f261577ae19b86ff53f7181b1396287a494e61b95c16810a5e5c"
     },
     {
       "path": "RUN-20260913-07/prep-metrics.json",
@@ -99,18 +99,12 @@
       "raw": "RUN-20260913-07/raw/pre-hook/checker-mutant-results-03.json.txt",
       "originalSha256": "1979164c755599fc05b97f99312a7b556c8e27a44b7f902762d9d327f048f23f",
       "currentSha256": "adc104b7952dfb224ca765b8970433bde8f5adfaf79e4c0d94c83463f9bbedb3"
-    },
-    {
-      "path": "RUN-20260913-07/checker.ts.txt",
-      "raw": "RUN-20260913-07/correction-1/before/checker.ts.txt.txt",
-      "originalSha256": "5c4cf38984c072ed2a73e4577f82287c68ff997f88bd79358837f01faf01e285",
-      "currentSha256": "a0f8cf92bea093cb042f263e745920db819d3695c64e80da7d23360826b2f94f"
     }
   ],
   "files": [
     {
       "path": "RUN-20260913-07-continuity-prep.md",
-      "sha256": "a54fe9f610fa4e7b3bdd5d5e9392856e6516749fe514b3407d3580f24e67d63a"
+      "sha256": "c8d57cd7e7810833ed7b19ccad8250dcabda6c4070e802fb669fb0375be7fb86"
     },
     {
       "path": "RUN-20260913-07/validation-receipt.json",
@@ -126,7 +120,7 @@
     },
     {
       "path": "RUN-20260913-07/checker.ts.txt",
-      "sha256": "a0f8cf92bea093cb042f263e745920db819d3695c64e80da7d23360826b2f94f"
+      "sha256": "5c4cf38984c072ed2a73e4577f82287c68ff997f88bd79358837f01faf01e285"
     },
     {
       "path": "RUN-20260913-07/assignment.md.txt",
@@ -134,7 +128,7 @@
     },
     {
       "path": "RUN-20260913-07/pre-hook-archive.json",
-      "sha256": "8c80e702d4df6c6ccea367485101c3dde0af4f87680ef06b13cd022a442537aa"
+      "sha256": "ea0c2d8e9ea23682c981e08c3e26cec1812e1cd139870debb9695c44b1eae9c7"
     },
     {
       "path": "RUN-20260913-07/mutation-receipt-03.json",
@@ -149,112 +143,12 @@
       "sha256": "254a9b01a2a30342823d1c9840f678ae6c4f901cb4730e998cd3a323ceb26812"
     },
     {
-      "path": "RUN-20260913-07/correction-1/reviewer/checker.ts.txt",
-      "sha256": "5c4cf38984c072ed2a73e4577f82287c68ff997f88bd79358837f01faf01e285"
-    },
-    {
-      "path": "RUN-20260913-07/correction-1/reviewer/probes.ts.txt",
-      "sha256": "b5ec2679f697506be24b38ce4f55f9775a5f61f9e8c6a69d877f061731077bc1"
-    },
-    {
-      "path": "RUN-20260913-07/correction-1/correction-receipt.json",
-      "sha256": "3ff3fb711f899f683314cb082315f3b98c15be353df52731c5341a2c2025ce55"
-    },
-    {
-      "path": "RUN-20260913-07/correction-1/review-input/checker.ts.txt",
-      "sha256": "5c4cf38984c072ed2a73e4577f82287c68ff997f88bd79358837f01faf01e285"
-    },
-    {
-      "path": "RUN-20260913-07/correction-1/review-input/input-integrity.json.txt",
-      "sha256": "04d4b8128861cb39b7969f1a87dcf7e5bd68ac05f6d4696bd0930d38f9a28fb0"
-    },
-    {
-      "path": "RUN-20260913-07/correction-1/review-input/source-manifest.json.txt",
-      "sha256": "f0da145cbac97ff8262f958ed3b028c09b47ff8215a5490638fb0198c84002fd"
-    },
-    {
-      "path": "RUN-20260913-07/correction-1/review-input/rehearsal-packet.md.txt",
-      "sha256": "9fc9b8dabbf58b3605e4a1c64518af17860137cc97b9ae4b1a940c39f74e3cf2"
-    },
-    {
-      "path": "RUN-20260913-07/correction-1/correction-receipt.json.txt",
-      "sha256": "3ff3fb711f899f683314cb082315f3b98c15be353df52731c5341a2c2025ce55"
-    },
-    {
-      "path": "RUN-20260913-07/correction-1/review-archive.json.txt",
-      "sha256": "19ae0acb0e2f695e0a3cbc7573ea44a1a9573af586bf60e036383849085bc178"
-    },
-    {
-      "path": "RUN-20260913-07/correction-1/results-final.json",
-      "sha256": "bf8308fe7039d4d8a0c6ccecee0a5b3ec8fb14b0946872852a7c0f5e131e4f6d"
-    },
-    {
-      "path": "RUN-20260913-07/correction-1/directed-probes.ts.txt",
-      "sha256": "3d846c680cee7add7b3ba6bd7417374faf9910f60690ee7edb61d6ba82fcc2f8"
-    },
-    {
-      "path": "RUN-20260913-07/correction-1/directed-recheck.json",
-      "sha256": "898aff0759574a7649c210b0305ad599c97458147693bc704e0c0484644072f1"
-    },
-    {
-      "path": "RUN-20260913-07/correction-1/directed-recheck.json.txt",
-      "sha256": "4e2eab3a6fb53b5c95010513350b12bdce874883b03d884695488f4b4513d45c"
-    },
-    {
-      "path": "RUN-20260913-07/correction-1/review.md.txt",
-      "sha256": "a5ac0e08b245d9373fd59efd8601c0a966ea41bf0bbf2375270d9117f3f30233"
-    },
-    {
-      "path": "RUN-20260913-07/correction-1/before/artifact-integrity.json.txt",
-      "sha256": "698b963174146df103b73bb85d914ce89d1fc38b9becf1965b33aac92d76ec84"
-    },
-    {
-      "path": "RUN-20260913-07/correction-1/before/rehearsal-packet.md.txt",
+      "path": "RUN-20260913-07/rehearsal-packet.md",
       "sha256": "6270964150186b723bd239957ee39d614bc0c3dc107b5bdd54835f4860abdb3d"
     },
     {
-      "path": "RUN-20260913-07/correction-1/before/checker.ts.txt.txt",
-      "sha256": "5c4cf38984c072ed2a73e4577f82287c68ff997f88bd79358837f01faf01e285"
-    },
-    {
-      "path": "RUN-20260913-07/correction-1/before/pre-hook-archive.json.txt",
-      "sha256": "ea0c2d8e9ea23682c981e08c3e26cec1812e1cd139870debb9695c44b1eae9c7"
-    },
-    {
-      "path": "RUN-20260913-07/correction-1/review-archive.json",
-      "sha256": "19ae0acb0e2f695e0a3cbc7573ea44a1a9573af586bf60e036383849085bc178"
-    },
-    {
-      "path": "RUN-20260913-07/correction-1/review-probe-reproduction.jsonl.txt",
-      "sha256": "92516cd45381c09c1187cc63ef04597ec9d5cb6c851dbc8593c6f9884af5f88c"
-    },
-    {
-      "path": "RUN-20260913-07/correction-1/results-01.json.txt",
-      "sha256": "8b48c3f1f4178025fa528f45dbb56c959d5ad0af15ca24174e1ce149fd69df3a"
-    },
-    {
-      "path": "RUN-20260913-07/correction-1/frozen/checker.ts.txt",
-      "sha256": "a0f8cf92bea093cb042f263e745920db819d3695c64e80da7d23360826b2f94f"
-    },
-    {
-      "path": "RUN-20260913-07/correction-1/frozen/rehearsal-packet.md.txt",
-      "sha256": "5fe30a3b49d65debe5d4a57266debd5c3a401bec07ff713fdcbd5457330e4f7f"
-    },
-    {
-      "path": "RUN-20260913-07/correction-1/results-01.json",
-      "sha256": "d54042a4f69b46a3bc589387e0b9129060ba3e27a65fd214391951f2bd93691d"
-    },
-    {
-      "path": "RUN-20260913-07/correction-1/results-final.json.txt",
-      "sha256": "81f3a2b0d1aab55fd7e50cf2159f1834ff82f7109930320d9faa426e01b91c8a"
-    },
-    {
-      "path": "RUN-20260913-07/rehearsal-packet.md",
-      "sha256": "5fe30a3b49d65debe5d4a57266debd5c3a401bec07ff713fdcbd5457330e4f7f"
-    },
-    {
       "path": "RUN-20260913-07/synthetic-example.json",
-      "sha256": "616334b6639111aaf6c71b394225f060045d09bc5d221400f7ef823a6127b210"
+      "sha256": "651275b7cd07f261577ae19b86ff53f7181b1396287a494e61b95c16810a5e5c"
     },
     {
       "path": "RUN-20260913-07/prep-metrics.json",

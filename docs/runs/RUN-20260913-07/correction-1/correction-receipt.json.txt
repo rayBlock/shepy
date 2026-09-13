@@ -1,0 +1,18 @@
+{
+  "frozenAt": "2026-09-13T17:49:36.827Z",
+  "checkerSha256": "a0f8cf92bea093cb042f263e745920db819d3695c64e80da7d23360826b2f94f",
+  "packetAndMappingSha256": "5fe30a3b49d65debe5d4a57266debd5c3a401bec07ff713fdcbd5457330e4f7f",
+  "cases": 53,
+  "passed": 53,
+  "repeatIdentical": true,
+  "strictTypecheckExit": 0,
+  "scope": "reconciliation-only; readyForRead false and full safeResumeLatencyMs null in every case",
+  "correctionStart": "2026-09-13T17:34:21Z",
+  "checksCompleted": "2026-09-13T17:45:19Z",
+  "measuredChecksElapsedSeconds": 658,
+  "children": 0,
+  "liveOperations": 0,
+  "tokenUsage": null,
+  "billedCost": null,
+  "reviewKind": "lead-directed correction; ready for independent targeted recheck, not execution"
+}

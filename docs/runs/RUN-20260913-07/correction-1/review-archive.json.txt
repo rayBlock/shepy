@@ -1,0 +1,56 @@
+{
+  "archivedAt": "2026-09-13T17:36:52.133Z",
+  "scope": "Exact review/input and previous candidate; originals untouched",
+  "files": [
+    {
+      "source": "/tmp/portfolio-mc02-fable-review.md",
+      "raw": "review.md.txt",
+      "sha256": "a5ac0e08b245d9373fd59efd8601c0a966ea41bf0bbf2375270d9117f3f30233"
+    },
+    {
+      "source": "/tmp/fable-mc02-review/checker.ts",
+      "raw": "reviewer/checker.ts.txt",
+      "sha256": "5c4cf38984c072ed2a73e4577f82287c68ff997f88bd79358837f01faf01e285"
+    },
+    {
+      "source": "/tmp/fable-mc02-review/probes.ts",
+      "raw": "reviewer/probes.ts.txt",
+      "sha256": "b5ec2679f697506be24b38ce4f55f9775a5f61f9e8c6a69d877f061731077bc1"
+    },
+    {
+      "source": "/tmp/portfolio-mc02-review-20260913/source-manifest.json",
+      "raw": "review-input/source-manifest.json.txt",
+      "sha256": "f0da145cbac97ff8262f958ed3b028c09b47ff8215a5490638fb0198c84002fd"
+    },
+    {
+      "source": "/tmp/portfolio-mc02-review-20260913/checker.ts",
+      "raw": "review-input/checker.ts.txt",
+      "sha256": "5c4cf38984c072ed2a73e4577f82287c68ff997f88bd79358837f01faf01e285"
+    },
+    {
+      "source": "/tmp/portfolio-mc02-review-20260913/input-integrity.json",
+      "raw": "review-input/input-integrity.json.txt",
+      "sha256": "04d4b8128861cb39b7969f1a87dcf7e5bd68ac05f6d4696bd0930d38f9a28fb0"
+    },
+    {
+      "source": "/tmp/portfolio-mc02-review-20260913/rehearsal-packet.md",
+      "raw": "review-input/rehearsal-packet.md.txt",
+      "sha256": "9fc9b8dabbf58b3605e4a1c64518af17860137cc97b9ae4b1a940c39f74e3cf2"
+    },
+    {
+      "source": "/Users/ray/dev/shepy/docs/runs/RUN-20260913-07/checker.ts.txt",
+      "raw": "before/checker.ts.txt.txt",
+      "sha256": "5c4cf38984c072ed2a73e4577f82287c68ff997f88bd79358837f01faf01e285"
+    },
+    {
+      "source": "/Users/ray/dev/shepy/docs/runs/RUN-20260913-07/rehearsal-packet.md",
+      "raw": "before/rehearsal-packet.md.txt",
+      "sha256": "6270964150186b723bd239957ee39d614bc0c3dc107b5bdd54835f4860abdb3d"
+    },
+    {
+      "source": "/Users/ray/dev/shepy/docs/runs/RUN-20260913-07/artifact-integrity.json",
+      "raw": "before/artifact-integrity.json.txt",
+      "sha256": "698b963174146df103b73bb85d914ce89d1fc38b9becf1965b33aac92d76ec84"
+    }
+  ]
+}

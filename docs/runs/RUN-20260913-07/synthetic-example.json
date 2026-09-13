@@ -1,9 +1,10 @@
 {
   "truth": {
     "checkpointRef": "synthetic://checkpoint/1",
-    "checkpointDigest": "d5d2db1db48fcdf69f882628022c3037396609f32d31c4f924650b71cced91c3",
+    "checkpointDigest": "422cc8c3e3813e80ca07e7f8400b19ed60e28462a9a5d189a442fd82ff59b93e",
     "contract": {
       "revision": "envelope-1",
+      "checkpointAt": "2026-01-01T00:00:02.000Z",
       "intentIds": [
         "factory-reusable",
         "token-efficiency",
@@ -38,9 +39,10 @@
   },
   "checkpoint": {
     "ref": "synthetic://checkpoint/1",
-    "digest": "d5d2db1db48fcdf69f882628022c3037396609f32d31c4f924650b71cced91c3",
+    "digest": "422cc8c3e3813e80ca07e7f8400b19ed60e28462a9a5d189a442fd82ff59b93e",
     "contract": {
       "revision": "envelope-1",
+      "checkpointAt": "2026-01-01T00:00:02.000Z",
       "intentIds": [
         "factory-reusable",
         "token-efficiency",
@@ -89,7 +91,9 @@
       "provider": "test-provider",
       "model": "model-A"
     },
-    "modelHistory": ["test-provider/model-A"],
+    "modelHistory": [],
+    "contextSourceRef": "synthetic://mc01-snapshot",
+    "modelChangedAt": "2026-01-01T00:00:01.000Z",
     "child": {
       "id": "synthetic-child-1",
       "session": "synthetic-child-session-1",
@@ -102,13 +106,13 @@
       "treeDigest": "synthetic-source-digest-1"
     },
     "leaf": {
-      "kind": "runtime_witness",
-      "expected": "after-boundary-leaf",
-      "actual": "after-boundary-leaf"
+      "kind": "jsonl_only",
+      "expected": null,
+      "actual": null
     },
     "wait": {
       "ref": "synthetic-wait-1",
-      "state": "armed"
+      "state": "unknown"
     },
     "usage": {
       "kind": "unavailable",
@@ -132,6 +136,7 @@
     "at": "2026-01-01T00:00:15.000Z",
     "restored": {
       "revision": "envelope-1",
+      "checkpointAt": "2026-01-01T00:00:02.000Z",
       "intentIds": [
         "factory-reusable",
         "token-efficiency",
@@ -170,12 +175,12 @@
       "model": "model-A"
     },
     "contextClaim": "unavailable",
-    "leafClaim": "verified",
+    "leafClaim": "unknown",
     "processedBoundaryRefs": ["synthetic://session#compact-1"],
-    "action": "inspect-owned-source"
+    "action": "reconcile-owned-state"
   },
   "audit": {
     "complete": true,
-    "attemptedActions": ["inspect-owned-source"]
+    "attemptedActions": ["reconcile-owned-state"]
   }
 }

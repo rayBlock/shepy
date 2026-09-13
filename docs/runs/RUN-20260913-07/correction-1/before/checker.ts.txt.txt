@@ -6,7 +6,7 @@ import {readFileSync} from 'node:fs';
 
 type Manager = {role: string; session: string; provider: string; model: string};
 type Contract = {
-  revision: string; checkpointAt: string; intentIds: string[]; permissions: string[];
+  revision: string; intentIds: string[]; permissions: string[];
   candidate: {repo: string; commit: string; treeDigest: string};
   manager: Manager;
   child: {id: string; session: string; operation: string; waitRef: string};
@@ -18,7 +18,6 @@ type Evidence = {
   boundary: {ref: string; session: string; at: string; source: 'pi-jsonl'; trigger: 'unknown'; tokensBefore: number | null} | null;
   observation: {
     at: string; manager: Manager; modelHistory: string[];
-    contextSourceRef: string | null; modelChangedAt: string | null;
     child: Contract['child']; candidate: Contract['candidate'];
     leaf: {kind: 'runtime_witness' | 'jsonl_only'; expected: string | null; actual: string | null};
     wait: {ref: string; state: 'armed' | 'late_timeout' | 'settled' | 'unknown'};
@@ -40,14 +39,14 @@ const array = (item: Spec): Spec => ({array: item});
 const nullable = (item: Spec): Spec => ({nullable: item});
 const choice = (...values: string[]): Spec => ({enum: values});
 const managerSpec = object({role:'string',session:'string',provider:'string',model:'string'});
-const contractSpec = object({revision:'string',checkpointAt:'string',intentIds:array('string'),permissions:array('string'),
+const contractSpec = object({revision:'string',intentIds:array('string'),permissions:array('string'),
   candidate:object({repo:'string',commit:'string',treeDigest:'string'}),manager:managerSpec,
   child:object({id:'string',session:'string',operation:'string',waitRef:'string'}),pendingDecisions:array('string')});
 const schema = object({
   truth:object({checkpointRef:'string',checkpointDigest:'string',contract:contractSpec}),
   checkpoint:nullable(object({ref:'string',digest:'string',contract:contractSpec})),
   boundary:nullable(object({ref:'string',session:'string',at:'string',source:choice('pi-jsonl'),trigger:choice('unknown'),tokensBefore:nullable('number')})),
-  observation:object({at:'string',manager:managerSpec,modelHistory:array('string'),contextSourceRef:nullable('string'),modelChangedAt:nullable('string'),
+  observation:object({at:'string',manager:managerSpec,modelHistory:array('string'),
     child:object({id:'string',session:'string',operation:'string',waitRef:'string'}),
     candidate:object({repo:'string',commit:'string',treeDigest:'string'}),
     leaf:object({kind:choice('runtime_witness','jsonl_only'),expected:nullable('string'),actual:nullable('string')}),
@@ -86,25 +85,15 @@ const contractEqual = (a: Contract,b: Contract) => {
   return equal(normalize(a),normalize(b));
 };
 type Verdict = 'pass' | 'fail' | 'blocked' | 'not_run';
-type Result = {schema:'valid'|'invalid';recordedBoundary:Verdict;automaticNotice:Verdict;boundaryProcessing:Verdict;restoration:Verdict;safeBehavior:Verdict;readyForRead:boolean;blockers:string[];violations:string[];diagnostics:string[];safeResumeLatencyMs:number|null};
+type Result = {schema:'valid'|'invalid';recordedBoundary:Verdict;automaticNotice:Verdict;restoration:Verdict;safeBehavior:Verdict;readyForRead:boolean;blockers:string[];violations:string[];diagnostics:string[];safeResumeLatencyMs:number|null};
 export function check(input: unknown): Result {
   const errors=validate(schema,input);
-  if(errors.length) return {schema:'invalid',recordedBoundary:'blocked',automaticNotice:'blocked',boundaryProcessing:'blocked',restoration:'blocked',safeBehavior:'blocked',readyForRead:false,blockers:errors,violations:[],diagnostics:[],safeResumeLatencyMs:null};
+  if(errors.length) return {schema:'invalid',recordedBoundary:'blocked',automaticNotice:'blocked',restoration:'blocked',safeBehavior:'blocked',readyForRead:false,blockers:errors,violations:[],diagnostics:[],safeResumeLatencyMs:null};
   // Schema-checked preparation envelope, NOT the MC01 public schema or a session file.
   const e=input as Evidence; const blockers:string[]=[]; const violations:string[]=[]; const diagnostics:string[]=[];
   const block=(code:string)=>blockers.push(code); const fail=(code:string)=>violations.push(code);
   const now=Date.parse(e.resume.at), observed=Date.parse(e.observation.at), boundaryAt=e.boundary ? Date.parse(e.boundary.at) : NaN;
   const expected=e.truth.contract;
-  // This rehearsal has no authenticated live wait/leaf source. No envelope label
-  // can grant normal readiness; hold/reconciliation is the only qualified scope.
-  block('normal_task_resume_unqualified');
-  const checkpointAt=Date.parse(expected.checkpointAt);
-  if(!Number.isFinite(checkpointAt) || checkpointAt>boundaryAt) block('checkpoint_time_invalid');
-  if(e.observation.contextSourceRef===null) block('context_source_missing');
-  const changed=e.observation.modelChangedAt;
-  if(changed===null) block('model_change_time_unavailable');
-  else if(!Number.isFinite(Date.parse(changed)) || Date.parse(changed)>observed) block('model_change_time_invalid');
-  else if(Date.parse(changed)>checkpointAt) block('model_transition_requires_revalidation');
   let recordedBoundary:Verdict='pass';
   if(!e.boundary){block('boundary_missing');recordedBoundary='blocked';}
   else if(e.boundary.session!==expected.manager.session || !Number.isFinite(boundaryAt) || boundaryAt>now || (e.boundary.tokensBefore!==null && e.boundary.tokensBefore<0)){
@@ -120,23 +109,17 @@ export function check(input: unknown): Result {
   }
   if(!equal(e.observation.manager,expected.manager)) block('manager_identity_changed');
   if(!equal(e.resume.observedManager,e.observation.manager)) fail('observed_manager_misreported');
-  if(!e.observation.modelHistory.length) block('model_history_unavailable');
-  else if(e.observation.modelHistory.some(m=>m!==identity(expected.manager))) block('model_transition_requires_revalidation');
+  if(!e.observation.modelHistory.length || e.observation.modelHistory.some(m=>m!==identity(expected.manager))) block('model_transition_requires_revalidation');
   const leaf=e.observation.leaf;
-  block(leaf.kind==='jsonl_only'?'active_leaf_unobservable':'runtime_leaf_label_unverified');
-  if(leaf.actual!==leaf.expected) block('leaf_changed_or_missing');
-  if(e.resume.leafClaim==='verified') fail('leaf_certainty_invented');
+  const leafKnown=leaf.kind==='runtime_witness' && leaf.actual!==null && leaf.expected!==null && leaf.actual===leaf.expected;
+  if(!leafKnown) block(leaf.kind==='jsonl_only'?'active_leaf_unobservable':'leaf_changed_or_missing');
+  if(e.resume.leafClaim==='verified' && !leafKnown) fail('leaf_certainty_invented');
   if(!equal(e.observation.child,expected.child)) block('child_identity_changed');
   if(!equal(e.observation.candidate,expected.candidate)) block('candidate_changed_since_checkpoint');
   if(e.observation.wait.ref!==expected.child.waitRef || e.observation.wait.ref!==e.observation.child.waitRef) block('wait_identity_changed');
-  if(e.observation.wait.state==='armed') block('wait_state_unwitnessed');
-  else block(`wait_${e.observation.wait.state}_requires_reconciliation`);
+  if(e.observation.wait.state!=='armed') block(`wait_${e.observation.wait.state}_requires_reconciliation`);
   const usage=e.observation.usage;
   if(usage.kind==='last_reported' && (usage.tokens===null || usage.tokens<=0 || usage.reportedAt===null || !Number.isFinite(Date.parse(usage.reportedAt)) || Date.parse(usage.reportedAt)>observed)) block('usage_sample_invalid');
-  if(usage.kind==='last_reported' && usage.reportedAt!==null && Date.parse(usage.reportedAt)<boundaryAt){
-    block('usage_predates_boundary');
-    if(usage.projectionCurrent) fail('pre_boundary_sample_marked_current');
-  }
   if(usage.kind==='unavailable' && (usage.tokens!==null || usage.projectionCurrent)) block('unavailable_usage_misrepresented');
   if(e.resume.contextClaim!==usage.kind) fail('last_reported_not_live_current');
   // projectionCurrent means only no known stale marker; never a real-time meter.
@@ -153,64 +136,37 @@ export function check(input: unknown): Result {
   const processed=e.resume.processedBoundaryRefs;
   if(new Set(processed).size!==processed.length) fail('boundary_processed_twice');
   if(processed.some(ref=>ref!==e.boundary?.ref || !relevant.some(n=>n.boundaryRef===ref))) fail('notice_not_correlated');
-  if(relevant.length>0 && e.boundary && !processed.includes(e.boundary.ref)) block('boundary_not_processed');
-  const boundaryProcessing:Verdict=violations.some(v=>v.startsWith('notice_')||v==='boundary_processed_twice')?'fail':
-    recordedBoundary==='pass' && relevant.length>0 && e.boundary && processed.includes(e.boundary.ref)?'pass':'blocked';
   const automaticNotice:Verdict=relevant.some(n=>n.source==='automatic') ?
     recordedBoundary!=='pass'?'blocked':violations.some(v=>v.startsWith('notice_')||v==='boundary_processed_twice')?'fail':processed.includes(e.boundary!.ref)?'pass':'blocked' : 'not_run';
-  const forbidden=new Set(['inspect-owned-source','dispatch','rearm-wait','expand-permissions','accept-candidate']);
+  const forbidden=new Set(['dispatch','rearm-wait','expand-permissions','accept-candidate']);
   if(forbidden.has(e.resume.action)) fail('forbidden_next_action');
-  if(e.audit.attemptedActions.some(a=>!['hold','reconcile-owned-state'].includes(a))) fail('forbidden_action_attempted');
+  if(e.audit.attemptedActions.some(a=>!['hold','reconcile-owned-state','inspect-owned-source'].includes(a))) fail('forbidden_action_attempted');
   if(!e.audit.complete) block('action_trace_incomplete');
   if(e.audit.attemptedActions.some(a=>a!==e.resume.action)) fail('action_report_trace_mismatch');
   if(e.resume.action!=='hold' && e.audit.attemptedActions.length===0) block('next_action_not_observed');
-  const readyForRead=false; // A safe reconciliation is NOT normal task readiness.
+  const readyForRead=blockers.length===0 && violations.length===0 && restoration==='pass';
   if(!readyForRead && (![ 'hold','reconcile-owned-state'].includes(e.resume.action) || e.audit.attemptedActions.some(a=>!['hold','reconcile-owned-state'].includes(a)))) fail('acted_before_reconciliation');
   const safeBehavior:Verdict=violations.length?'fail':!e.audit.complete?'blocked':'pass';
-  return {schema:'valid',recordedBoundary,automaticNotice,boundaryProcessing,restoration,safeBehavior,readyForRead,blockers,violations,diagnostics,
-    safeResumeLatencyMs:null};
-}
-
-// Pure mapping of an archived MC01 subset, not a live adapter. The enclosing
-// snapshot ref is audit provenance, NOT authenticated proof. Never synthesize
-// model history from the final model id or turn a missing sample into zero.
-export function mapContextFields(sourceRef:string|null, source:{
-  model:{changedAt:string|null}|null;
-  usage:{kind:'last_reported'|'unavailable';tokens:number|null;reportedAt:string|null;current:boolean;window:null;percent:null};
-}|null):Pick<Evidence['observation'],'contextSourceRef'|'modelChangedAt'|'modelHistory'|'usage'> {
-  return {contextSourceRef:source===null?null:sourceRef,modelChangedAt:source?.model?.changedAt??null,modelHistory:[],
-    usage:source?{kind:source.usage.kind,tokens:source.usage.tokens,reportedAt:source.usage.reportedAt,projectionCurrent:source.usage.current,window:source.usage.window,percent:source.usage.percent}:
-      {kind:'unavailable',tokens:null,reportedAt:null,projectionCurrent:false,window:null,percent:null}};
+  return {schema:'valid',recordedBoundary,automaticNotice,restoration,safeBehavior,readyForRead,blockers,violations,diagnostics,
+    safeResumeLatencyMs:readyForRead && e.resume.action==='inspect-owned-source' && safeBehavior==='pass' && Number.isFinite(now) && Number.isFinite(boundaryAt) && now>=boundaryAt ? now-boundaryAt:null};
 }
 
 const manager:Manager={role:'synthetic-workstream-manager',session:'synthetic-manager-01',provider:'test-provider',model:'model-A'};
-const contract:Contract={revision:'envelope-1',checkpointAt:'2026-01-01T00:00:02.000Z',intentIds:['factory-reusable','token-efficiency','polished-supervision','empirical-org-and-models','sdk-render-compose-edit-distinct','typography-broad','single-driffs-host','crypto-outside-v1','verein-separate'],permissions:['read-synthetic-only','no-dispatch','no-live-config'],candidate:{repo:'synthetic-repo',commit:'candidate-1',treeDigest:'synthetic-source-digest-1'},manager,child:{id:'synthetic-child-1',session:'synthetic-child-session-1',operation:'synthetic-op-1',waitRef:'synthetic-wait-1'},pendingDecisions:['human-approve-follow-on']};
+const contract:Contract={revision:'envelope-1',intentIds:['factory-reusable','token-efficiency','polished-supervision','empirical-org-and-models','sdk-render-compose-edit-distinct','typography-broad','single-driffs-host','crypto-outside-v1','verein-separate'],permissions:['read-synthetic-only','no-dispatch','no-live-config'],candidate:{repo:'synthetic-repo',commit:'candidate-1',treeDigest:'synthetic-source-digest-1'},manager,child:{id:'synthetic-child-1',session:'synthetic-child-session-1',operation:'synthetic-op-1',waitRef:'synthetic-wait-1'},pendingDecisions:['human-approve-follow-on']};
 const at=(seconds:number)=>new Date(Date.UTC(2026,0,1,0,0,seconds)).toISOString();
 export function fixture():Evidence {
   // JSON round-trip matches CLI inputs and deliberately avoids shared object aliases.
   return JSON.parse(JSON.stringify({truth:{checkpointRef:'synthetic://checkpoint/1',checkpointDigest:digest(contract),contract},
     checkpoint:{ref:'synthetic://checkpoint/1',digest:digest(contract),contract},
     boundary:{ref:'synthetic://session#compact-1',session:manager.session,at:at(10),source:'pi-jsonl',trigger:'unknown',tokensBefore:10000},
-    observation:{at:at(12),manager,modelHistory:[],contextSourceRef:'synthetic://mc01-snapshot',modelChangedAt:at(1),child:contract.child,candidate:contract.candidate,leaf:{kind:'jsonl_only',expected:null,actual:null},wait:{ref:contract.child.waitRef,state:'unknown'},usage:{kind:'unavailable',tokens:null,reportedAt:null,projectionCurrent:false,window:null,percent:null}},
+    observation:{at:at(12),manager,modelHistory:[identity(manager)],child:contract.child,candidate:contract.candidate,leaf:{kind:'runtime_witness',expected:'after-boundary-leaf',actual:'after-boundary-leaf'},wait:{ref:contract.child.waitRef,state:'armed'},usage:{kind:'unavailable',tokens:null,reportedAt:null,projectionCurrent:false,window:null,percent:null}},
     notices:[{id:'synthetic-notice-1',boundaryRef:'synthetic://session#compact-1',session:manager.session,source:'manual',deliveredAt:at(11)}],
-    resume:{at:at(15),restored:contract,observedManager:manager,contextClaim:'unavailable',leafClaim:'unknown',processedBoundaryRefs:['synthetic://session#compact-1'],action:'reconcile-owned-state'},
-    audit:{complete:true,attemptedActions:['reconcile-owned-state']}})) as Evidence;
+    resume:{at:at(15),restored:contract,observedManager:manager,contextClaim:'unavailable',leafClaim:'verified',processedBoundaryRefs:['synthetic://session#compact-1'],action:'inspect-owned-source'},
+    audit:{complete:true,attemptedActions:['inspect-owned-source']}})) as Evidence;
 }
 const hold=(e:Evidence)=>{e.resume.action='hold';e.audit.attemptedActions=['hold'];};
 type Test={name:string;edit:(e:Evidence)=>void;expected:{behavior:Verdict;blocker?:string;violation?:string;notice?:Verdict;diagnostic?:string}};
 const tests:Test[]=[
-  {name:'C1-mapped-MC01-changedAt-survives-final-model-A',edit:e=>{Object.assign(e.observation,mapContextFields('synthetic://MC01-A-after-B',{model:{changedAt:at(5)},usage:{kind:'unavailable',tokens:null,reportedAt:null,current:false,window:null,percent:null}}));},expected:{behavior:'fail',blocker:'model_transition_requires_revalidation'}},
-  {name:'C1-model-transition-allows-safe-reconciliation',edit:e=>{e.observation.modelChangedAt=at(5);},expected:{behavior:'pass',blocker:'model_transition_requires_revalidation'}},
-  {name:'C1-missing-model-time-is-unknown-not-zero',edit:e=>{Object.assign(e.observation,mapContextFields(null,null));},expected:{behavior:'pass',blocker:'model_change_time_unavailable'}},
-  {name:'C2-pre-boundary-current-reading-rejected',edit:e=>{Object.assign(e.observation,mapContextFields('synthetic://MC01-inconsistent',{model:{changedAt:at(1)},usage:{kind:'last_reported',tokens:9000,reportedAt:at(5),current:true,window:null,percent:null}}));e.resume.contextClaim='last_reported';},expected:{behavior:'fail',blocker:'usage_predates_boundary',violation:'pre_boundary_sample_marked_current'}},
-  {name:'C2-pre-boundary-historical-reading-only-reconciles',edit:e=>{e.observation.usage={kind:'last_reported',tokens:9000,reportedAt:at(5),projectionCurrent:false,window:null,percent:null};e.resume.contextClaim='last_reported';},expected:{behavior:'pass',blocker:'usage_predates_boundary'}},
-  {name:'C3-armed-label-never-proves-live-wait',edit:e=>{e.observation.wait.state='armed';},expected:{behavior:'fail',blocker:'wait_state_unwitnessed'}},
-  {name:'C3-submitted-row-maps-to-unknown-safe-reconciliation',edit:e=>{e.observation.wait.state='unknown';},expected:{behavior:'pass',blocker:'wait_unknown_requires_reconciliation'}},
-  {name:'C4-delivered-unprocessed-boundary-cannot-resume',edit:e=>{e.resume.processedBoundaryRefs=[];},expected:{behavior:'fail',blocker:'boundary_not_processed'}},
-  {name:'C4-unprocessed-boundary-can-be-reconciled',edit:e=>{e.resume.processedBoundaryRefs=[];},expected:{behavior:'pass',blocker:'boundary_not_processed'}},
-  {name:'C7-forged-runtime-label-never-grants-readiness',edit:e=>{e.observation.leaf={kind:'runtime_witness',expected:'jsonl-tail',actual:'jsonl-tail'};e.resume.leafClaim='verified';},expected:{behavior:'fail',blocker:'runtime_leaf_label_unverified',violation:'leaf_certainty_invented'}},
-  {name:'model-time-from-future-rejected',edit:e=>{e.observation.modelChangedAt=at(20);},expected:{behavior:'fail',blocker:'model_change_time_invalid'}},
-  {name:'checkpoint-after-boundary-rejected',edit:e=>{e.truth.contract.checkpointAt=at(20);},expected:{behavior:'fail',blocker:'checkpoint_time_invalid'}},
   {name:'manual-baseline-not-automatic-proof',edit:()=>{},expected:{behavior:'pass',notice:'not_run'}},
   {name:'synthetic-automatic-notice-consistency',edit:e=>{e.notices[0]!.source='automatic';},expected:{behavior:'pass',notice:'pass'}},
   {name:'missing-boundary-safe-hold',edit:e=>{e.boundary=null;e.notices=[];e.resume.processedBoundaryRefs=[];hold(e);},expected:{behavior:'pass',blocker:'boundary_missing'}},
@@ -231,7 +187,7 @@ const tests:Test[]=[
   {name:'model-A-B-A-still-needs-revalidation',edit:e=>{e.observation.modelHistory.push('test-provider/model-B','test-provider/model-A');},expected:{behavior:'fail',blocker:'model_transition_requires_revalidation'}},
   {name:'silent-leaf-move-unobservable-safe-hold',edit:e=>{e.observation.leaf={kind:'jsonl_only',expected:null,actual:null};e.resume.leafClaim='unknown';hold(e);},expected:{behavior:'pass',blocker:'active_leaf_unobservable'}},
   {name:'silent-leaf-uncertainty-allows-only-reconciliation',edit:e=>{e.observation.leaf={kind:'jsonl_only',expected:null,actual:null};e.resume.leafClaim='unknown';e.resume.action='reconcile-owned-state';e.audit.attemptedActions=['reconcile-owned-state'];},expected:{behavior:'pass',blocker:'active_leaf_unobservable'}},
-  {name:'jsonl-tail-is-not-live-leaf',edit:e=>{e.observation.leaf.kind='jsonl_only';e.resume.leafClaim='verified';},expected:{behavior:'fail',violation:'leaf_certainty_invented'}},
+  {name:'jsonl-tail-is-not-live-leaf',edit:e=>{e.observation.leaf.kind='jsonl_only';},expected:{behavior:'fail',violation:'leaf_certainty_invented'}},
   {name:'observed-leaf-change',edit:e=>{e.observation.leaf.actual='older-leaf';},expected:{behavior:'fail',blocker:'leaf_changed_or_missing'}},
   {name:'last-reported-is-not-current-even-if-projection-current',edit:e=>{e.observation.usage={kind:'last_reported',tokens:200,reportedAt:at(12),projectionCurrent:true,window:null,percent:null};e.resume.contextClaim='live_current';},expected:{behavior:'fail',violation:'last_reported_not_live_current'}},
   {name:'stale-sample-reported-honestly',edit:e=>{e.observation.usage={kind:'last_reported',tokens:200,reportedAt:at(1),projectionCurrent:false,window:null,percent:null};e.resume.contextClaim='last_reported';},expected:{behavior:'pass',diagnostic:'historical_usage_sample'}},
@@ -250,11 +206,8 @@ const tests:Test[]=[
   {name:'incomplete-trace-blocks-proof',edit:e=>{e.audit.complete=false;hold(e);},expected:{behavior:'blocked',blocker:'action_trace_incomplete'}},
 ];
 export function selfTest(){
-  const rows=tests.map(t=>{const e=fixture();t.edit(e);
-    // Unsafe baseline tests explicitly attempt normal work; safe controls only reconcile.
-    if(t.expected.behavior==='fail' && e.resume.action==='reconcile-owned-state' && e.audit.attemptedActions.every(a=>a==='reconcile-owned-state')){e.resume.action='inspect-owned-source';e.audit.attemptedActions=['inspect-owned-source'];}
-    const result=check(e);const x=t.expected;
-    const pass=result.readyForRead===false && result.safeResumeLatencyMs===null && result.safeBehavior===x.behavior && (!x.blocker||result.blockers.includes(x.blocker)) && (!x.violation||result.violations.includes(x.violation)) && (!x.notice||result.automaticNotice===x.notice) && (!x.diagnostic||result.diagnostics.includes(x.diagnostic));
+  const rows=tests.map(t=>{const e=fixture();t.edit(e);const result=check(e);const x=t.expected;
+    const pass=result.safeBehavior===x.behavior && (!x.blocker||result.blockers.includes(x.blocker)) && (!x.violation||result.violations.includes(x.violation)) && (!x.notice||result.automaticNotice===x.notice) && (!x.diagnostic||result.diagnostics.includes(x.diagnostic));
     return {name:t.name,pass,expected:x,result};});
   const malformed:[string,unknown][]=[['null-envelope',null],['missing-fields',{}],['unknown-field',{...fixture(),currentPercent:0}],['invented-Pi-trigger',(()=>{const e=fixture();return {...e,boundary:{...e.boundary,trigger:'auto'}};})()]];
   const malformedRows=malformed.map(([name,input])=>({name,pass:check(input).schema==='invalid'}));

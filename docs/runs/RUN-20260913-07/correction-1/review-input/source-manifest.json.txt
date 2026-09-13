@@ -1,0 +1,76 @@
+{
+  "inspectedAt": "2026-09-13T17:08:41.894Z",
+  "shepyHead": "778549b7fec1128ec32f68b3f1a2ed826b52e25b",
+  "acceptedCode": "481c56cb9956a50bdbe234bea3b69accf38fcdb9",
+  "inputs": [
+    {
+      "path": "/Users/ray/dev/shepy/src/agent-history/context-health.ts",
+      "sha256": "48ba5e5022c5076e0f51c42ad68959a675688562316aa2ddce98dba2ced3aeb9"
+    },
+    {
+      "path": "/Users/ray/dev/shepy/src/observability/contracts.ts",
+      "sha256": "083828c123eb23743993e69051e6eea43ac88b17f1f710e8ebfa42d5f8fc0387"
+    },
+    {
+      "path": "/Users/ray/dev/shepy/test/integration/agent-context-health-rpc.test.ts",
+      "sha256": "e5a6142bc3d6ebff1c142adcddf49af724d16f81406c99576e0fe81cd475ba50"
+    },
+    {
+      "path": "/Users/ray/dev/shepy/docs/runs/RUN-20260913-06-context-health.md",
+      "sha256": "1fd0568b0dc853e5aea96ddd63272a23104fbc7191c4692ad5e9e4e60f4eeff1"
+    },
+    {
+      "path": "/Users/ray/dev/shepy/docs/runs/RUN-20260913-06/portfolio-review/portfolio-mc01-acceptance-481c56c.md",
+      "sha256": "b3534be10e2cb89283a329e1e7b79075f970a0373f514827fee7973673016ad0"
+    },
+    {
+      "path": "/Users/ray/dev/shepy/docs/runs/RUN-20260913-06/portfolio-review/portfolio-mc01-final-probes.ts",
+      "sha256": "997ca83a580467c49ec251b2639fe05ab5a891344218299a9ff6aab14ca7155e"
+    },
+    {
+      "path": "/Users/ray/dev/shepy/docs/runs/RUN-20260913-06/portfolio-review/portfolio-mc01-recheck-481c56c.json",
+      "sha256": "0b463c7a11bf6e34f1ac8a7d516c108f228d1bcac006ddbbcc0d32f1643b6213"
+    },
+    {
+      "path": "/Users/ray/.bun/install/global/node_modules/@earendil-works/pi-coding-agent/docs/compaction.md",
+      "sha256": "43166749858e6292c85905df4f0f9f189c487a384ae17ddcbbd99053943d62ef"
+    },
+    {
+      "path": "/Users/ray/.bun/install/global/node_modules/@earendil-works/pi-coding-agent/docs/session-format.md",
+      "sha256": "c0f25475ab08fb96e244e6bf433aeaa41b69bfb5a52de5c7b01b81c900a84a54"
+    },
+    {
+      "path": "/Users/ray/.bun/install/global/node_modules/@earendil-works/pi-coding-agent/docs/sessions.md",
+      "sha256": "b4ed96521936b5b4ba464496d096bd6c345803f3fa63b5a647674af068cd83b2"
+    },
+    {
+      "path": "/Users/ray/.bun/install/global/node_modules/@earendil-works/pi-coding-agent/docs/settings.md",
+      "sha256": "8c8abbab6edc7e431794841e9a98c5e1428cca92b062ddb0e9601547b5019a22"
+    },
+    {
+      "path": "/Users/ray/.bun/install/global/node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.js",
+      "sha256": "433097aefa47520f256f19b7b6ec2c954ef73b8024cc30507ba45a8931460fe5"
+    },
+    {
+      "path": "/Users/ray/.bun/install/global/node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.d.ts",
+      "sha256": "82b861efe463812fcc4e8b5bb3414c7c756bbb4fc3bae2721baf0dde3226fe68"
+    },
+    {
+      "path": "/Users/ray/.bun/install/global/node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts",
+      "sha256": "7cc5483996e57b067ea3f030f5fde08db8e855ee276b887fd2968021d16a9533"
+    },
+    {
+      "path": "/Users/ray/dev/.vault/wiki/agent-portfolio-coordination.md",
+      "sha256": "ed17249e33c176e3cb40654da6060522e3fb0f7b43dce5f469467e26a2a57a20"
+    },
+    {
+      "path": "/Users/ray/.agents/skills/run-lead/SKILL.md",
+      "sha256": "e9ccba64a15b4bffdabe7009fbbf18689c52703543c31e0f099d5ca8f332daa3"
+    },
+    {
+      "path": "/Users/ray/.agents/skills/agent-research-operations/SKILL.md",
+      "sha256": "3322fa0902357cc3038ee23cd050474c9b5fb153f878a392b1c3ab1f22e0d2f2"
+    }
+  ],
+  "note": "Source hashes at prep inspection, not loaded daemon/build proof; portfolio note remains coordinator-owned and may evolve."
+}

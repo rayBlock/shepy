@@ -1,0 +1,29 @@
+import {check,fixture,mapContextFields} from './checker-c1.ts';
+import {check as oldCheck,fixture as oldFixture} from '/tmp/portfolio-mc02-review-20260913/checker.ts';
+import {readFileSync,writeFileSync} from 'node:fs';
+import {spawnSync} from 'node:child_process';
+import {createHash} from 'node:crypto';
+const out='/Users/ray/dev/shepy/docs/runs/RUN-20260913-07/correction-1/';
+const at=(s:number)=>new Date(Date.UTC(2026,0,1,0,0,s)).toISOString();
+const normal=(e:ReturnType<typeof fixture>)=>{e.resume.action='inspect-owned-source';e.audit.attemptedActions=['inspect-owned-source'];};
+const cases=[
+ ['C1', (e:ReturnType<typeof fixture>)=>{Object.assign(e.observation,mapContextFields('synthetic://MC01',{model:{changedAt:at(5)},usage:{kind:'unavailable',tokens:null,reportedAt:null,current:false,window:null,percent:null}}));},'model_transition_requires_revalidation'],
+ ['C2', (e:ReturnType<typeof fixture>)=>{e.observation.usage={kind:'last_reported',tokens:9000,reportedAt:at(5),projectionCurrent:true,window:null,percent:null};e.resume.contextClaim='last_reported';},'usage_predates_boundary'],
+ ['C3', (e:ReturnType<typeof fixture>)=>{e.observation.wait.state='armed';},'wait_state_unwitnessed'],
+ ['C4', (e:ReturnType<typeof fixture>)=>{e.resume.processedBoundaryRefs=[];},'boundary_not_processed'],
+ ['C5', (e:ReturnType<typeof fixture>)=>{e.observation.leaf.kind='jsonl_only';},'active_leaf_unobservable'],
+ ['C6', (e:ReturnType<typeof fixture>)=>{e.observation.wait.state='late_timeout';},'wait_late_timeout_requires_reconciliation'],
+] as const;
+const probes=cases.map(([id,edit,expected])=>{const e=fixture();edit(e);normal(e);const result=check(e);return{id,pass:result.readyForRead===false&&result.safeBehavior==='fail'&&result.blockers.includes(expected),expected,result};});
+const old=oldFixture();old.observation.wait.state='unknown';old.resume.action='reconcile-owned-state';old.audit.attemptedActions=['reconcile-owned-state'];
+const oldSafe=oldCheck(old);
+const base=readFileSync('/tmp/mc02-prep-07/checker-c1.ts','utf8');
+const targets=[
+ ['C1 changedAt guard',"else if(Date.parse(changed)>checkpointAt) block('model_transition_requires_revalidation');"],
+ ['C4 processing guard',"if(relevant.length>0 && e.boundary && !processed.includes(e.boundary.ref)) block('boundary_not_processed');"],
+] as const;
+const mutations=targets.map(([name,line],i)=>{if(base.split(line).length!==2)throw Error('Nonunique mutation');const text=base.replace(line,'/* directed guard-removal mutant */');const path=`/tmp/mc02-prep-07/c1-mutant-${i}.ts`;writeFileSync(path,text);const r=spawnSync('perl',['-e','alarm shift; exec @ARGV','30','bun',path,'--self-test'],{encoding:'utf8'});const result=JSON.parse(r.stdout);return{name,removed:line,mutantSha256:createHash('sha256').update(text).digest('hex'),exit:r.status,killed:r.status===1,failed:result.rows.filter((x:{pass:boolean})=>!x.pass).map((x:{name:string})=>x.name),stderr:r.stderr};});
+const receipt={observedAt:new Date().toISOString(),checkerSha256:createHash('sha256').update(base).digest('hex'),scope:'Directed correction checks; no live helpers, no independent-review claim',probes,adjudicationCounterexample:{claim:'No reconciliation path for dead/unknown wait in original checker',source:'untouched frozen original checker; explicit unknown + reconcile-owned-state',result:oldSafe,disposition:oldSafe.safeBehavior==='pass'&&!oldSafe.readyForRead?'Disagree with this subclaim only; forbidding rearm is intentional. Accept C3 unsafe armed-label readiness defect.':'Needs adjudication'},mutations};
+writeFileSync(out+'directed-recheck.json',JSON.stringify(receipt,null,2)+'\n');
+console.log(JSON.stringify({probes:probes.map(p=>({id:p.id,pass:p.pass})),mutations,originalReconciliation:oldSafe.safeBehavior},null,2));
+if(!probes.every(p=>p.pass)||!mutations.every(m=>m.killed))process.exitCode=1;

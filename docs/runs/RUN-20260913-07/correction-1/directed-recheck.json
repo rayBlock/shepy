@@ -1,0 +1,216 @@
+{
+  "observedAt": "2026-09-13T17:45:19.347Z",
+  "checkerSha256": "a0f8cf92bea093cb042f263e745920db819d3695c64e80da7d23360826b2f94f",
+  "scope": "Directed correction checks; no live helpers, no independent-review claim",
+  "probes": [
+    {
+      "id": "C1",
+      "pass": true,
+      "expected": "model_transition_requires_revalidation",
+      "result": {
+        "schema": "valid",
+        "recordedBoundary": "pass",
+        "automaticNotice": "not_run",
+        "boundaryProcessing": "pass",
+        "restoration": "pass",
+        "safeBehavior": "fail",
+        "readyForRead": false,
+        "blockers": [
+          "normal_task_resume_unqualified",
+          "model_transition_requires_revalidation",
+          "model_history_unavailable",
+          "active_leaf_unobservable",
+          "wait_unknown_requires_reconciliation"
+        ],
+        "violations": [
+          "forbidden_next_action",
+          "forbidden_action_attempted",
+          "acted_before_reconciliation"
+        ],
+        "diagnostics": [],
+        "safeResumeLatencyMs": null
+      }
+    },
+    {
+      "id": "C2",
+      "pass": true,
+      "expected": "usage_predates_boundary",
+      "result": {
+        "schema": "valid",
+        "recordedBoundary": "pass",
+        "automaticNotice": "not_run",
+        "boundaryProcessing": "pass",
+        "restoration": "pass",
+        "safeBehavior": "fail",
+        "readyForRead": false,
+        "blockers": [
+          "normal_task_resume_unqualified",
+          "model_history_unavailable",
+          "active_leaf_unobservable",
+          "wait_unknown_requires_reconciliation",
+          "usage_predates_boundary"
+        ],
+        "violations": [
+          "pre_boundary_sample_marked_current",
+          "forbidden_next_action",
+          "forbidden_action_attempted",
+          "acted_before_reconciliation"
+        ],
+        "diagnostics": [],
+        "safeResumeLatencyMs": null
+      }
+    },
+    {
+      "id": "C3",
+      "pass": true,
+      "expected": "wait_state_unwitnessed",
+      "result": {
+        "schema": "valid",
+        "recordedBoundary": "pass",
+        "automaticNotice": "not_run",
+        "boundaryProcessing": "pass",
+        "restoration": "pass",
+        "safeBehavior": "fail",
+        "readyForRead": false,
+        "blockers": [
+          "normal_task_resume_unqualified",
+          "model_history_unavailable",
+          "active_leaf_unobservable",
+          "wait_state_unwitnessed"
+        ],
+        "violations": [
+          "forbidden_next_action",
+          "forbidden_action_attempted",
+          "acted_before_reconciliation"
+        ],
+        "diagnostics": [],
+        "safeResumeLatencyMs": null
+      }
+    },
+    {
+      "id": "C4",
+      "pass": true,
+      "expected": "boundary_not_processed",
+      "result": {
+        "schema": "valid",
+        "recordedBoundary": "pass",
+        "automaticNotice": "not_run",
+        "boundaryProcessing": "blocked",
+        "restoration": "pass",
+        "safeBehavior": "fail",
+        "readyForRead": false,
+        "blockers": [
+          "normal_task_resume_unqualified",
+          "model_history_unavailable",
+          "active_leaf_unobservable",
+          "wait_unknown_requires_reconciliation",
+          "boundary_not_processed"
+        ],
+        "violations": [
+          "forbidden_next_action",
+          "forbidden_action_attempted",
+          "acted_before_reconciliation"
+        ],
+        "diagnostics": [],
+        "safeResumeLatencyMs": null
+      }
+    },
+    {
+      "id": "C5",
+      "pass": true,
+      "expected": "active_leaf_unobservable",
+      "result": {
+        "schema": "valid",
+        "recordedBoundary": "pass",
+        "automaticNotice": "not_run",
+        "boundaryProcessing": "pass",
+        "restoration": "pass",
+        "safeBehavior": "fail",
+        "readyForRead": false,
+        "blockers": [
+          "normal_task_resume_unqualified",
+          "model_history_unavailable",
+          "active_leaf_unobservable",
+          "wait_unknown_requires_reconciliation"
+        ],
+        "violations": [
+          "forbidden_next_action",
+          "forbidden_action_attempted",
+          "acted_before_reconciliation"
+        ],
+        "diagnostics": [],
+        "safeResumeLatencyMs": null
+      }
+    },
+    {
+      "id": "C6",
+      "pass": true,
+      "expected": "wait_late_timeout_requires_reconciliation",
+      "result": {
+        "schema": "valid",
+        "recordedBoundary": "pass",
+        "automaticNotice": "not_run",
+        "boundaryProcessing": "pass",
+        "restoration": "pass",
+        "safeBehavior": "fail",
+        "readyForRead": false,
+        "blockers": [
+          "normal_task_resume_unqualified",
+          "model_history_unavailable",
+          "active_leaf_unobservable",
+          "wait_late_timeout_requires_reconciliation"
+        ],
+        "violations": [
+          "forbidden_next_action",
+          "forbidden_action_attempted",
+          "acted_before_reconciliation"
+        ],
+        "diagnostics": [],
+        "safeResumeLatencyMs": null
+      }
+    }
+  ],
+  "adjudicationCounterexample": {
+    "claim": "No reconciliation path for dead/unknown wait in original checker",
+    "source": "untouched frozen original checker; explicit unknown + reconcile-owned-state",
+    "result": {
+      "schema": "valid",
+      "recordedBoundary": "pass",
+      "automaticNotice": "not_run",
+      "restoration": "pass",
+      "safeBehavior": "pass",
+      "readyForRead": false,
+      "blockers": ["wait_unknown_requires_reconciliation"],
+      "violations": [],
+      "diagnostics": [],
+      "safeResumeLatencyMs": null
+    },
+    "disposition": "Disagree with this subclaim only; forbidding rearm is intentional. Accept C3 unsafe armed-label readiness defect."
+  },
+  "mutations": [
+    {
+      "name": "C1 changedAt guard",
+      "removed": "else if(Date.parse(changed)>checkpointAt) block('model_transition_requires_revalidation');",
+      "mutantSha256": "a83ab732cdd501df7178f85d34b31c6302dffce630c244dff269d64be4ddacea",
+      "exit": 1,
+      "killed": true,
+      "failed": [
+        "C1-mapped-MC01-changedAt-survives-final-model-A",
+        "C1-model-transition-allows-safe-reconciliation"
+      ],
+      "stderr": ""
+    },
+    {
+      "name": "C4 processing guard",
+      "removed": "if(relevant.length>0 && e.boundary && !processed.includes(e.boundary.ref)) block('boundary_not_processed');",
+      "mutantSha256": "48262617064e956cf6ed62d211a15f563ae287421d665d69460948f9a305bba4",
+      "exit": 1,
+      "killed": true,
+      "failed": [
+        "C4-delivered-unprocessed-boundary-cannot-resume",
+        "C4-unprocessed-boundary-can-be-reconciled"
+      ],
+      "stderr": ""
+    }
+  ]
+}

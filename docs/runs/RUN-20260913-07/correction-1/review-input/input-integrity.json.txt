@@ -1,0 +1,21 @@
+{
+  "source": "/Users/ray/dev/shepy/docs/runs/RUN-20260913-07",
+  "copiedAt": "2026-09-13T17:22:57.107Z",
+  "files": [
+    {
+      "source": "checker.ts.txt",
+      "path": "checker.ts",
+      "sha256": "5c4cf38984c072ed2a73e4577f82287c68ff997f88bd79358837f01faf01e285"
+    },
+    {
+      "source": "rehearsal-packet.md",
+      "path": "rehearsal-packet.md",
+      "sha256": "9fc9b8dabbf58b3605e4a1c64518af17860137cc97b9ae4b1a940c39f74e3cf2"
+    },
+    {
+      "source": "source-manifest.json",
+      "path": "source-manifest.json",
+      "sha256": "f0da145cbac97ff8262f958ed3b028c09b47ff8215a5490638fb0198c84002fd"
+    }
+  ]
+}
