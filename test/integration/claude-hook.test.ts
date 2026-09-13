@@ -1212,6 +1212,95 @@ describe("claude-hook Stop", () => {
     expect(fixture.delivery.inboxList({ profileId: "driffs", state: "pending" })).toHaveLength(1);
     expect(fixture.delivery.inboxList({ profileId: "driffs", state: "leased" })).toHaveLength(0);
   });
+
+  test("stop_hook_active on a lapsed owner settles its delivered record and never re-claims or leases", async () => {
+    const fixture = await openHookServer();
+    projectOutcome(fixture, "stop-sha-1", "delivered before the lapse");
+    await runHook(fixture, promptPayload({ prompt_id: "sha-p1" }));
+    // The long turn lapses the lease with a fresh mid-turn outcome pending.
+    // Recovery WOULD succeed here — but this Stop has already continued the
+    // conversation once (stop_hook_active), so it must only settle what
+    // this prompt delivered and stop there.
+    projectOutcome(fixture, "stop-sha-2", "mid-turn outcome after the lapse");
+    lapseOwnerLease(fixture);
+
+    const methods: string[] = [];
+    const realRequest = ObservabilityRpcClient.prototype.request;
+    vi.spyOn(ObservabilityRpcClient.prototype, "request").mockImplementation(function (
+      this: ObservabilityRpcClient,
+      method: string,
+      params: unknown,
+    ) {
+      methods.push(method);
+      return realRequest.call(this, method, params);
+    });
+
+    const { code, stdout } = await runHook(
+      fixture,
+      stopPayload({ prompt_id: "sha-p1", stop_hook_active: true }),
+    );
+    expect(code).toBe(0);
+    expect(stdout).toBe("");
+    // It settled the record this prompt delivered — the stamped token
+    // fences the ack even on a lapsed lease...
+    expect(methods).toContain("inbox.ack");
+    // ...and it NEVER attempted a lease or a recovery claim.
+    expect(methods).not.toContain("inbox.lease");
+    expect(methods).not.toContain("profile.claim");
+    // The mid-turn outcome stays pending for the next claim.
+    expect(fixture.delivery.inboxList({ profileId: "driffs", state: "pending" })).toHaveLength(1);
+  });
+
+  test("recovery is abandoned when the owner-file CAS is contested mid-recovery: nothing injected, batch stays pending", async () => {
+    const fixture = await openHookServer();
+    projectOutcome(fixture, "stop-cas-1", "delivered before the lapse");
+    await runHook(fixture, promptPayload({ prompt_id: "cas-p1" }));
+    const staleToken = readOwnerFile(fixture).leaseToken;
+    expect(staleToken).toBeTruthy();
+
+    projectOutcome(fixture, "stop-cas-2", "mid-turn outcome, contested write");
+    lapseOwnerLease(fixture);
+
+    // A concurrent hook invocation records an unsettled delivered batch
+    // DURING the recovery re-claim. The guarded write the recovery performs
+    // afterwards expects "no unsettled record" (the ack block above cleared
+    // it) and must fail — the concurrent invocation owns the record now.
+    const realRequest = ObservabilityRpcClient.prototype.request;
+    vi.spyOn(ObservabilityRpcClient.prototype, "request").mockImplementation(function (
+      this: ObservabilityRpcClient,
+      method: string,
+      params: unknown,
+    ) {
+      if (method === "profile.claim") {
+        const current = readOwnerFile(fixture);
+        writeFileSync(
+          ownerFilePath(fixture),
+          `${JSON.stringify(
+            { ...current, delivered: { ids: ["rival-id-1"], phase: "delivered", promptId: "other" } },
+            null,
+            2,
+          )}\n`,
+        );
+      }
+      return realRequest.call(this, method, params);
+    });
+
+    const { code, stdout } = await runHook(fixture, stopPayload({ prompt_id: "cas-p1" }));
+    // An expected-failure surface: silent abandon, exit 0, nothing injected.
+    expect(code).toBe(0);
+    expect(stdout).toBe("");
+    // The server row DOES hold the reclaimed fresh token (the re-claim
+    // succeeded server-side), but this Stop never overwrote the file: the
+    // rival's competing record and the stale token are still on disk.
+    expect(fixture.owners.get("driffs")?.leaseToken).not.toBe(staleToken);
+    const onDisk = readOwnerFile(fixture);
+    expect(onDisk.delivered?.ids).toEqual(["rival-id-1"]);
+    expect(onDisk.leaseToken).toBe(staleToken);
+    // Nothing was leased under the fresh token: the batch stays pending
+    // and re-delivers to whoever legitimately holds the record next.
+    expect(fixture.delivery.inboxList({ profileId: "driffs", state: "pending" })).toHaveLength(1);
+    expect(fixture.delivery.inboxList({ profileId: "driffs", state: "leased" })).toHaveLength(0);
+  });
 });
 
 describe("claude-hook owner-record crash consistency", () => {

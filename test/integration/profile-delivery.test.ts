@@ -1217,6 +1217,89 @@ describe("lease admission — one liveness rule for claim, renew and inbox.lease
     expect((refused as Error).message).toMatch(/not the active owner/);
   });
 
+  test("claim, renew and inbox.lease flip together at exactly lease + grace", () => {
+    // The real admission hazard: three independent paths must answer lease
+    // liveness with ONE rule, or a path could hold (or admit) a lease a
+    // rival was entitled to take. One ms before the boundary everything
+    // holds; at the exact instant everything gives way together — renew
+    // fails closed, inbox.lease refuses owner_lapsed, and a tokenless
+    // rival claim takes the profile over.
+    //
+    // Each side of the boundary gets a fresh, unextended claim: renew is a
+    // heartbeat (a successful renew re-arms the full lease), so exercising
+    // the before-side would push the after-side's boundary away.
+    const LAPSE_OFFSET = 5 * 60_000 + 30_000; // DEFAULT_LEASE_MS + grace
+
+    let clock = 1_000_000;
+    const before = fixture({ now: () => clock });
+    const held = before.delivery.claim(CLAIM_PANE_X);
+    if (held.kind !== "claimed") throw new Error("claim failed");
+    clock = 1_000_000 + LAPSE_OFFSET - 1;
+    expect(() =>
+      before.delivery.inboxLease({
+        leaseToken: held.leaseToken,
+        now: clock,
+        profileId: "driffs",
+      }),
+    ).not.toThrow();
+    expect(before.delivery.renew({ leaseToken: held.leaseToken, profileId: "driffs" })).toBe(
+      true,
+    );
+    expect(before.delivery.claim(CLAIM_PANE_Y)).toMatchObject({
+      kind: "rejected",
+      reason: "lease_active",
+    });
+
+    clock = 1_000_000;
+    const after = fixture({ now: () => clock });
+    const lapsed = after.delivery.claim(CLAIM_PANE_X);
+    if (lapsed.kind !== "claimed") throw new Error("claim failed");
+    clock = 1_000_000 + LAPSE_OFFSET;
+    expect(after.delivery.renew({ leaseToken: lapsed.leaseToken, profileId: "driffs" })).toBe(
+      false,
+    );
+    let refused: unknown;
+    try {
+      after.delivery.inboxLease({
+        leaseToken: lapsed.leaseToken,
+        now: clock,
+        profileId: "driffs",
+      });
+    } catch (error) {
+      refused = error;
+    }
+    expect(refused).toBeInstanceOf(InboxRefusedError);
+    expect((refused as InboxRefusedError).code).toBe("owner_lapsed");
+    // The lapsed row means the tokenless rival's takeover kind is reclaimed.
+    expect(after.delivery.claim(CLAIM_PANE_Y).kind).toBe("reclaimed");
+  });
+
+  test("a stale token stays not_owner even once the rival's own lease has lapsed too", () => {
+    // Classification order is possession, not liveness: once a rival's
+    // re-claim rotated the token, the old token is not_owner forever — even
+    // when no lease is alive anywhere. Correct, because the hook must NOT
+    // attempt recovery on not_owner (possession is not provable), while a
+    // tokenless claim still succeeds via the expiry rule, so the profile
+    // cannot wedge.
+    let clock = 1_000_000;
+    const { delivery } = fixture({ now: () => clock });
+    const first = delivery.claim(CLAIM_PANE_X);
+    if (first.kind !== "claimed") throw new Error("claim failed");
+    clock += 10 * 60_000; // the first lease lapses, uncontested
+    expect(delivery.claim(CLAIM_PANE_Y).kind).toBe("reclaimed");
+    clock += 10 * 60_000; // the rival's lease ALSO lapses, uncontested
+    let refused: unknown;
+    try {
+      delivery.inboxLease({ leaseToken: first.leaseToken, now: clock, profileId: "driffs" });
+    } catch (error) {
+      refused = error;
+    }
+    expect(refused).toBeInstanceOf(InboxRefusedError);
+    expect((refused as InboxRefusedError).code).toBe("not_owner");
+    // Not stuck: a fresh subscriber claims via the expiry rule.
+    expect(delivery.claim({ ...CLAIM_PANE_Y, subscriberId: "sub-3" }).kind).toBe("reclaimed");
+  });
+
   test("inbox.lease refusals carry a machine-readable code on the wire", async () => {
     const { built, client, server } = await rpcFixture();
     const raw = new ObservabilityRpcClient({ socketPath: join(dirname(built.path), "rpc.sock") });
