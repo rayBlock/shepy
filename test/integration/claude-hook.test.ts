@@ -1681,6 +1681,86 @@ describe("claude-hook represented set equals acknowledged set", () => {
       expect(row.lastErrorCode).toBe("deferred_over_budget");
     }
   });
+
+  test("a delivery Stop with a deferred tail injects, delivers exactly the represented rows, and the loop's ack-only Stop settles them", async () => {
+    const fixture = await openHookServer();
+    // Establish the owner first: a normal prompt turn (nothing pending yet).
+    await runHook(fixture, promptPayload({ prompt_id: "stop-defer-p0" }));
+
+    // The worker finishes 20 times MID-TURN, while the model is working: the
+    // delivery Stop — not the prompt — is the hook that must inject, defer
+    // the tail, and record the represented set.
+    for (let i = 0; i < 20; i += 1) {
+      projectOutcome(fixture, `hook-stop-defer-${i}`, "z".repeat(2_000));
+    }
+    const before = new Map(
+      fixture.obligations
+        .list({ profileId: "driffs", state: "pending" })
+        .map((row) => [row.id, row.attemptCount]),
+    );
+    expect(before.size).toBe(20);
+    const leasedIds = [...before.keys()];
+
+    // Park nothing: spy on inbox.delivered so the test can prove the
+    // deferred rows never pass through the delivered transition.
+    const deliveredCalls: string[][] = [];
+    const realDelivered = fixture.delivery.inboxDelivered.bind(fixture.delivery);
+    Object.assign(fixture.delivery, {
+      inboxDelivered: (input: Parameters<ProfileDeliveryService["inboxDelivered"]>[0]) => {
+        deliveredCalls.push([...input.ids]);
+        return realDelivered(input);
+      },
+    });
+
+    const { code, stdout } = await runHook(fixture, stopPayload({ stop_hook_active: false }));
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdout) as {
+      hookSpecificOutput?: { additionalContext?: string; hookEventName?: string };
+    };
+    // The Stop injection is what continues the conversation.
+    expect(parsed.hookSpecificOutput?.hookEventName).toBe("Stop");
+    const context = parsed.hookSpecificOutput?.additionalContext ?? "";
+
+    // The owner file's delivered record IS the represented set, and exactly
+    // those rows sit in the delivered state — no deferred row among them.
+    const record = readOwnerFile(fixture).delivered;
+    expect(record?.phase).toBe("delivered");
+    const representedIds = record?.ids ?? [];
+    expect(representedIds.length).toBeGreaterThan(0);
+    expect(representedIds.length).toBeLessThan(20);
+    for (const id of representedIds) expect(context).toContain(id);
+    const deliveredRows = fixture.obligations.list({ profileId: "driffs", state: "delivered" });
+    expect(new Set(deliveredRows.map((row) => row.id))).toEqual(new Set(representedIds));
+    // inbox.delivered only ever saw the represented ids.
+    expect(deliveredCalls.length).toBeGreaterThan(0);
+    for (const ids of deliveredCalls) {
+      expect(ids.every((id) => representedIds.includes(id))).toBe(true);
+    }
+
+    // Every id the injection did NOT name was deferred, never claimed.
+    const deferredIds = leasedIds.filter((id) => !representedIds.includes(id));
+    expect(deferredIds.length).toBeGreaterThan(0);
+    for (const id of deferredIds) expect(context).not.toContain(id);
+    expect(context).toContain(`${deferredIds.length} more outcome(s) deferred`);
+
+    // The deferred tail: pending again, attempts restored, honest error code.
+    const pending = fixture.obligations.list({ profileId: "driffs", state: "pending" });
+    expect(new Set(pending.map((row) => row.id))).toEqual(new Set(deferredIds));
+    for (const row of pending) {
+      expect(row.attemptCount).toBe(before.get(row.id));
+      expect(row.lastErrorCode).toBe("deferred_over_budget");
+    }
+
+    // The injection loop's own Stop (stop_hook_active) settles exactly the
+    // represented record and leaves the deferred tail untouched.
+    const ackStop = await runHook(fixture, stopPayload({ stop_hook_active: true }));
+    expect(ackStop.code).toBe(0);
+    expect(ackStop.stdout).toBe("");
+    const acked = fixture.obligations.list({ profileId: "driffs", state: "acked" });
+    expect(new Set(acked.map((row) => row.id))).toEqual(new Set(representedIds));
+    const stillPending = fixture.obligations.list({ profileId: "driffs", state: "pending" });
+    expect(new Set(stillPending.map((row) => row.id))).toEqual(new Set(deferredIds));
+  });
 });
 
 describe("claude-hook formatter representation sets", () => {
@@ -1746,6 +1826,36 @@ describe("claude-hook formatter representation sets", () => {
       formatted.context.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g),
     );
     expect(idsInText).toEqual(new Set(formatted.representedIds));
+  });
+  test("(e) an ESC inside an excerpt never reaches the rendered context", () => {
+    // Defense in depth: the daemon strips control bytes at projection, but
+    // the hook renders daemon data — a stale or hostile snapshot must not be
+    // able to put a raw escape into the wake payload. outcomeLine is the one
+    // place an excerpt text reaches the injection.
+    const obligations: LeasedObligation[] = [
+      {
+        agentEventId: 1,
+        id: "00000000-0000-4000-8000-000000000001",
+        outcome: {
+          agent: "hermes",
+          eventId: 1,
+          excerpt: { text: "before\u001b]0;pwned\u0007after", truncated: false },
+          from: "working",
+          lastAssistantRef: null,
+          name: "builder",
+          paneId: "w2:p1",
+          to: "done",
+          type: "agent.done",
+        },
+      },
+    ];
+    const formatted = formatHookContext("driffs", obligations);
+    expect(formatted.context).toContain("before");
+    expect(formatted.context).toContain("after");
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: the assertion is exactly that no C0/C1 byte survives.
+    expect(formatted.context).not.toMatch(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/);
+    // The guard strips bytes, not prose: the printable payload around them stays.
+    expect(formatted.context).toContain("]0;pwned");
   });
 });
 
