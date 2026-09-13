@@ -225,6 +225,18 @@ wake mechanism is verified in the real Claude harness.
   knobs (`SHEPY_HOOK_TEST_CAS_PAUSE_MS`, `SHEPY_HOOK_TEST_WRITE_PAUSE`), both
   default off and clamped — a deterministic cross-process interleave test is not
   reachable without them.
+- **Item 3 (lease admission) LANDED `2dea955`** as RUN-20260913-02
+  (`docs/runs/`): one exported `isLeaseAlive` predicate used by `claim`,
+  `renew` and `inboxLease`; `InboxRefusedError` with `not_owner` /
+  `owner_lapsed`; the RPC envelope carries `code` only for
+  `RpcRefusedError` subclasses (a Node `EACCES` never rides as a Shepy
+  code); the hook's `Stop` recovers a lapsed owner with exactly one
+  proof-of-possession re-claim, and on contention warns with the rival's
+  pane and injects nothing. Verified: the wire never forwards `now` into
+  the fence. Known, tracked with item 7: a Stop that re-claims and dies
+  before the owner-file write leaves file(stale) vs row(fresh); self-heals
+  within one lease, with a warning that names the pane's own id.
+- **Item 2 in flight as RUN-20260913-03** (design D1–D5 in its packet).
 - The lapsed-row sweep stays **held** on `ops/owner-sweep-held` — the review
   condition is to display lapsed state and preserve transition history, not to GC
   yet. `shepy profile owner` now covers the display half.

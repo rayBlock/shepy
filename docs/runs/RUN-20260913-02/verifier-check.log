@@ -1,0 +1,102 @@
+Already up to date
+Done in 188ms using pnpm v11.9.0
+$ pnpm typecheck && pnpm test && pnpm lint && pnpm format:check && pnpm db:check && pnpm package:check && pnpm pi-package:check && pnpm herdr-plugin:check
+$ tsc --noEmit -p tsconfig.json
+$ vitest run
+
+ RUN  v4.1.9 /Users/ray/dev/shepy-wt/verify-item3
+
+npm warn Unknown env config "manage-package-manager-versions". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+
+ Test Files  55 passed (55)
+      Tests  556 passed (556)
+   Start at  12:20:21
+   Duration  8.84s (transform 8.93s, setup 0ms, import 12.70s, tests 29.50s, environment 3ms)
+
+$ biome check .
+src/observability/profile-selector-scope.ts:7:3 lint/correctness/noUnusedImports  FIXABLE  ━━━━━━━━━━
+
+  ! Several of these imports are unused.
+  
+    5 │   type AgentSelector,
+    6 │   resolveAgentSelector,
+  > 7 │   type SelectableAgent,
+      │   ^^^^^^^^^^^^^^^^^^^^
+    8 │   selectableFromRow,
+    9 │   type WorkspaceSelector,
+  
+  i Unused imports might be the result of an incomplete refactoring.
+  
+  i Unsafe fix: Remove the unused imports.
+  
+     5  5 │     type AgentSelector,
+     6  6 │     resolveAgentSelector,
+     7    │ - ··type·SelectableAgent,
+     8  7 │     selectableFromRow,
+     9  8 │     type WorkspaceSelector,
+  
+
+test/integration/operation-wait-rpc.test.ts:1:35 lint/correctness/noUnusedImports  FIXABLE  ━━━━━━━━━━
+
+  ! Several of these imports are unused.
+  
+  > 1 │ import { existsSync, mkdtempSync, rmSync, unlinkSync } from "node:fs";
+      │                                   ^^^^^^
+    2 │ import { tmpdir } from "node:os";
+    3 │ import { join } from "node:path";
+  
+  i Unused imports might be the result of an incomplete refactoring.
+  
+  i Unsafe fix: Remove the unused imports.
+  
+    1 │ import·{·existsSync,·mkdtempSync,·rmSync,·unlinkSync·}·from·"node:fs";
+      │                                   --------                            
+
+test/integration/operation-wait-rpc.test.ts:5:13 lint/correctness/noUnusedImports  FIXABLE  ━━━━━━━━━━
+
+  ! This import is unused.
+  
+    3 │ import { join } from "node:path";
+    4 │ import { afterEach, describe, expect, test } from "vitest";
+  > 5 │ import type { AgentHistoryService } from "@/agent-history/service.js";
+      │             ^^^^^^^^^^^^^^^^^^^^^^^
+    6 │ import { createAgentHistoryService } from "@/agent-history/service.js";
+    7 │ import { ObservabilityRpcServer } from "@/daemon/observability-server.js";
+  
+  i Unused imports might be the result of an incomplete refactoring.
+  
+  i Unsafe fix: Remove the unused imports.
+  
+      3   3 │   import { join } from "node:path";
+      4   4 │   import { afterEach, describe, expect, test } from "vitest";
+      5     │ - import·type·{·AgentHistoryService·}·from·"@/agent-history/service.js";
+      6   5 │   import { createAgentHistoryService } from "@/agent-history/service.js";
+      7   6 │   import { ObservabilityRpcServer } from "@/daemon/observability-server.js";
+  
+
+Checked 125 files in 59ms. No fixes applied.
+Found 3 warnings.
+$ biome format .
+Checked 125 files in 19ms. No fixes applied.
+$ drizzle-kit check --config drizzle.config.ts
+Reading config file '/Users/ray/dev/shepy-wt/verify-item3/drizzle.config.ts'
+Everything's fine 🐶🔥
+$ node scripts/check-root-package.mjs
+npm warn Unknown env config "manage-package-manager-versions". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+
+> shepy@0.5.0 prepack
+> pnpm build
+
+$ pnpm clean:dist && tsc -p tsconfig.build.json && tsc-alias -p tsconfig.build.json
+$ node scripts/clean-dist.mjs
+$ node scripts/ensure-bin-executable.mjs
+shepy@0.5.0: 257 files
+$ pnpm --dir packages/shepy-pi typecheck && node scripts/check-pi-package.mjs
+$ tsc --noEmit -p tsconfig.json
+npm warn Unknown env config "manage-package-manager-versions". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+shepy-pi@0.5.0: 7 files
+$ pnpm --dir packages/shepy-herdr-plugin typecheck && pnpm --dir packages/shepy-herdr-plugin package:check
+$ tsc -p tsconfig.json
+$ node check-package.mjs
+npm warn Unknown env config "manage-package-manager-versions". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+EXIT=0

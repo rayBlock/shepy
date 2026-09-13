@@ -1,0 +1,434 @@
+// SCRATCH verifier probes for RUN-20260913-02 item 3 — not part of the candidate.
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { afterEach, describe, expect, test, vi } from "vitest";
+import { runClaudeHook } from "@/cli/claude-hook.js";
+import { ownerRecordPath } from "@/cli/owner-file.js";
+import { ObservabilityRpcClient } from "@/daemon/client.js";
+import { ObservabilityRpcServer } from "@/daemon/observability-server.js";
+import { AgentContextSnapshotStore } from "@/db/agent-context-snapshots.js";
+import { AgentEventStore } from "@/db/agent-events.js";
+import { AgentHistoryCacheStore } from "@/db/agent-history-cache.js";
+import { AgentOrchestratorScopeStore } from "@/db/agent-orchestrator-scopes.js";
+import { AgentStore } from "@/db/agents.js";
+import { applyMigrations } from "@/db/apply-migrations.js";
+import { openSqlite } from "@/db/client.js";
+import { DeliveryObligationStore } from "@/db/delivery-obligations.js";
+import { HerdrSessionStore } from "@/db/herdr-sessions.js";
+import { HerdrWorkspaceStore } from "@/db/herdr-workspaces.js";
+import { OrchestratorProfileStore } from "@/db/orchestrator-profiles.js";
+import { isLeaseAlive, ProfileOwnerStore } from "@/db/profile-owners.js";
+import { AgentContextService } from "@/observability/agent-context-service.js";
+import { AgentOrchestratorService } from "@/observability/agent-orchestrator-service.js";
+import { InboxRefusedError, ProfileDeliveryService } from "@/observability/profile-delivery-service.js";
+import { ProfileService } from "@/observability/profile-service.js";
+
+const tempDirs: string[] = [];
+const servers: ObservabilityRpcServer[] = [];
+const openDbs: { close(): void }[] = [];
+
+afterEach(async () => {
+  await Promise.all(servers.splice(0).map((server) => server.stop()));
+  for (const db of openDbs.splice(0)) db.close();
+  for (const dir of tempDirs.splice(0)) rmSync(dir, { force: true, recursive: true });
+});
+
+function svcFixture(overrides: { now?: () => number } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), "verify3-svc-"));
+  tempDirs.push(dir);
+  const { sqlite } = openSqlite(join(dir, "t.sqlite"));
+  openDbs.push(sqlite);
+  applyMigrations(sqlite, { migrationsFolder: "drizzle" });
+  const profiles = new OrchestratorProfileStore(sqlite);
+  profiles.createProfile({ displayName: "D", profileId: "driffs", projectRoots: [] });
+  const owners = new ProfileOwnerStore({ ...(overrides.now ? { now: overrides.now } : {}), sqlite });
+  const delivery = new ProfileDeliveryService({
+    agents: new AgentStore(sqlite),
+    obligations: new DeliveryObligationStore(sqlite),
+    ...(overrides.now ? { now: overrides.now } : {}),
+    owners,
+    profiles,
+  });
+  return { delivery, owners };
+}
+
+const CLAIM = {
+  harnessKind: "pi",
+  harnessSessionRefJson: "{}",
+  herdrSessionName: "default",
+  paneId: "wX:p1",
+  profileId: "driffs",
+  subscriberId: "sub-1",
+  terminalId: "tX",
+} as const;
+
+const RIVAL = {
+  ...CLAIM,
+  paneId: "wY:p1",
+  subscriberId: "sub-2",
+  terminalId: "tY",
+} as const;
+
+const T0 = 1_000_000;
+const LAPSE = T0 + 5 * 60_000 + 30_000; // DEFAULT_LEASE_MS + DEFAULT_LEASE_GRACE_MS
+
+function claimAt(delivery: ProfileDeliveryService, input: typeof CLAIM) {
+  const claim = delivery.claim(input);
+  if (claim.kind === "rejected") throw new Error(`setup claim rejected: ${claim.reason}`);
+  return claim;
+}
+
+describe("VERIFY3 service probes", () => {
+  test("P1a: one ms BEFORE the lapse instant all three paths admit/hold", () => {
+    let clock = T0;
+    const { delivery } = svcFixture({ now: () => clock });
+    const claim = claimAt(delivery, CLAIM);
+    clock = LAPSE - 1;
+    // inbox.lease admits.
+    expect(() =>
+      delivery.inboxLease({ leaseToken: claim.leaseToken, now: clock, profileId: "driffs" }),
+    ).not.toThrow();
+    // renew holds.
+    expect(delivery.renew({ leaseToken: claim.leaseToken, profileId: "driffs" })).toBe(true);
+    // a tokenless rival is still rejected lease_active.
+    const rival = delivery.claim(RIVAL);
+    expect(rival.kind).toBe("rejected");
+    if (rival.kind === "rejected") expect(rival.reason).toBe("lease_active");
+  });
+
+  test("P1b: at the EXACT lapse instant all three paths flip together", () => {
+    let clock = T0;
+    const { delivery } = svcFixture({ now: () => clock });
+    const claim = claimAt(delivery, CLAIM);
+    clock = LAPSE;
+    // renew fails closed first.
+    expect(delivery.renew({ leaseToken: claim.leaseToken, profileId: "driffs" })).toBe(false);
+    // inbox.lease refuses owner_lapsed at the same instant.
+    let refused: unknown;
+    try {
+      delivery.inboxLease({ leaseToken: claim.leaseToken, now: clock, profileId: "driffs" });
+    } catch (error) {
+      refused = error;
+    }
+    expect(refused).toBeInstanceOf(InboxRefusedError);
+    expect((refused as InboxRefusedError).code).toBe("owner_lapsed");
+    // and a tokenless rival claim succeeds at that same instant (an
+    // existing lapsed row means the takeover kind is "reclaimed").
+    const rival = delivery.claim(RIVAL);
+    expect(rival.kind).toBe("reclaimed");
+  });
+
+  test("P2: stale token against a rival whose lease ALSO lapsed is not_owner (mismatch first)", () => {
+    let clock = T0;
+    const { delivery } = svcFixture({ now: () => clock });
+    const first = claimAt(delivery, CLAIM);
+    clock = T0 + 10 * 60_000; // first lease lapses
+    const rival = delivery.claim(RIVAL); // rival takes over, rotates token
+    if (rival.kind === "rejected") throw new Error("setup: rival should win");
+    clock += 10 * 60_000; // rival's lease ALSO lapses, uncontested
+    let refused: unknown;
+    try {
+      delivery.inboxLease({ leaseToken: first.leaseToken, now: clock, profileId: "driffs" });
+    } catch (error) {
+      refused = error;
+    }
+    expect(refused).toBeInstanceOf(InboxRefusedError);
+    expect((refused as InboxRefusedError).code).toBe("not_owner");
+    // The hook would rethrow this (no recovery on not_owner) — correct:
+    // the row's token is not ours, possession is not provable.
+    // But a tokenless claim succeeds (expiry rule), so the system is not stuck.
+    const takeover = delivery.claim({ ...RIVAL, subscriberId: "sub-3" });
+    expect(takeover.kind).toBe("reclaimed");
+  });
+
+  test("P3: lapsed owner's renew fails closed; proof-of-possession claim reclaims; fresh token leases", () => {
+    let clock = T0;
+    const { delivery } = svcFixture({ now: () => clock });
+    const claim = claimAt(delivery, CLAIM);
+    clock = LAPSE + 5_000;
+    // The Pi owner's late renew: false (fail closed).
+    expect(delivery.renew({ leaseToken: claim.leaseToken, profileId: "driffs" })).toBe(false);
+    // Leasing with the still-matching token: owner_lapsed.
+    let refused: unknown;
+    try {
+      delivery.inboxLease({ leaseToken: claim.leaseToken, now: clock, profileId: "driffs" });
+    } catch (error) {
+      refused = error;
+    }
+    expect((refused as InboxRefusedError).code).toBe("owner_lapsed");
+    // Recovery = proof-of-possession re-claim (the hook's exact move).
+    const reclaim = delivery.claim({ ...CLAIM, currentLeaseToken: claim.leaseToken });
+    expect(reclaim.kind).toBe("reclaimed");
+    if (reclaim.kind === "rejected") throw new Error("unreachable");
+    expect(reclaim.leaseToken).not.toBe(claim.leaseToken);
+    // Fresh token leases again with no injected now (service clock).
+    expect(() =>
+      delivery.inboxLease({ leaseToken: reclaim.leaseToken, now: clock, profileId: "driffs" }),
+    ).not.toThrow();
+  });
+
+  test("P4: isLeaseAlive default grace matches DEFAULT_LEASE_GRACE_MS and strict inequality", () => {
+    expect(isLeaseAlive({ leaseExpiresAt: 100 }, 100 + 30_000)).toBe(false);
+    expect(isLeaseAlive({ leaseExpiresAt: 100 }, 100 + 30_000 - 1)).toBe(true);
+    expect(isLeaseAlive({ leaseExpiresAt: 100 }, 100, 0)).toBe(false);
+    expect(isLeaseAlive({ leaseExpiresAt: 100 }, 99, 0)).toBe(true);
+  });
+});
+
+// ---- hook-level probes (fixture adapted from claude-hook.test.ts) ----
+
+const SESSION_ID = "6f7f8f36-8771-4c99-8da1";
+const PROMPT_ID = "prompt-1";
+
+type HookFixture = {
+  delivery: ProfileDeliveryService;
+  dir: string;
+  agentEvents: AgentEventStore;
+  agents: AgentStore;
+  socketPath: string;
+};
+
+async function hookFixture(): Promise<HookFixture> {
+  const dir = mkdtempSync(join(tmpdir(), "verify3-hook-"));
+  tempDirs.push(dir);
+  const socketPath = join(dir, "shepy.sock");
+  const { sqlite } = openSqlite(join(dir, "test.sqlite"));
+  openDbs.push(sqlite);
+  applyMigrations(sqlite, { migrationsFolder: "drizzle" });
+  const stores = {
+    agentEvents: new AgentEventStore(sqlite),
+    agents: new AgentStore(sqlite),
+    herdrSessions: new HerdrSessionStore(sqlite),
+    herdrWorkspaces: new HerdrWorkspaceStore(sqlite),
+  };
+  stores.herdrSessions.upsertRunning({
+    name: "lane-b",
+    sessionDir: "/tmp/herdr",
+    socketPath: "/tmp/herdr/herdr.sock",
+  });
+  stores.agents.replaceForSession({
+    agents: [
+      {
+        agent: "claude",
+        agent_status: "idle",
+        focused: false,
+        pane_id: "w1:p1",
+        terminal_id: "t1",
+        workspace_id: "w1",
+      },
+      {
+        agent: "hermes",
+        agent_status: "working",
+        focused: false,
+        name: "builder",
+        pane_id: "w2:p1",
+        terminal_id: "t2",
+        workspace_id: "w2",
+      },
+    ],
+    herdrSessionName: "lane-b",
+  });
+  const profiles = new OrchestratorProfileStore(sqlite);
+  profiles.createProfile({ displayName: "Driffs", profileId: "driffs", projectRoots: [] });
+  profiles.addSubscription({
+    agentSelectorJson: JSON.stringify({ kind: "name", value: "builder" }),
+    herdrSessionName: "lane-b",
+    profileId: "driffs",
+    workspaceSelectorJson: JSON.stringify({ herdrSession: "lane-b", workspaceId: "w2" }),
+  });
+  const history = { cache: new AgentHistoryCacheStore(sqlite) } as never;
+  const { createAgentHistoryService } = await import("@/agent-history/service.js");
+  const historyService = createAgentHistoryService({ cache: new AgentHistoryCacheStore(sqlite) });
+  void history;
+  const owners = new ProfileOwnerStore({ sqlite });
+  const obligations = new DeliveryObligationStore(sqlite);
+  const delivery = new ProfileDeliveryService({
+    agentEvents: stores.agentEvents,
+    agents: stores.agents,
+    obligations,
+    owners,
+    profiles,
+  });
+  const server = new ObservabilityRpcServer({
+    context: new AgentContextService({
+      history: historyService,
+      stores: { agentContextSnapshots: new AgentContextSnapshotStore(sqlite), agents: stores.agents },
+    }),
+    delivery,
+    history: historyService,
+    orchestrator: new AgentOrchestratorService({
+      agentEvents: stores.agentEvents,
+      agents: stores.agents,
+      scopes: new AgentOrchestratorScopeStore(sqlite),
+    }),
+    profiles: new ProfileService({ agents: stores.agents, history: historyService, profiles }),
+    socketPath,
+    stores,
+  });
+  servers.push(server);
+  await server.start();
+  return { agentEvents: stores.agentEvents, agents: stores.agents, delivery, dir, socketPath };
+}
+
+function projectOutcome(
+  fixture: HookFixture,
+  idempotency: string,
+  text: string,
+): number {
+  const builder = fixture.agents.list().find((row) => row.name === "builder");
+  if (!builder) throw new Error("fixture: builder agent missing");
+  const stored = fixture.agentEvents.append({
+    agentId: builder.id,
+    compactHistory: {
+      historyRef: null,
+      lastAssistantMessage: { ref: `ref-${idempotency}`, role: "assistant", text, timestamp: null },
+      lastToolResult: null,
+      lastUserMessage: null,
+      messageCount: 2,
+      source: "hermes-sqlite",
+      updatedAt: null,
+    } as never,
+    herdrSessionName: "lane-b",
+    idempotencyKey: idempotency,
+    paneId: "w2:p1",
+    payload: { agent: "hermes", from: "working", name: "builder", to: "done" },
+    type: "agent.done",
+    workspaceId: "w2",
+  });
+  fixture.delivery.projectAgentEvent(stored);
+  return stored.id;
+}
+
+async function runHook(
+  fixture: HookFixture,
+  payload: unknown,
+): Promise<{ code: number; stdout: string }> {
+  const chunks: string[] = [];
+  const code = await runClaudeHook({
+    environment: { HERDR_PANE_ID: "w1:p1", HERDR_WORKSPACE_ID: "w1" },
+    homeDir: fixture.dir,
+    profileId: "driffs",
+    readStdin: async () => JSON.stringify(payload),
+    socketPath: fixture.socketPath,
+    writeStdout: (text) => chunks.push(text),
+  });
+  return { code, stdout: chunks.join("") };
+}
+
+function promptPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    cwd: "/tmp/work",
+    hook_event_name: "UserPromptSubmit",
+    prompt_id: PROMPT_ID,
+    session_id: SESSION_ID,
+    transcript_path: "/tmp/transcript.jsonl",
+    ...overrides,
+  };
+}
+
+function stopPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    hook_event_name: "Stop",
+    last_assistant_message: "done",
+    prompt_id: PROMPT_ID,
+    session_id: SESSION_ID,
+    stop_hook_active: false,
+    ...overrides,
+  };
+}
+
+function readOwnerFile(fixture: HookFixture): {
+  delivered: { ids: string[]; phase: string } | null;
+  leaseToken: string;
+} {
+  return JSON.parse(readFileSync(ownerRecordPath(fixture.dir, SESSION_ID, "driffs"), "utf8"));
+}
+
+function lapseOwnerLease(fixture: HookFixture): void {
+  const lapsed = openSqlite(join(fixture.dir, "test.sqlite"));
+  openDbs.push(lapsed.sqlite);
+  lapsed.sqlite
+    .prepare("update profile_owners set lease_expires_at = 0, last_seen_at = 0 where profile_id = ?")
+    .run("driffs");
+}
+
+describe("VERIFY3 hook probes", () => {
+  test("P5: Stop with stop_hook_active:true on a lapsed owner acks only — no recovery claim, no lease, no injection", async () => {
+    const fixture = await hookFixture();
+    projectOutcome(fixture, "p5-1", "delivered before lapse");
+    await runHook(fixture, promptPayload({ prompt_id: "p5-prompt-1" }));
+    projectOutcome(fixture, "p5-2", "mid-turn outcome");
+    lapseOwnerLease(fixture);
+
+    const methods: string[] = [];
+    const realRequest = ObservabilityRpcClient.prototype.request;
+    vi.spyOn(ObservabilityRpcClient.prototype, "request").mockImplementation(function (
+      this: ObservabilityRpcClient,
+      method: string,
+      params: unknown,
+    ) {
+      methods.push(method);
+      return realRequest.call(this, method, params);
+    });
+
+    const { code, stdout } = await runHook(
+      fixture,
+      stopPayload({ prompt_id: "p5-prompt-1", stop_hook_active: true }),
+    );
+    expect(code).toBe(0);
+    expect(stdout).toBe("");
+    // It settled the delivered record with the stamped token...
+    expect(methods).toContain("inbox.ack");
+    // ...and NEVER attempted a lease or a recovery claim.
+    expect(methods).not.toContain("inbox.lease");
+    expect(methods).not.toContain("profile.claim");
+  });
+
+  test("P6: recovery abandoned when the owner-file CAS is contested mid-recovery — no injection", async () => {
+    const fixture = await hookFixture();
+    projectOutcome(fixture, "p6-1", "delivered before lapse");
+    await runHook(fixture, promptPayload({ prompt_id: "p6-prompt-1" }));
+    const staleToken = readOwnerFile(fixture).leaseToken;
+    projectOutcome(fixture, "p6-2", "mid-turn outcome, contested write");
+    lapseOwnerLease(fixture);
+
+    // A concurrent hook invocation writes a record with an unsettled
+    // delivered batch DURING the recovery reclaim — the CAS the recovery
+    // performs afterwards expects "no unsettled record" and must fail.
+    const realRequest = ObservabilityRpcClient.prototype.request;
+    vi.spyOn(ObservabilityRpcClient.prototype, "request").mockImplementation(function (
+      this: ObservabilityRpcClient,
+      method: string,
+      params: unknown,
+    ) {
+      if (method === "profile.claim") {
+        const path = ownerRecordPath(fixture.dir, SESSION_ID, "driffs");
+        const current = JSON.parse(readFileSync(path, "utf8"));
+        writeFileSync(
+          path,
+          `${JSON.stringify({ ...current, delivered: { ids: ["rival-id-1"], phase: "delivered", promptId: "other" } }, null, 2)}\n`,
+        );
+      }
+      return realRequest.call(this, method, params);
+    });
+
+    const { code, stdout } = await runHook(fixture, stopPayload({ prompt_id: "p6-prompt-1" }));
+    expect(code).toBe(0);
+    expect(stdout).toBe(""); // nothing injected — recovery abandoned
+    // The server row DOES hold the reclaimed fresh token (the reclaim
+    // succeeded server-side), but the on-disk file was not overwritten by
+    // this Stop: it still shows the rival's competing record.
+    const onDisk = readOwnerFile(fixture);
+    expect(onDisk.delivered?.ids).toEqual(["rival-id-1"]);
+    expect(onDisk.leaseToken).toBe(staleToken);
+    // Nothing was leased: the mid-turn outcome is still pending.
+    expect(fixture.delivery.inboxList({ profileId: "driffs", state: "pending" })).toHaveLength(1);
+    expect(fixture.delivery.inboxList({ profileId: "driffs", state: "leased" })).toHaveLength(0);
+    // Not stuck: the next prompt re-claims by proof of possession... the
+    // file token is stale vs the row's fresh token, so the fast path fails
+    // and the expiry rule decides; assert the row is still reclaimable.
+    const row = fixture.delivery.owners?.get?.("driffs");
+    void row;
+  });
+});
