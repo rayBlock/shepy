@@ -7,13 +7,13 @@ the herdr wait and that fact is recorded here.
 
 ## Live
 
-- state: building
+- state: revising (verifier ACCEPT with 3 findings at 12:28Z; fresh builder fixing them)
 - lead: `w31:p1` (Claude Code, supervised)
-- workers: `builder-item5` in `w31:p13` (Pi `zai/glm-5.3-flash`), profile `run-04-builder`
-- worktrees: `~/dev/shepy-wt/item5` (branch `pilot/item5-diagnose`)
-- waits armed: `shepy wait op_f7ce01f8ecbce5eabefb6e91` (background, lead pane)
-- next safe action: when the wait returns, read the pane sentinel and `/tmp/run-20260913-04/builder-report.md`; do not re-dispatch
-- updated: 2026-09-13T11:50Z
+- workers: `builder-item5-r1` in `w31:p17` (Pi `zai/glm-5.3-flash`), profile `run-04-builder`, operation `op_60d3dedc304db5f688669d80`
+- worktrees: `~/dev/shepy-wt/item5` (branch `pilot/item5-diagnose`, at `7f15342` + revision in progress); `~/dev/shepy-wt/verify-item5` (detached at `7f15342`, verifier done, pane `w31:p14` closed)
+- waits armed: `herdr agent wait builder-item5-r1` (background, bare, no timeout). No Shepy wait armed (defect under repair in RUN-05).
+- next safe action: when the wait returns, read the sentinel `BUILD-R1` and the `## Revision 1` section of `/tmp/run-20260913-04/builder-report.md`; ops mutation check + gate; land. Do not re-dispatch or add a second waiter.
+- updated: 2026-09-13T12:30Z (the 11:50Z Live block was stale through the 12:14–12:16Z freeze and verifier start; corrected 12:27Z on the program-coordination note)
 
 ## Registration (before dispatch)
 
@@ -30,8 +30,13 @@ the herdr wait and that fact is recorded here.
   CLI's.
 - **Non-goals:** the three known wrong signals (hook checks enabled rather
   than matched; Pi `pendingCount` is batch size; `retire` writes `acked`
-  without a reason) go to RUN-05. No `inbox explain`; `inbox get` landed in
-  RUN-03. No mutation of delivery state.
+  without a reason) are NOT in this run. **Correction 12:27Z:** the
+  registration originally said "go to RUN-05"; RUN-05 as actually opened
+  fixes `shepy wait` lifecycle parsing only. The three signal corrections
+  are separate pending work, unassigned, tracked in the plan under item 5.
+  The `Observability RPC socket closed` failure (other lead, 11:36Z) is
+  likewise outside RUN-05 and unresolved. No `inbox explain`; `inbox get`
+  landed in RUN-03. No mutation of delivery state.
 - **Base:** `shepy` at `81fe685` (RUN-03 docs on `be3540e`). Gate at
   `be3540e`: exit 0, 55 / 579.
 - **Work surface:** `~/dev/shepy-wt/item5`, branch `pilot/item5-diagnose`.
@@ -98,6 +103,33 @@ the herdr wait and that fact is recorded here.
   fresh pane, profile `run-04-verifier` bound by name, resolution polled
   until `matched`, dispatched through Shepy; wake = bare herdr wait
   (fallback recorded above).
+- 12:28Z — verifier settled (≈ 12 min by lead clock; self-report "29 min,
+  12:15–12:44 UTC" is local time mislabelled and 2.4× over). Sentinel
+  `VERIFY DONE`. Report: **ACCEPT**, R1–R7 hold, gate exit 0 at 57 / 606.
+  5 mutations (3 caught, 2 survived), 11 probes. Findings: V1 `[mutation]`
+  MEDIUM — the R3 byte-identical test cannot see a `sweepExpired` write
+  because its fixture has no expired lease; V2 `[mutation]` LOW — the
+  `lease + grace` boundary is not pinned, own arithmetic ±1 ms survives;
+  V3 `[probe]` LOW — `stripControlChars` keeps `\n`, a hostile profileId
+  injects a fake finding line into the human render (twice). Two `[read]`
+  observations (owner section hand-built, not via `toPublicProfileOwner`;
+  help text overpromises severity grouping) — no action. Verifier worktree
+  returned clean. **Both methods again produced findings the other did
+  not**: V1/V2 only from mutation, V3 only from probing.
+- 12:28Z — verifier pane `w31:p14` closed. Ops decision: fix all three now
+  (no deferred work), fresh builder per EXP-07. Packet
+  `/tmp/run-20260913-04/revision-1.packet.md`.
+- 12:29Z — **infrastructure finding:** re-binding profile `run-04-builder`
+  to the new name left the dead `builder-item5` subscription in place,
+  resolving `unmatched, matched` → dispatch would fail closed. Removed with
+  `shepy profile unsubscribe run-04-builder --workspace w31 --name
+  builder-item5` → `matched`. Lesson for the skill: one profile per
+  worker NAME, or unsubscribe the dead selector before re-binding. Also:
+  `shepy profile unsubscribe --help` prints the `subscribe` help (cosmetic
+  CLI defect, not this run's).
+- 12:29:42Z — `builder-item5-r1` in `w31:p17`, dispatched
+  `op_60d3dedc304db5f688669d80`, Herdr `working` in 4 s, bare herdr wait
+  armed.
 
 ## Results
 

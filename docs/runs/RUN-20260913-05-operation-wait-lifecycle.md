@@ -6,13 +6,13 @@ verification because the file sets are disjoint (proven in Registration).
 
 ## Live
 
-- state: building
+- state: verifying (candidate `1a4a03a` frozen 12:27Z; builder pane `w31:p15` closed)
 - lead: `w31:p1` (Claude Code, supervised)
-- workers: `builder-opwait` in `w31:p15`, profile `run-05-builder`, operation `op_d96f4f2956ea81be6937f22a`
-- worktrees: `~/dev/shepy-wt/opwait` (branch `pilot/opwait-lifecycle`)
-- waits armed: `herdr agent wait builder-opwait` (background; `shepy wait` is the thing being fixed)
-- next safe action: when the wait returns, read the sentinel and `/tmp/run-20260913-05/builder-report.md`
-- updated: 2026-09-13T12:17Z
+- workers: `verifier-opwait` in `w31:p16`, profile `run-05-verifier`, operation `op_bcbdc302294ee7f3a906e215`
+- worktrees: `~/dev/shepy-wt/verify-opwait` (detached at `1a4a03a`), `~/dev/shepy-wt/opwait` (branch `pilot/opwait-lifecycle`, builder done)
+- waits armed: `herdr agent wait verifier-opwait` (background, bare; `shepy wait` is the thing being fixed)
+- next safe action: when the wait returns, read the sentinel and `/tmp/run-20260913-05/verifier-report.md`; adjudicate. Do not re-dispatch or add a second waiter.
+- updated: 2026-09-13T12:30Z
 
 ## Registration (before dispatch)
 
@@ -65,6 +65,26 @@ verification because the file sets are disjoint (proven in Registration).
 - Parallel with RUN-04's verification; file sets proven disjoint in the
   registration. Landing order: whichever finishes first lands first, the
   other rebases.
+- 12:26Z — builder settled `idle` (≈ 10 min by lead clock; self-report
+  "~25 min, 14:15Z–14:40Z" is local time mislabelled and 2.5× over).
+  Sentinel `BUILD DONE`. **Candidate frozen at `1a4a03a`** (one commit,
+  8 files, +291/−18, +9 tests, 55 / 588, gate exit 0). Diff read by ops:
+  D1–D4 as designed; `LifecycleEvent` gained optional `detail`
+  (`src/herdr/orchestration-transport.ts`, a type-only file outside the
+  declared scope but disjoint from RUN-04's set — accepted); `WaitOutcome`
+  gained `transport_unknown`; `recordWaitError` goes through `#transition`
+  so it refuses an unknown operation id. R4 store test placed in
+  `test/integration/` (where the store tests live), not `test/unit/` as
+  the packet guessed. D4: no CLI change needed (`formatHumanResult` falls
+  through to JSON for `operation-wait`); stale help text at the
+  `Outcomes:` line noted for a later docs touch. Builder's untested
+  claims: no live-Herdr round trip; >300-char truncation branch untested.
+- 12:27Z — builder pane closed. Detached worktree `~/dev/shepy-wt/verify-opwait`
+  at `1a4a03a`. First `herdr agent start` on the fresh pane failed
+  `agent_pane_busy` (shell not yet at prompt, ~1 s after split); retry
+  after 2 s succeeded. Profile `run-05-verifier` bound by name, `matched`
+  on the first poll. `shepy dispatch` → `op_bcbdc302294ee7f3a906e215`,
+  Herdr `working` in 4 s. Bare herdr wait armed 12:28Z.
 
 ## Results
 
