@@ -6,13 +6,17 @@ import { fileURLToPath } from "node:url";
 import { CLAUDE_HOOK_STDIN_MAX_CHARS, runClaudeHook } from "@/cli/claude-hook.js";
 import { resolveRuntime, runtimePathsFromRecordOrDefault } from "@/config/runtime.js";
 import { ObservabilityRpcClient } from "@/daemon/client.js";
+import type { DaemonInfo } from "@/daemon/daemon-identity.js";
+import { resolveBuildStamp } from "@/daemon/daemon-identity.js";
 import {
+  type DaemonStatus,
   getDaemonStatus,
   startDaemonProcess,
   stopDaemonProcess,
 } from "@/daemon/process-manager.js";
 import { DEFAULT_LEASE_GRACE_MS, type PublicProfileOwner } from "@/db/profile-owners.js";
 import type { AgentGetResult, AgentListItem, AgentReadResult } from "@/observability/contracts.js";
+import type { ProfileDiagnoseReport } from "@/observability/profile-diagnose-service.js";
 
 const CURRENT_HERDR_WORKSPACE_ERROR =
   "agent command requires HERDR_ENV=1 with HERDR_WORKSPACE_ID, --workspace <id>, --session <name>, or --all.";
@@ -32,7 +36,7 @@ export const COMMAND_GROUP_VERBS = {
   daemon: ["restart", "start", "status", "stop"],
   inbox: ["get", "list", "retire", "retry"],
   operation: ["get", "list"],
-  profile: ["context", "ensure", "list", "owner", "show", "subscribe", "unsubscribe"],
+  profile: ["context", "diagnose", "ensure", "list", "owner", "show", "subscribe", "unsubscribe"],
 } as const;
 
 export type CommandGroup = keyof typeof COMMAND_GROUP_VERBS;
@@ -71,6 +75,7 @@ type HelpTopic =
   | "operation-list"
   | "profile"
   | "profile-context"
+  | "profile-diagnose"
   | "profile-ensure"
   | "profile-list"
   | "profile-owner"
@@ -101,6 +106,7 @@ export type CliCommand =
   | ({ command: "agent-get"; json: boolean; target: string } & AgentScope)
   | ({ command: "agent-read"; json: boolean; limit?: number; target: string } & AgentScope)
   | { command: "profile-context"; json: boolean; profileId: string }
+  | { command: "profile-diagnose"; json: boolean; profileId: string }
   | {
       command: "profile-ensure";
       displayName: string;
@@ -447,6 +453,10 @@ function parseProfileCommand(args: string[]): CliCommand {
     rejectExtra(extra, helpTopic);
     return { command: "profile-owner", json, profileId };
   }
+  if (subcommand === "diagnose") {
+    rejectExtra(extra, helpTopic);
+    return { command: "profile-diagnose", json, profileId };
+  }
   throw new CliUsageError(`Unknown profile command: ${subcommand}`, "profile");
 }
 
@@ -637,6 +647,7 @@ Commands:
   ensure <profileId>       Create or update a profile
   show <profileId>         Show one profile with subscriptions
   context <profileId>      Show cached agent context for a profile
+  diagnose <profileId>     Explain why outcomes are not reaching the owner
   owner <profileId>        Show the profile's current owner
   subscribe <profileId>    Bind a profile to one Herdr agent
   unsubscribe <profileId>  Remove a profile subscription
@@ -686,6 +697,20 @@ Usage:
 
 Options:
   --json         Print JSON
+  -h, --help     Show help
+`;
+    case "profile-diagnose":
+      return `Explain why outcomes are not reaching a profile's owner.
+
+One read-only report: findings first (blockers, then warnings, then info),
+then compact sections for the daemon identity, the owner lease, the
+subscriptions, and the delivery queue. Never prints a lease token.
+
+Usage:
+  shepy profile diagnose <profileId> [options]
+
+Options:
+  --json         Print the full report as JSON
   -h, --help     Show help
 `;
     case "profile-owner":
@@ -873,6 +898,43 @@ export function versionText(): string {
   return `shepy ${readPackageVersion()}`;
 }
 
+/** The CLI's own build identity, computed the same way the daemon computes
+ * its own: the ISO mtime of the CLI entry file. Printed next to the
+ * daemon's answer in `daemon status` so version skew is visible at a
+ * glance (RUN-20260913-04 D1). */
+function cliIdentity(): { buildStamp: string; version: string } {
+  return {
+    buildStamp: resolveBuildStamp(fileURLToPath(import.meta.url)),
+    version: readPackageVersion(),
+  };
+}
+
+/** The full `shepy daemon status` payload: the pid/socket probe result,
+ * plus the daemon's own daemon.info when the socket answered, plus the
+ * CLI's own stamps. `daemon: null` means the socket did not answer (or an
+ * older daemon that predates daemon.info) — the CLI stamps still print. */
+export function daemonStatusPayload(
+  status: DaemonStatus,
+  daemon: DaemonInfo | null,
+  cli: { buildStamp: string; version: string },
+): string {
+  return JSON.stringify({ ...status, daemon, cli });
+}
+
+/** One bounded daemon.info read for the status command. A refusal (unknown
+ * method from a pre-D1 daemon, or a socket that died between the probe and
+ * this call) degrades to null — status never fails on identity. */
+async function fetchDaemonInfo(socketPath: string): Promise<DaemonInfo | null> {
+  const client = new ObservabilityRpcClient({ socketPath });
+  try {
+    return (await client.request("daemon.info", {})) as DaemonInfo;
+  } catch {
+    return null;
+  } finally {
+    client.close();
+  }
+}
+
 export async function runCliCommand(command: CliCommand, deps: RunCliDeps): Promise<void> {
   if (command.command === "help") {
     deps.output(helpText(command.topic));
@@ -956,6 +1018,14 @@ async function dispatchRpcCommand(
   }
   if (command.command === "profile-context") {
     return client.request("profile.context", { profileId: command.profileId });
+  }
+  if (command.command === "profile-diagnose") {
+    // The CLI volunteers its own build stamp so the daemon can report
+    // daemon_version_skew inside the findings (RUN-20260913-04 D2).
+    return client.request("profile.diagnose", {
+      cliBuildStamp: cliIdentity().buildStamp,
+      profileId: command.profileId,
+    });
   }
   if (command.command === "profile-owner") {
     return client.request("profile.owner", { profileId: command.profileId });
@@ -1042,6 +1112,8 @@ function formatHumanResult(command: CliCommand, result: unknown): string {
     return JSON.stringify(result, null, 2);
   if (command.command === "profile-owner")
     return formatProfileOwner(command, result as { owner?: PublicProfileOwner | null });
+  if (command.command === "profile-diagnose")
+    return formatProfileDiagnose(result as ProfileDiagnoseReport);
   if (command.command === "inbox-get") return formatInboxGet(result as { obligation?: unknown });
   if (command.command === "inbox-list")
     return formatInboxList(
@@ -1185,14 +1257,15 @@ async function runDaemonCommand(
   runtime: ReturnType<typeof resolveRuntimeForCommand>,
 ): Promise<void> {
   if (command.action === "status") {
-    console.log(
-      JSON.stringify(
-        await getDaemonStatus({
-          pidPath: runtime.paths.pidPath,
-          socketPath: runtime.paths.socketPath,
-        }),
-      ),
-    );
+    const status = await getDaemonStatus({
+      pidPath: runtime.paths.pidPath,
+      socketPath: runtime.paths.socketPath,
+    });
+    const daemon =
+      "socketReachable" in status && status.socketReachable
+        ? await fetchDaemonInfo(runtime.paths.socketPath)
+        : null;
+    console.log(daemonStatusPayload(status, daemon, cliIdentity()));
     return;
   }
   if (command.action === "stop") {
@@ -1456,6 +1529,73 @@ function formatProfileList(result: {
   const profiles = result.profiles ?? [];
   if (profiles.length === 0) return "No Shepy profiles.";
   return profiles.map((profile) => `${profile.profileId}\t${profile.displayName}`).join("\n");
+}
+
+// Findings first (the operator reads the verdict, then the evidence), then
+// compact evidence sections: daemon, owner, subscriptions, queue. Every hint
+// is a runnable next step; no lease token ever enters this output.
+function formatProfileDiagnose(report: ProfileDiagnoseReport): string {
+  const lines: string[] = [];
+  for (const item of report.findings) {
+    lines.push(`${item.severity.toUpperCase()} ${item.code}: ${stripControlChars(item.message)}`);
+    lines.push(`  hint: ${stripControlChars(item.hint)}`);
+  }
+  lines.push("");
+  lines.push("daemon:");
+  const daemon = report.daemon;
+  lines.push(
+    daemon
+      ? `  version ${daemon.version} (build ${daemon.buildStamp}, boot ${daemon.bootId}, pid ${daemon.pid}, booted ${daemon.bootedAt})`
+      : "  (daemon did not report an identity)",
+  );
+  lines.push("owner:");
+  const owner = report.owner;
+  if (!owner) {
+    lines.push("  none — the profile is claimable");
+  } else {
+    lines.push(`  ${owner.paneId} (${owner.harnessKind})`);
+    lines.push(`  lease ${owner.state}, expires ${formatLocalTimestamp(owner.leaseExpiresAt)}`);
+    if (owner.workspaceId) lines.push(`  workspace: ${owner.workspaceId}`);
+  }
+  lines.push("subscriptions:");
+  if (report.subscriptions.length === 0) {
+    lines.push("  none");
+  }
+  for (const subscription of report.subscriptions) {
+    const selector = oneLine(JSON.stringify(subscription.selector));
+    lines.push(
+      `  #${subscription.id} ${subscription.enabled ? "enabled" : "disabled"} ${selector}`,
+    );
+    const resolution = subscription.resolution;
+    if (!resolution) continue;
+    if (resolution.kind === "matched") {
+      lines.push(
+        `    matched → ${resolution.agent.name ?? "unnamed"} (${resolution.agent.agent ?? "unknown"}, ${resolution.agent.agentStatus}) at ${resolution.agent.paneId}`,
+      );
+    } else if (resolution.kind === "ambiguous") {
+      lines.push(`    ambiguous: ${resolution.detail}`);
+    } else {
+      lines.push(`    ${resolution.kind}: ${resolution.detail}`);
+    }
+  }
+  lines.push("queue:");
+  const counts = report.queue.counts;
+  lines.push(
+    `  pending ${counts.pending}, leased ${counts.leased}, delivered ${counts.delivered}, acked ${counts.acked}, dead_letter ${counts.dead_letter}`,
+  );
+  lines.push(
+    `  oldest pending: ${report.queue.oldestPendingAgeMs === null ? "n/a" : `${formatDuration(report.queue.oldestPendingAgeMs)} ago`} | max pending attempts: ${report.queue.maxPendingAttempts} | stranded leases: ${report.queue.strandedLeases}`,
+  );
+  lines.push(
+    `  last delivered: ${report.queue.lastDeliveredAt === null ? "never" : formatLocalTimestamp(report.queue.lastDeliveredAt)} | last acked: ${report.queue.lastAckedAt === null ? "never" : formatLocalTimestamp(report.queue.lastAckedAt)}`,
+  );
+  const unacked = report.queue.newestUnacked;
+  lines.push(
+    unacked
+      ? `  newest unacked: ${unacked.id} (${unacked.state}, attempts ${unacked.attemptCount}${unacked.lastErrorCode ? `, last error ${unacked.lastErrorCode}` : ""})`
+      : "  newest unacked: none",
+  );
+  return lines.join("\n");
 }
 
 // Terminal safety for the human read-back: the daemon strips C0/C1 at

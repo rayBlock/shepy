@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import {
+  daemonStatusPayload,
   formatCliError,
   helpText,
   parseCliArgs,
@@ -571,6 +572,186 @@ describe("shepy CLI", () => {
       },
     );
     expect(unnamedOutput[0]).toContain("name: unnamed\nagent: codex");
+  });
+
+  test("parses profile diagnose", () => {
+    expect(parseCliArgs(["profile", "diagnose", "driffs"])).toEqual({
+      command: "profile-diagnose",
+      json: false,
+      profileId: "driffs",
+    });
+    expect(parseCliArgs(["profile", "diagnose", "driffs", "--json"])).toEqual({
+      command: "profile-diagnose",
+      json: true,
+      profileId: "driffs",
+    });
+    expect(parseCliArgs(["profile", "diagnose", "--help"])).toEqual({
+      command: "help",
+      topic: "profile-diagnose",
+    });
+    expect(() => parseCliArgs(["profile", "diagnose"])).toThrow(
+      "profile diagnose requires <profileId>",
+    );
+  });
+
+  test("help documents the profile diagnose verb", () => {
+    expect(helpText("profile")).toContain("diagnose <profileId>");
+    expect(helpText("profile-diagnose")).toContain("shepy profile diagnose <profileId>");
+    expect(helpText("profile-diagnose")).toContain("--json");
+  });
+
+  test("renders profile diagnose for humans with findings first", async () => {
+    const report = {
+      daemon: {
+        bootId: "boot-1",
+        bootedAt: "2026-09-13T00:00:00.000Z",
+        buildStamp: "2026-09-12T00:00:00.000Z",
+        pid: 4321,
+        version: "0.5.0",
+      },
+      findings: [
+        {
+          code: "no_owner",
+          hint: "run /shepy on driffs in the owner pane, or claim from the Claude hook",
+          message: "no owner is claimed for this profile; 1 outcome is waiting",
+          severity: "blocker",
+        },
+        {
+          code: "dead_letters_present",
+          hint: "shepy inbox list driffs --state dead_letter",
+          message: "2 outcomes are dead-lettered",
+          severity: "warning",
+        },
+      ],
+      owner: null,
+      profile: { displayName: "Driffs", profileId: "driffs", projectRoots: ["/tmp/driffs"] },
+      queue: {
+        counts: { acked: 0, dead_letter: 2, delivered: 0, leased: 0, pending: 1 },
+        lastAckedAt: null,
+        lastDeliveredAt: null,
+        maxPendingAttempts: 0,
+        newestUnacked: {
+          attemptCount: 0,
+          id: "ob-1",
+          lastErrorCode: null,
+          lastErrorSummary: null,
+          state: "pending",
+        },
+        oldestPendingAgeMs: 60_000,
+        strandedLeases: 0,
+      },
+      subscriptions: [
+        {
+          enabled: true,
+          id: 3,
+          resolution: {
+            agent: {
+              agent: "hermes",
+              agentSession: null,
+              agentStatus: "working",
+              name: "driffs-worker",
+              paneId: "wA:p1",
+            },
+            kind: "matched",
+          },
+          selector: { kind: "name", value: "driffs-worker" },
+        },
+      ],
+    };
+    const output: string[] = [];
+    await runCliCommand(
+      { command: "profile-diagnose", json: false, profileId: "driffs" },
+      {
+        connect: async () => ({ close: () => {}, request: async () => report }),
+        output: (line) => output.push(line),
+        socketPath: "/tmp/s.sock",
+      },
+    );
+    const text = output.join("\n");
+    const blocker = text.indexOf("BLOCKER no_owner");
+    const warning = text.indexOf("WARNING dead_letters_present");
+    const daemonSection = text.indexOf("daemon:");
+    expect(blocker).toBeGreaterThanOrEqual(0);
+    expect(warning).toBeGreaterThan(blocker);
+    expect(daemonSection).toBeGreaterThan(warning);
+    expect(text).toContain("hint:");
+    expect(text).toContain("owner:");
+    expect(text).toContain("subscriptions:");
+    expect(text).toContain("queue:");
+  });
+
+  test("profile diagnose --json prints the full report verbatim", async () => {
+    const report = {
+      daemon: null,
+      findings: [{ code: "profile_not_found", hint: "h", message: "m", severity: "blocker" }],
+      owner: null,
+      profile: null,
+      queue: {
+        counts: { acked: 0, dead_letter: 0, delivered: 0, leased: 0, pending: 0 },
+        lastAckedAt: null,
+        lastDeliveredAt: null,
+        maxPendingAttempts: 0,
+        newestUnacked: null,
+        oldestPendingAgeMs: null,
+        strandedLeases: 0,
+      },
+      subscriptions: [],
+    };
+    const output: string[] = [];
+    await runCliCommand(
+      { command: "profile-diagnose", json: true, profileId: "ghost" },
+      {
+        connect: async () => ({ close: () => {}, request: async () => report }),
+        output: (line) => output.push(line),
+        socketPath: "/tmp/s.sock",
+      },
+    );
+    expect(JSON.parse(output[0] ?? "{}")).toEqual(report);
+  });
+
+  test("daemon status payload renders identity fields next to the pid/socket fields", () => {
+    const payload = JSON.parse(
+      daemonStatusPayload(
+        {
+          pid: 123,
+          pidPath: "/tmp/pid",
+          socketPath: "/tmp/s.sock",
+          socketReachable: true,
+          state: "running",
+        },
+        {
+          bootId: "boot-1",
+          bootedAt: "2026-09-13T00:00:00.000Z",
+          buildStamp: "2026-09-12T00:00:00.000Z",
+          pid: 123,
+          version: "0.5.0",
+        },
+        { buildStamp: "2026-09-12T00:00:00.000Z", version: "0.5.0" },
+      ),
+    ) as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      cli: { buildStamp: "2026-09-12T00:00:00.000Z", version: "0.5.0" },
+      daemon: { bootId: "boot-1", pid: 123, version: "0.5.0" },
+      pid: 123,
+      socketPath: "/tmp/s.sock",
+      state: "running",
+    });
+  });
+
+  test("daemon status payload keeps the CLI stamps even when the socket is dead", () => {
+    const payload = JSON.parse(
+      daemonStatusPayload(
+        { pidPath: "/tmp/pid", socketPath: "/tmp/s.sock", state: "stopped" },
+        null,
+        { buildStamp: "2026-09-12T00:00:00.000Z", version: "0.5.0" },
+      ),
+    ) as Record<string, unknown>;
+    expect(payload.daemon).toBeNull();
+    expect(payload.state).toBe("stopped");
+    expect(payload.cli).toEqual({
+      buildStamp: "2026-09-12T00:00:00.000Z",
+      version: "0.5.0",
+    });
   });
 });
 
