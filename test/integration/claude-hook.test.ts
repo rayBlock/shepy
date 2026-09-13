@@ -1276,7 +1276,10 @@ describe("claude-hook Stop", () => {
         writeFileSync(
           ownerFilePath(fixture),
           `${JSON.stringify(
-            { ...current, delivered: { ids: ["rival-id-1"], phase: "delivered", promptId: "other" } },
+            {
+              ...current,
+              delivered: { ids: ["rival-id-1"], phase: "delivered", promptId: "other" },
+            },
             null,
             2,
           )}\n`,

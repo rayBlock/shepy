@@ -30,6 +30,7 @@ import type { OperationDispatchService } from "@/observability/operation-dispatc
 import type { OperationWaitService } from "@/observability/operation-wait-service.js";
 import type { ProfileDeliveryService } from "@/observability/profile-delivery-service.js";
 import type { ProfileService } from "@/observability/profile-service.js";
+import { RpcRefusedError } from "@/observability/rpc-refused-error.js";
 import {
   agentEventsInputSchema,
   agentGetInputSchema,
@@ -300,15 +301,16 @@ export class ObservabilityRpcServer {
       const result = await this.#dispatch(socket, request.method, request.params ?? {});
       this.#write(socket, { id: request.id, result });
     } catch (error) {
-      // Stable machine-readable code when the failure carries one (e.g.
-      // InboxRefusedError's not_owner / owner_lapsed): callers branch on the
-      // code instead of parsing prose. Message text stays the prose contract
-      // existing clients match on.
+      // A stable machine-readable code ONLY for deliberate refusal classes
+      // (RpcRefusedError — e.g. InboxRefusedError's not_owner /
+      // owner_lapsed): callers branch on the code instead of parsing
+      // prose. Anything else stays prose-only — a Node system error's code
+      // (EACCES, ENOENT) is an implementation detail, not a Shepy contract,
+      // and hooks classify on the wire code. Message text remains the
+      // prose contract existing clients match on.
       this.#write(socket, {
         error: {
-          ...(typeof (error as { code?: unknown }).code === "string"
-            ? { code: (error as { code?: string }).code }
-            : {}),
+          ...(error instanceof RpcRefusedError ? { code: error.code } : {}),
           message: error instanceof Error ? error.message : String(error),
         },
         id: request.id,

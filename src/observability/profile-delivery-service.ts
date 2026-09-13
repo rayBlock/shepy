@@ -13,6 +13,7 @@ import {
 import type { AgentEventRecord, AgentEventType } from "./contracts.js";
 import { resolveSelectorInWorkspaceScope } from "./profile-selector-scope.js";
 import { parseAgentSelector, parseWorkspaceSelector } from "./profile-selectors.js";
+import { RpcRefusedError } from "./rpc-refused-error.js";
 
 /**
  * Event types that merit waking an owner (vault §9.1: an outcome is a
@@ -58,11 +59,11 @@ export const INBOX_OUTCOME_EXCERPT_CHARS = 2_000;
  *    proof of possession, then lease again with the fresh token (the hook's
  *    Stop does exactly that, once).
  */
-export class InboxRefusedError extends Error {
-  readonly code: "not_owner" | "owner_lapsed";
+export class InboxRefusedError extends RpcRefusedError {
+  override readonly code: "not_owner" | "owner_lapsed";
 
   constructor(code: "not_owner" | "owner_lapsed", message: string) {
-    super(message);
+    super(code, message);
     this.name = "InboxRefusedError";
     this.code = code;
   }

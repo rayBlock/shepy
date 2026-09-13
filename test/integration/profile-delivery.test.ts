@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { createAgentHistoryService } from "@/agent-history/service.js";
 import { runCliCommand } from "@/cli/shepy.js";
 import { ObservabilityRpcClient } from "@/daemon/client.js";
@@ -1242,9 +1242,7 @@ describe("lease admission — one liveness rule for claim, renew and inbox.lease
         profileId: "driffs",
       }),
     ).not.toThrow();
-    expect(before.delivery.renew({ leaseToken: held.leaseToken, profileId: "driffs" })).toBe(
-      true,
-    );
+    expect(before.delivery.renew({ leaseToken: held.leaseToken, profileId: "driffs" })).toBe(true);
     expect(before.delivery.claim(CLAIM_PANE_Y)).toMatchObject({
       kind: "rejected",
       reason: "lease_active",
@@ -1329,6 +1327,49 @@ describe("lease admission — one liveness rule for claim, renew and inbox.lease
         throw new Error("inbox.lease admitted a lapsed owner — the admission rule is missing");
       }
       expect(lapsed.code).toBe("owner_lapsed");
+    } finally {
+      raw.close();
+      client.close();
+      await server.stop();
+      built.sqlite.close();
+    }
+  });
+
+  test("only deliberate refusals carry a wire code; a system error's code never rides the envelope", async () => {
+    // The envelope serialises `code` ONLY for the refusal classes the
+    // services throw on purpose. A dispatch failure that merely carries a
+    // Node-shaped system code (EACCES, ENOENT) must stay prose-only: hooks
+    // classify on the wire code (owner_lapsed triggers Stop recovery), so
+    // leaking a system code would let clients mistake an implementation
+    // failure for a stable Shepy refusal.
+    const { built, client, server } = await rpcFixture();
+    const raw = new ObservabilityRpcClient({ socketPath: join(dirname(built.path), "rpc.sock") });
+    try {
+      vi.spyOn(built.delivery, "inboxList").mockImplementation(() => {
+        throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+      });
+      const systemError = await raw.request("inbox.list", { profileId: "driffs" }).then(
+        () => null,
+        (error: unknown) => error as Error & { code?: string },
+      );
+      expect(systemError?.message).toBe("permission denied");
+      expect(systemError?.code).toBeUndefined();
+
+      // Refusals stay coded — the contract the system error must not dilute.
+      const claim = (await client.request("profile.claim", CLAIM_PANE_X)) as {
+        result: { kind: string; leaseToken: string };
+      };
+      expect(claim.result.kind).toBe("claimed");
+      built.sqlite
+        .prepare("update profile_owners set lease_expires_at = 1 where profile_id = ?")
+        .run("driffs");
+      const lapsed = await raw
+        .request("inbox.lease", { leaseToken: claim.result.leaseToken, profileId: "driffs" })
+        .then(
+          () => null,
+          (error: unknown) => error as Error & { code?: string },
+        );
+      expect(lapsed?.code).toBe("owner_lapsed");
     } finally {
       raw.close();
       client.close();
