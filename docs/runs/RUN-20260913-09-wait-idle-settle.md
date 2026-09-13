@@ -8,13 +8,13 @@ replacement, row repair, re-arm or live experiment.
 
 ## Live
 
-- state: building
+- state: verifying (candidate `8b7a9b6` frozen 20:29Z; ops adjudication 4/4 against the epoch query already done)
 - lead: `w31:p1` (Claude Code, supervised)
-- workers: `builder-wait` in `w31:p1E` / `term_65b6274118915bc` (`(zai) glm-5.3-flash • high`), profile `run-09-builder`, operation `op_f50e6eeeff7043eb1bfa01ad` (dispatched 19:38:01Z, `working` in 4 s, seq 2615)
-- worktrees: `~/dev/shepy-wt/waitfix` (branch `pilot/wait-idle-settle`, base `c518663`)
-- waits armed: TWO single-shot instruments on the same worker, deliberately: (1) `shepy wait op_f50e6eeeff7043eb1bfa01ad --json` (lead task `bs12dop1g`) = the defect under repair, expected to HANG if the pane ends `idle`, kept as a live measurement; (2) bare `herdr agent wait builder-wait` (task `bxp9xswbm`) = the wake, Herdr's default set includes idle. No re-arm, no polling. If (1) hangs after (2) returns, it is killed by recorded PID at retirement and recorded as a second sample of the defect.
-- next safe action: when the herdr wait returns, read sentinel + `/tmp/run-20260913-09/builder-report.md`; record which instrument returned; freeze; verifier
-- updated: 2026-09-13T19:39Z
+- workers: `verifier-wait` in `w31:p1F` (`zai/glm-5.3-flash`), profile `run-09-verifier`, operation `op_b06384435e04c4b91aa09391` (dispatched 20:30:30Z)
+- worktrees: `~/dev/shepy-wt/verify-wait` (detached at `8b7a9b6`), `~/dev/shepy-wt/waitfix` (branch `pilot/wait-idle-settle`, builder done, pane closed)
+- waits armed: same two single-shot instruments on the verifier: `shepy wait op_b06384435e04c4b91aa09391 --json` (task `bv4mqaqlq`, old-filter daemon, measurement) and bare `herdr agent wait verifier-wait` (task `b6ubbhkxh`, wake). No re-arm, no polling.
+- next safe action: when the herdr wait returns (deadline 21:13Z), record which instruments returned, read sentinel + `/tmp/run-20260913-09/verifier-report.md`, adjudicate; ACCEPT → gate at the tip, rebase, ff-merge, build, retire, report by 21:28Z; REVISE → land nothing, return the finding list
+- updated: 2026-09-13T20:32Z
 
 ## Registration (before dispatch)
 
@@ -140,6 +140,41 @@ replacement, row repair, re-arm or live experiment.
   with green tests but incomplete source, the lead implements the
   remaining source lines itself on the builder's tests (no new worker),
   still followed by the fresh verifier.
+- 20:29:35Z — **both instruments returned at the same second.** The
+  native `shepy wait` (old daemon, `until: [done, blocked]`) returned
+  `settled`; the bare herdr wait returned `agent_info` with
+  `agent_status: "done"`, `focused: false`, seq 2682. The builder's pane
+  was never seen in the focused UI, so it finished as `done` and the old
+  filter matched — a third-party confirmation of the diagnosis: the
+  COA's pane was seen (`idle`), mine was not (`done`). Durable row
+  `settled` 20:29:35.404Z. Sentinel `BUILD DONE`; honest clock
+  `19:38:07Z → 20:28:47Z` (51 min; hard stop met, gate green ≈ 20:27Z).
+- **Candidate frozen at `8b7a9b6`** (`4bf7de5` fix, `8b7a9b6` tests): 11
+  files, +596/−24. Source: adapter `until: ["idle","done","blocked"]`;
+  `AgentEventStore.hasCompletionEpochSince` (two bounded prepared
+  statements, `json_extract(payload_json,'$.to')`, earliest working row
+  then any later settled row by id, terminal-or-pane scope, herdr-session
+  scope); `OperationWaitService` takes `events`, guards `settled`/
+  `blocked`, new `WaitOutcome` `target_not_started` via the existing
+  `recordWaitError`; wiring in `service.ts`; help text; design-doc line.
+  Disclosed substitution: `submittedAt` is not on `OperationRecord`, so
+  the lower bound is `createdAt - 5 s` (create and submit are ms apart in
+  one dispatch call). Trimmed per the checkpoint steer: R2'(f)(g)(h)(i)
+  and R4'(d) overlap were written, then REMOVED and listed as untested
+  claims — honest, and the verifier packet probes (d) anyway.
+- 20:31Z — **ops adjudication against the candidate's epoch query
+  (scratch test in the builder worktree, deleted, tree clean): 4/4** —
+  the real sample's rows with real timestamps (idle 18:41:45, working
+  18:43:55, status.changed+idle 18:51:22; since = createdAt 18:43:54.627
+  − 5 s) → epoch TRUE; the COA's focus-only `done → idle` after a previous
+  completion → FALSE; overlap (op2 submitted mid-op1, op1's idle lands
+  after) → op1 TRUE, op2 FALSE; working row plus a settled row from
+  another terminal on the same pane → FALSE.
+- 20:32Z — gate in the builder worktree: exit 0, **61 files / 686 tests**
+  (base 60 / 670), 3 pre-existing biome warnings.
+- 20:30:30Z — verifier `verifier-wait` in `w31:p1F`, profile
+  `run-09-verifier` `matched` on the third poll, `shepy dispatch` →
+  `op_b06384435e04c4b91aa09391`; two single-shot instruments armed.
 - Still unqualified by design (recorded, not fixed here): Herdr's
   `state_change_seq` at prompt time is not stored (no schema change in
   scope), so the guard reasons from indexed rows, not from Herdr's own
