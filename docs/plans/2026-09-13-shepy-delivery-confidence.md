@@ -273,6 +273,17 @@ wake mechanism is verified in the real Claude harness.
   `error_summary` and leaves the operation re-waitable, and
   `recordWaitError` refuses non-`submitted` rows. Daemon-side; live only
   after the next `shepy daemon restart`.
+- **Context-health projection LANDED `36fe131`** as RUN-20260913-06
+  (`docs/runs/`, delegated by the portfolio coordinator under Ray's
+  instruction, not a plan item): additive `contextHealth` on the compact
+  history behind `agent.get` / `shepy agent get` — session/model identity,
+  a `last_reported` occupancy reading (one turn's billed prompt, never a
+  sum) or a named `unavailable` reason, last compaction boundary, count,
+  branch, limitation codes; Pi active lineage from the last appended
+  entry; Claude sidechains excluded; cache bumped to `agent-history-v2`;
+  no store/config/hook. Window and percent are null in v1 (sources do not
+  record the window). `shepy wait --json` qualified 3/3 on the restarted
+  daemon during this run.
 - The lapsed-row sweep stays **held** on `ops/owner-sweep-held` — the review
   condition is to display lapsed state and preserve transition history, not to GC
   yet. `shepy profile owner` now covers the display half.

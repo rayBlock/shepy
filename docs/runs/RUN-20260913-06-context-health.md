@@ -11,13 +11,13 @@ acceptance recommendation; portfolio owns cross-program acceptance.
 
 ## Live
 
-- state: revising (the ONE corrective cycle: verifier F1/S1/S3 + ops O1/O2/O3)
+- state: **LANDED** `36fe131` (shepy branch), retired; accepted within scope by the lead, portfolio owns cross-program acceptance
 - lead: `w31:p1` (Claude Code, supervised)
-- workers: `builder-ctx-r1` (fresh) in `w31:p1B` (Pi `zai/glm-5.3-flash`), profile `run-06-builder`, operation `op_fe12c375566c6357ab4bbdfb`
-- worktrees: `~/dev/shepy-wt/ctx-health` (branch `pilot/context-health`, at `5a538af` + revision in progress); `~/dev/shepy-wt/verify-ctx` (detached at `5a538af`, verifier done, pane closed)
-- waits armed: ONE `shepy wait op_fe12c375566c6357ab4bbdfb --json` (background, lead task `bfk561xuz`); fallback on failure = one bare `herdr agent wait builder-ctx-r1`
-- next safe action: when the wait returns, record its outcome, read sentinel `BUILD-R1` and the `## Revision 1` section of the builder report; ops re-runs its O1/O2/O3 probes and the F1 case against the revision; gate; land
-- updated: 2026-09-13T14:01Z
+- workers: none (all panes closed)
+- worktrees: none (both removed; branch `pilot/context-health` deleted)
+- waits armed: none
+- next safe action: the next `shepy daemon restart` (not authorized in this run) makes `contextHealth` visible on the live `agent.get`; then the controlled continuity experiment in Interpretation
+- updated: 2026-09-13T14:15Z
 
 ## Registration (before dispatch)
 
@@ -201,15 +201,124 @@ acceptance recommendation; portfolio owns cross-program acceptance.
   armed. Packet `/tmp/run-20260913-06/revision-1.packet.md`: O1 (header
   session id + real-linkage fixtures), O2 (zero sum = no usage), O3
   (`later_turn_without_usage`, precedence documented), F1, S1, S3.
+- 14:11:56Z — **QUALIFICATION SAMPLE 3:** `shepy wait
+  op_fe12c375566c6357ab4bbdfb --json` armed 14:01:11Z returned
+  `settled`, exit 0, durable `settled`. Three of three.
+- 14:12Z — revision settled, `BUILD-R1 DONE`, ≈ 11 min (self-report
+  `14:01:06Z → 14:11:14Z`, honest). Commit `4e733ef`: 6 files, +343/−21;
+  `context-health.ts` +32/−14 (header session id; zero sum = null;
+  `lastAssistantPosition` + `later_turn_without_usage`; empty-file early
+  return; `unavailable` → `current:false`; precedence comment),
+  `contracts.ts` +2, fixtures re-rooted to `parentId: null`, +10 tests.
+  RED captured for O1 (2 failures incl. the RPC test), O2 (2), O3 (5),
+  F1 (Pi; the Claude empty case passed immediately and is kept as a
+  pin); S3 passed immediately (renderer already safe), kept as a pin.
+  Disclosed consequence: the Claude branch-change fixture had to move
+  its branch change onto a usage-less `user` entry, because its old
+  form also contained a later assistant turn without usage and now
+  yields the higher-precedence marker — the old pin had stacked two
+  markers unknowingly. Gate 60 / 660.
+- 14:12–14:13Z — **ops adjudication against the revision (scratch test,
+  deleted, tree clean): 5 / 5 pass** — O1 real-linkage session id; O2
+  zero usage Pi+Claude → `unavailable`/`no_usage_recorded`/`current:false`;
+  O3 later turn → `current:false` with `later_turn_without_usage`, a
+  later compaction outranks it, a `branch_summary` leaf below it; F1
+  empty → `no_usage_recorded` without `lineage_unresolved`; A→B→A after
+  the reading → `unavailable`, `changedAt` = second change. Source diff
+  read in full: exactly the named findings, no drift.
+- 14:13Z — `pnpm check` in the worktree exit 0, 60 / 660. Rebased onto
+  shepy `8d51dea` (three docs commits mid-run; no conflicts) →
+  `6d2c3a2`, `1cb2aa6`, `a99d406`, `36fe131`. `git merge --ff-only` →
+  tip `36fe131`. Gate at the tip exit 0, 60 / 660. `pnpm build` exit 0.
+  Pane `w31:p1B` closed, both worktrees removed, branch deleted.
+- 14:13:32Z — live check against the still-running daemon (pid 53303,
+  pre-RUN-06 code; restart NOT authorized by this assignment):
+  `shepy agent get w31:p1 --json` has no `contextHealth` key, as
+  expected. The projection becomes live at the next restart.
 
 ## Results
 
-_(appended at acceptance)_
+- **Accepted within scope and landed** `36fe131`. Gate 60 files / 660
+  tests at the tip. 15 + 6 files; one corrective cycle; zero Ray or
+  portfolio interventions after the acceptance clarification.
+- Delivered (read-only, additive): `CompactAgentHistory.contextHealth`
+  (`src/observability/contracts.ts`) computed by one pure module
+  `src/agent-history/context-health.ts` from the session file Shepy
+  already reads once per `readCompact`; served by `agent.get` and
+  `shepy agent get` (`context:` block); `agent.list` unchanged; cache
+  invalidated once via `agent-history-v2`; no store, table, migration,
+  hook, config, or `/compact`. Fields: `source`, `sessionId` (Pi header /
+  Claude last entry), `model {id, provider, changedAt}`, `usage {kind
+  last_reported|unavailable, tokens, reportedAt, ref, current, reason,
+  window:null, percent:null}`, `lastCompaction {trigger, tokensBefore,
+  tokensAfter, durationMs, timestamp, ref}`, `compactionCount`, `branch`,
+  `sourceUpdatedAt`, `limitations[]`.
+- Honesty rules landed and mutation-pinned: occupancy = one assistant
+  turn's billed prompt, never a sum or `totalTokens`; compaction, any
+  model change (A→B→A), a later usage-less turn, a Pi `/tree` branch
+  switch and a Claude git-branch change each stop an old reading from
+  passing as current; zero usage is no usage; Pi active lineage from the
+  last appended entry; Claude sidechains excluded; empty ≠ broken.
+- **Unavailable in v1, named as limitations:** context window and
+  percent (neither source records the window:
+  `context_window_not_recorded`); Pi compaction outcome/trigger/after
+  (`compaction_outcome_not_recorded`); a Pi `/tree` move before the next
+  append (`leaf_move_not_recorded_until_next_append`); Claude lineage
+  (`claude_lineage_by_file_order`); Claude provider (null, not
+  invented); `measured`/`estimated` kinds are defined in the contract
+  but never produced — they would need the harness's own
+  `getContextUsage()` and are out of this slice.
+- Verification: attempt-1 verifier 11/11 mutations caught, 20 probes,
+  REVISE on F1; ops probes found O1 (blocker on real files), O2, O3;
+  ops re-adjudicated the revision 5/5. No fresh verifier on the revision
+  (the one corrective cycle was spent; the lead's adjudication and the
+  RED captures stand as the evidence).
+- **Qualification (separate from acceptance):** three of three native
+  `shepy wait --json` calls on the repaired daemon returned `settled`
+  with durable `settled` rows, on 26, 13 and 11 minute operations. The
+  portfolio's late-armed 10 s wait returning `wait_timeout` on a
+  `submitted` parent is a distinct, preserved case.
 
 ## Experience and retirement
 
-_(appended at retirement)_
+- Assignment received 13:15Z → landed 14:13Z, **≈ 58 min of the 150-min
+  envelope**; investigation ≈ 10 of 30. Worker time ≈ 26 + 13 + 11 = 50
+  min, all on `zai/glm-5.3-flash` (flat subscription; pi's `$` figures
+  notional). Lead effort: design + two packets + addendum + three
+  adjudication rounds by reading and scratch probes.
+- One mid-run acceptance clarification from portfolio (lineage, A→B→A)
+  handled by a steering addendum to the working builder rather than a
+  revision cycle; the builder folded it in before its first commit.
+- Two fixture-assumption traps in one run: the builder's fixtures linked
+  Pi root entries to the header (real files: `parentId: null`), and a
+  Claude fixture stacked two staleness markers. The verifier, forbidden
+  from reading real transcripts, could not see the first. Neither the
+  builder nor the verifier found O1–O3; the lead's own probes did.
+- All three workers reported honest UTC (packets demanded `date -u`).
+- Retired 14:13Z: no panes, no worktrees, no branch, no waits. Live
+  daemon unchanged.
 
 ## Interpretation
 
-_(appended at synthesis)_
+- **EXP-08:** the repaired `operation.wait` carried all three wakes of a
+  real run. Dispatch-through-Shepy plus one native wait is now the
+  default in the run-lead skill; the bare-Herdr fallback stays documented
+  for older daemons.
+- **EXP-01/03:** a verifier with named negative mutations is necessary
+  but not sufficient — it verified the candidate against fixtures that
+  shared the builder's false assumption. The lead's independent probes
+  against REAL file shapes were the decisive check. Skill rule: the
+  verifier packet must state the root linkage and other structural facts
+  of real files, and the lead re-derives at least one fixture from a
+  real file's metadata before accepting.
+- **Next controlled continuity experiment (not started, needs its own
+  authorization):** on a synthetic helper session, drive a Claude
+  `/compact` and a Pi `/compact`, and check `agent.get` before and after
+  shows `post_compaction_no_turn` then a fresh `last_reported` on the
+  next turn, with the boundary's trigger/tokens matching the file; then
+  the manager-continuity test proper (goals, workers, waits, decisions,
+  candidate ids preserved across the boundary) which this slice observes
+  but does not test.
+- A new active data source (the harness's `getContextUsage()` for a
+  `measured` kind and the window) is a design decision for portfolio,
+  not a v1 gap to paper over.
