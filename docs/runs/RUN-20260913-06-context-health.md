@@ -11,13 +11,13 @@ acceptance recommendation; portfolio owns cross-program acceptance.
 
 ## Live
 
-- state: verifying (candidate `5a538af` frozen 13:46Z; ops already holds three defects O1–O3 for the corrective cycle)
+- state: revising (the ONE corrective cycle: verifier F1/S1/S3 + ops O1/O2/O3)
 - lead: `w31:p1` (Claude Code, supervised)
-- workers: `verifier-ctx` in `w31:p1A` (Pi `zai/glm-5.3-flash`), profile `run-06-verifier`, operation `op_fe7db5963dcacf6c2ce1fb63`
-- worktrees: `~/dev/shepy-wt/verify-ctx` (detached at `5a538af`), `~/dev/shepy-wt/ctx-health` (branch `pilot/context-health`, builder done, pane closed)
-- waits armed: ONE `shepy wait op_fe7db5963dcacf6c2ce1fb63 --json` (background, lead task `byjutx0ct`); fallback on failure = one bare `herdr agent wait verifier-ctx`
-- next safe action: when the wait returns, record its outcome, read the sentinel and `/tmp/run-20260913-06/verifier-report.md`, merge its findings with O1–O3 into `/tmp/run-20260913-06/revision-1.packet.md`, fresh builder (the ONE corrective cycle)
-- updated: 2026-09-13T13:53Z
+- workers: `builder-ctx-r1` (fresh) in `w31:p1B` (Pi `zai/glm-5.3-flash`), profile `run-06-builder`, operation `op_fe12c375566c6357ab4bbdfb`
+- worktrees: `~/dev/shepy-wt/ctx-health` (branch `pilot/context-health`, at `5a538af` + revision in progress); `~/dev/shepy-wt/verify-ctx` (detached at `5a538af`, verifier done, pane closed)
+- waits armed: ONE `shepy wait op_fe12c375566c6357ab4bbdfb --json` (background, lead task `bfk561xuz`); fallback on failure = one bare `herdr agent wait builder-ctx-r1`
+- next safe action: when the wait returns, record its outcome, read sentinel `BUILD-R1` and the `## Revision 1` section of the builder report; ops re-runs its O1/O2/O3 probes and the F1 case against the revision; gate; land
+- updated: 2026-09-13T14:01Z
 
 ## Registration (before dispatch)
 
@@ -174,6 +174,33 @@ acceptance recommendation; portfolio owns cross-program acceptance.
     reason `later_turn_without_usage`.
   Verifier not told (independence); these go into the corrective cycle
   alongside its findings.
+- 14:00:10Z — **QUALIFICATION SAMPLE 2:** `shepy wait
+  op_fe7db5963dcacf6c2ce1fb63 --json` armed 13:47:21Z returned
+  `{"outcome":{"kind":"settled",…}}`, exit 0, durable `settled`,
+  `errorSummary null`. Two of two native waits on the repaired daemon.
+- 14:00Z — verifier settled, sentinel `VERIFY DONE`, ≈ 13 min
+  (self-report `13:47:17Z → 13:58:37Z`, honest). **REVISE.** Gate exit 0
+  at 60 / 650; 11 mutations applied, 11 caught (including file-order
+  lineage, final-model-only, sidechain inclusion); 20 probes, 19 clean.
+  F1 `[probe]` should-fix: an EMPTY file projects `lineage_unresolved`
+  instead of `no_usage_recorded`. S1 `[read]` `unavailable` readings say
+  `current: true` (adopted → false); S2 undefined→string branch raises
+  no marker (left, defensible); S3 no CLI test for a hostile reason
+  string (adopted); S4 snapshot lag is pre-existing design (noted).
+  **The verifier did not find O1–O3.** Its R6 PASS ("Pi sessionId from
+  lineage header") trusted the shipped fixture, whose root entry points
+  at the header id; the packet forbade reading real transcripts and the
+  registration's shape list did not state that real root entries carry
+  `parentId: null`. Fixture-assumption trap, second time today; lesson
+  for the skill: the verifier packet must state the ROOT LINKAGE of real
+  files, not only entry shapes.
+- 14:01:01Z — verifier pane closed; dead `builder-ctx` selector
+  unsubscribed; fresh `builder-ctx-r1` in `w31:p1B` (`(zai) glm-5.3-flash
+  • high`), `matched` on the first poll, `shepy dispatch` →
+  `op_fe12c375566c6357ab4bbdfb`, `working` in 4 s. Third native wait
+  armed. Packet `/tmp/run-20260913-06/revision-1.packet.md`: O1 (header
+  session id + real-linkage fixtures), O2 (zero sum = no usage), O3
+  (`later_turn_without_usage`, precedence documented), F1, S1, S3.
 
 ## Results
 
