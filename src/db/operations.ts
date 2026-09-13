@@ -203,7 +203,12 @@ export class OperationStore {
    * later correlated wait can still settle it.
    */
   recordWaitError(input: { errorSummary: string; operationId: string }): OperationRecord {
-    return this.#transition(input.operationId, () => {
+    return this.#transition(input.operationId, (row) => {
+      if (row.state !== "submitted") {
+        throw new Error(
+          `invalid transition: recordWaitError requires submitted, found ${row.state}`,
+        );
+      }
       this.#sqlite
         .prepare(
           `update orchestration_operations

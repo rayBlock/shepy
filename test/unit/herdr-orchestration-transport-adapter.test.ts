@@ -170,6 +170,23 @@ describe("HerdrOrchestrationTransportAdapter", () => {
     expect(detail.length).toBeLessThanOrEqual(300);
   });
 
+  test("truncates an overlong unrecognized detail to exactly 300 chars ending with an ellipsis", async () => {
+    const adapter = new HerdrOrchestrationTransportAdapter({
+      promptAgent: vi.fn(),
+      waitForAgent: vi.fn().mockResolvedValue({
+        requestId: "wait-1",
+        result: { ["k".repeat(400)]: 1 },
+      }),
+    });
+
+    const event = await adapter.waitForLifecycle("op-1", target);
+    const detail = event.detail ?? "";
+    expect(event.kind).toBe("transport_unknown");
+    expect(detail.length).toBe(300);
+    expect(detail.startsWith("unrecognized herdr wait response (keys: ")).toBe(true);
+    expect(detail.endsWith("…")).toBe(true);
+  });
+
   // Only herdr's own bounded-wait expiry (its `timeout` error response) may
   // become a wait timeout — the 10 s wait cut of 2026-09-04 relied on the
   // two shapes being indistinguishable.

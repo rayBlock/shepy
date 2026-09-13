@@ -209,6 +209,34 @@ describe("OperationStore — durable dispatch operations", () => {
     expect(updated.transportRequestId).toBe("shepy-1");
   });
 
+  test("recordWaitError on a settled operation throws and leaves the row untouched", async () => {
+    const { operations } = fixture();
+    const operation = operations.create(dispatch);
+    operations.recordSubmission({
+      operationId: operation.id,
+      requestId: "shepy-1",
+      submittedAt: new Date(),
+    });
+    const settled = operations.settle({
+      lifecycle: "settled",
+      operationId: operation.id,
+      settledAt: new Date(),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    expect(() =>
+      operations.recordWaitError({
+        operationId: operation.id,
+        errorSummary: "late unrecognized herdr wait response",
+      }),
+    ).toThrow(/invalid transition/i);
+
+    const stored = operations.get(operation.id);
+    expect(stored?.state).toBe("settled");
+    expect(stored?.errorSummary).toBe(settled.errorSummary);
+    expect(stored?.updatedAt.getTime()).toBe(settled.updatedAt.getTime());
+  });
+
   test("operations survive a restart (reopen the SQLite file)", () => {
     const { operations, path, sqlite } = fixture();
     const operation = operations.create(dispatch);
