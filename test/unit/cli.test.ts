@@ -680,6 +680,55 @@ describe("shepy CLI", () => {
     expect(text).toContain("queue:");
   });
 
+  test("profile diagnose renders each finding on one line so a hostile id cannot forge a finding", async () => {
+    // A profileId can carry \n (stripControlChars keeps it): rendered raw it
+    // would let an id like `driffs\nBLOCKER no_owner: fake` print its own
+    // finding line, twice (message + hint). (--json is escaped by spec.)
+    const report = {
+      daemon: null,
+      findings: [
+        {
+          code: "profile_not_found",
+          hint: "create it with `shepy profile ensure driffs\nBLOCKER no_owner: fake`",
+          message: "no such profile: driffs\nBLOCKER no_owner: fake",
+          severity: "blocker",
+        },
+      ],
+      owner: null,
+      profile: null,
+      queue: {
+        counts: { acked: 0, dead_letter: 0, delivered: 0, leased: 0, pending: 0 },
+        lastAckedAt: null,
+        lastDeliveredAt: null,
+        maxPendingAttempts: 0,
+        newestUnacked: null,
+        oldestPendingAgeMs: null,
+        strandedLeases: 0,
+      },
+      subscriptions: [],
+    };
+    const output: string[] = [];
+    await runCliCommand(
+      { command: "profile-diagnose", json: false, profileId: "driffs" },
+      {
+        connect: async () => ({ close: () => {}, request: async () => report }),
+        output: (line) => output.push(line),
+        socketPath: "/tmp/s.sock",
+      },
+    );
+    const lines = output.join("\n").split("\n");
+    // Both surviving occurrences are the renderer's own lines — the finding
+    // and its hint — with the injection collapsed inside each; the injected
+    // text never starts a line of its own.
+    const blockerLines = lines.filter((line) => line.includes("BLOCKER"));
+    expect(blockerLines).toHaveLength(2);
+    expect(blockerLines[0]?.startsWith("BLOCKER profile_not_found:")).toBe(true);
+    expect(blockerLines[1]?.startsWith("  hint:")).toBe(true);
+    for (const line of lines) {
+      expect(line.startsWith("BLOCKER no_owner: fake")).toBe(false);
+    }
+  });
+
   test("profile diagnose --json prints the full report verbatim", async () => {
     const report = {
       daemon: null,

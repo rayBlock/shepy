@@ -17,7 +17,7 @@ import { DeliveryObligationStore } from "@/db/delivery-obligations.js";
 import { HerdrSessionStore } from "@/db/herdr-sessions.js";
 import { HerdrWorkspaceStore } from "@/db/herdr-workspaces.js";
 import { OrchestratorProfileStore } from "@/db/orchestrator-profiles.js";
-import { ProfileOwnerStore } from "@/db/profile-owners.js";
+import { DEFAULT_LEASE_GRACE_MS, ProfileOwnerStore } from "@/db/profile-owners.js";
 import { AgentContextService } from "@/observability/agent-context-service.js";
 import { AgentOrchestratorService } from "@/observability/agent-orchestrator-service.js";
 import type { AgentEventRecord } from "@/observability/contracts.js";
@@ -153,6 +153,7 @@ function fixture() {
   return {
     agents,
     client: null as null | RpcTestClient,
+    diagnose,
     delivery,
     obligations,
     owners,
@@ -368,6 +369,25 @@ describe("profile.diagnose RPC (RUN-20260913-04 D2)", () => {
     expect(report.findings[0]?.code).toBe("healthy");
   });
 
+  test("the lease + grace boundary is exact: lapsed at lease_expires_at + grace, in_grace 1 ms earlier", () => {
+    const built = fixture();
+    claimOwner(built);
+    const now = 5_000_000;
+    // The boundary instant itself: lease_expires_at + DEFAULT_LEASE_GRACE_MS
+    // === now. Same shared predicate as claim/renew/inbox.lease, so the
+    // diagnose verdict must flip exactly there, not 1 ms wide of it.
+    built.sqlite
+      .prepare("update profile_owners set lease_expires_at = ? where profile_id = ?")
+      .run(now - DEFAULT_LEASE_GRACE_MS, "driffs");
+    const atBoundary = built.diagnose.diagnose({ now, profileId: "driffs" });
+    expect(atBoundary.owner?.state).toBe("lapsed");
+    expect(atBoundary.findings.find((entry) => entry.code === "owner_lapsed")).toBeDefined();
+
+    const beforeBoundary = built.diagnose.diagnose({ now: now - 1, profileId: "driffs" });
+    expect(beforeBoundary.owner?.state).toBe("in_grace");
+    expect(beforeBoundary.findings.find((entry) => entry.code === "owner_lapsed")).toBeUndefined();
+  });
+
   test("a CLI build stamp unlike the daemon's is a daemon_version_skew warning", async () => {
     const built = await rpcFixture();
     claimOwner(built);
@@ -401,6 +421,12 @@ describe("profile.diagnose is read-only (RUN-20260913-04 D3)", () => {
         "update delivery_obligations set state = 'acked', acked_at = ? where agent_event_id = 2",
       )
       .run(Date.now());
+    // One EXPIRED leased row: a diagnose that swept leases would flip it to
+    // pending. (A freshly stamped lease made the forbidden write a no-op —
+    // the sweep mutation survived this fixture unchanged.)
+    built.sqlite
+      .prepare("update delivery_obligations set lease_expires_at = ? where agent_event_id = 1")
+      .run(Date.now() - 60_000);
     const snapshot = () => ({
       obligations: built.sqlite
         .prepare("select * from delivery_obligations order by agent_event_id")

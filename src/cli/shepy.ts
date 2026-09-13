@@ -1536,9 +1536,13 @@ function formatProfileList(result: {
 // is a runnable next step; no lease token ever enters this output.
 function formatProfileDiagnose(report: ProfileDiagnoseReport): string {
   const lines: string[] = [];
+  // oneLine after stripControlChars: each finding renders as ONE line, so a
+  // hostile profileId inside a message cannot forge a finding line of its own.
   for (const item of report.findings) {
-    lines.push(`${item.severity.toUpperCase()} ${item.code}: ${stripControlChars(item.message)}`);
-    lines.push(`  hint: ${stripControlChars(item.hint)}`);
+    const message = oneLine(stripControlChars(item.message));
+    const hint = oneLine(stripControlChars(item.hint));
+    lines.push(`${item.severity.toUpperCase()} ${item.code}: ${message}`);
+    lines.push(`  hint: ${hint}`);
   }
   lines.push("");
   lines.push("daemon:");
