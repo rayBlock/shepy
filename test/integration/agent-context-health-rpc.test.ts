@@ -73,7 +73,7 @@ const INITIAL_PI = [
   piLine({
     id: "mc1",
     modelId: "gpt-6-astra",
-    parentId: "pi-session-1",
+    parentId: null,
     provider: "openai-codex",
     timestamp: "2026-09-13T10:00:01.000Z",
     type: "model_change",

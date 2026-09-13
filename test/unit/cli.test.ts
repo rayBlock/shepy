@@ -763,6 +763,48 @@ describe("shepy CLI", () => {
     expect(contextLines[0]).toContain("gpt [31m-evil");
   });
 
+  test("a hostile usage reason renders on one line without control bytes (S3)", async () => {
+    const output: string[] = [];
+    const hostile = "no_usage\n\u001b[31m-recorded\r";
+    await runCliCommand(
+      { command: "agent-get", json: false, target: "pi", workspaceId: "wB" },
+      {
+        connect: async () =>
+          contextHealthClient({
+            ...baseHistory,
+            contextHealth: {
+              branch: null,
+              compactionCount: 0,
+              lastCompaction: null,
+              limitations: [],
+              model: null,
+              sessionId: null,
+              source: "pi-jsonl",
+              sourceUpdatedAt: null,
+              usage: {
+                current: false,
+                kind: "unavailable",
+                percent: null,
+                reason: hostile,
+                ref: null,
+                reportedAt: null,
+                tokens: null,
+                window: null,
+              },
+            },
+          }),
+        output: (line) => output.push(line),
+        socketPath: "/tmp/s.sock",
+      },
+    );
+    const text = output[0] ?? "";
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional control-byte assertion — the renderer must strip all of these.
+    expect(text).not.toMatch(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/);
+    const usageLines = text.split("\n").filter((line) => line.includes("usage: unavailable"));
+    expect(usageLines).toHaveLength(1);
+    expect(usageLines[0]).toContain("[31m-recorded");
+  });
+
   test("--json passes the agent object through untouched", async () => {
     const output: string[] = [];
     const history = {

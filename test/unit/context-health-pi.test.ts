@@ -14,7 +14,14 @@ function header(id: string, timestamp = T0): unknown {
   return { type: "session", version: 3, id, timestamp, cwd: "/repo" };
 }
 
-function modelChange(id: string, modelId: string, timestamp: string, parentId = ROOT): unknown {
+// Real Pi files: the header has no parentId and the first entry re-roots the
+// chain with parentId null — nothing ever points at the header id.
+function modelChange(
+  id: string,
+  modelId: string,
+  timestamp: string,
+  parentId: string | null = null,
+): unknown {
   return { type: "model_change", id, parentId, timestamp, provider: "openai-codex", modelId };
 }
 
@@ -22,7 +29,7 @@ function assistant(
   id: string,
   timestamp: string,
   usage: Record<string, unknown>,
-  parentId: string,
+  parentId: string | null,
   model = "gpt-6-astra",
 ): unknown {
   return {
@@ -43,7 +50,7 @@ function assistant(
 function compaction(
   id: string,
   timestamp: string,
-  parentId: string,
+  parentId: string | null,
   extra: Record<string, unknown> = {},
 ): unknown {
   return {
@@ -153,6 +160,7 @@ describe("projectPiContextHealth", () => {
       entry(6, compaction("c1", "2026-09-13T10:04:00.000Z", "m3")),
     ]);
     expect(health.usage).toMatchObject({
+      current: false,
       kind: "unavailable",
       reason: "post_compaction_no_turn",
       ref: null,
@@ -168,6 +176,21 @@ describe("projectPiContextHealth", () => {
       trigger: "unknown",
     });
     expect(health.limitations).toContain("post_compaction_no_turn");
+  });
+
+  test("an empty file is empty, not broken (F1)", () => {
+    const health = project([]);
+    expect(health.usage).toMatchObject({
+      kind: "unavailable",
+      reason: "no_usage_recorded",
+      tokens: null,
+    });
+    expect(health.sessionId).toBeNull();
+    expect(health.limitations).toEqual([
+      "context_window_not_recorded",
+      "compaction_outcome_not_recorded",
+      "leaf_move_not_recorded_until_next_append",
+    ]);
   });
 
   test("a compaction followed by a new assistant message reads the new message", () => {
@@ -235,7 +258,7 @@ describe("projectPiContextHealth", () => {
       entry(2, {
         type: "message",
         id: "u1",
-        parentId: ROOT,
+        parentId: null,
         timestamp: "2026-09-13T10:01:00.000Z",
         message: { role: "user", content: [{ type: "text", text: "synthetic ask" }] },
       }),
@@ -247,10 +270,33 @@ describe("projectPiContextHealth", () => {
     });
   });
 
+  test("all-zero usage is not a reading (O2)", () => {
+    // Pi writes zeros for providers that do not report usage; a billed
+    // prompt of 0 is not a reading.
+    const health = project([
+      entry(1, header(ROOT)),
+      entry(2, modelChange("mc1", "gpt-6-astra", "2026-09-13T10:00:01.000Z")),
+      entry(
+        3,
+        assistant(
+          "m1",
+          "2026-09-13T10:01:00.000Z",
+          { input: 0, cacheRead: 0, cacheWrite: 0 },
+          "mc1",
+        ),
+      ),
+    ]);
+    expect(health.usage).toMatchObject({
+      kind: "unavailable",
+      reason: "no_usage_recorded",
+      tokens: null,
+    });
+  });
+
   test("the compaction entry's own usage is never the reading", () => {
     const health = project([
       entry(1, header(ROOT)),
-      entry(2, compaction("c1", "2026-09-13T10:04:00.000Z", ROOT, { usage: { input: 999999 } })),
+      entry(2, compaction("c1", "2026-09-13T10:04:00.000Z", null, { usage: { input: 999999 } })),
     ]);
     expect(health.usage).toMatchObject({
       kind: "unavailable",
@@ -319,6 +365,106 @@ describe("projectPiContextHealth", () => {
     expect(health.usage.ref).toContain("entry=mB");
   });
 
+  test("a later assistant turn without usage marks the reading stale (O3 a)", () => {
+    const health = project([
+      entry(1, header(ROOT)),
+      entry(2, modelChange("mc1", "gpt-6-astra", "2026-09-13T10:00:01.000Z")),
+      entry(
+        3,
+        assistant(
+          "m1",
+          "2026-09-13T10:01:00.000Z",
+          { input: 4000, cacheRead: 400, cacheWrite: 40 },
+          "mc1",
+        ),
+      ),
+      entry(4, {
+        type: "message",
+        id: "m2",
+        parentId: "m1",
+        timestamp: "2026-09-13T10:02:00.000Z",
+        message: {
+          role: "assistant",
+          provider: "openai-codex",
+          model: "gpt-6-astra",
+          content: [{ type: "text", text: "synthetic reply m2" }],
+        },
+      }),
+    ]);
+    expect(health.usage).toMatchObject({
+      current: false,
+      kind: "last_reported",
+      reason: "later_turn_without_usage",
+      tokens: 4440,
+    });
+  });
+
+  test("a later assistant turn with all-zero usage marks the reading stale (O3 b)", () => {
+    const health = project([
+      entry(1, header(ROOT)),
+      entry(2, modelChange("mc1", "gpt-6-astra", "2026-09-13T10:00:01.000Z")),
+      entry(
+        3,
+        assistant(
+          "m1",
+          "2026-09-13T10:01:00.000Z",
+          { input: 4000, cacheRead: 400, cacheWrite: 40 },
+          "mc1",
+        ),
+      ),
+      entry(
+        4,
+        assistant(
+          "m2",
+          "2026-09-13T10:02:00.000Z",
+          { input: 0, cacheRead: 0, cacheWrite: 0 },
+          "m1",
+        ),
+      ),
+    ]);
+    expect(health.usage).toMatchObject({
+      current: false,
+      kind: "last_reported",
+      reason: "later_turn_without_usage",
+      tokens: 4440,
+    });
+  });
+
+  test("later_turn_without_usage outranks the branch marker (O3 c)", () => {
+    const health = project([
+      entry(1, header(ROOT)),
+      entry(2, modelChange("mc1", "gpt-6-astra", "2026-09-13T10:00:01.000Z")),
+      entry(
+        3,
+        assistant(
+          "m1",
+          "2026-09-13T10:01:00.000Z",
+          { input: 4000, cacheRead: 400, cacheWrite: 40 },
+          "mc1",
+        ),
+      ),
+      entry(4, {
+        type: "message",
+        id: "m2",
+        parentId: "m1",
+        timestamp: "2026-09-13T10:02:00.000Z",
+        message: {
+          role: "assistant",
+          provider: "openai-codex",
+          model: "gpt-6-astra",
+          content: [{ type: "text", text: "synthetic reply m2" }],
+        },
+      }),
+      entry(5, branchSummary("bs1", "2026-09-13T10:03:00.000Z", "m2", "m1")),
+    ]);
+    expect(health.usage).toMatchObject({
+      current: false,
+      kind: "last_reported",
+      reason: "later_turn_without_usage",
+      tokens: 4440,
+    });
+  });
+
   test("a branch_summary re-root with no assistant usage above (D8 j)", () => {
     const health = project([
       entry(1, header(ROOT)),
@@ -350,7 +496,7 @@ describe("projectPiContextHealth", () => {
           "m1",
           "2026-09-13T10:01:00.000Z",
           { input: 1000, cacheRead: 0, cacheWrite: 0 },
-          ROOT,
+          null,
         ),
       ),
       entry(
@@ -420,6 +566,7 @@ describe("projectPiContextHealth", () => {
       entry(5, modelChange("mcA2", "gpt-6-astra", "2026-09-13T10:03:00.000Z", "mcB")),
     ]);
     expect(health.usage).toMatchObject({
+      current: false,
       kind: "unavailable",
       reason: "model_changed_since_reading",
       tokens: null,

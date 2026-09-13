@@ -25,6 +25,10 @@ import { messageRef, timestampFrom } from "./text.js";
  * branch conversations in-file, so Claude stays file order — with
  * subagent (isSidechain) transcripts excluded from reading, model, and
  * boundaries.
+ *
+ * Staleness marker precedence when several apply:
+ * post_compaction_no_turn > model_changed_since_reading >
+ * later_turn_without_usage > branch_switched/branch_changed.
  */
 
 const PI_LIMITATIONS = [
@@ -56,6 +60,20 @@ type ModelObservation = {
 };
 
 export function projectPiContextHealth(path: string, entries: JsonlEntry[]): ContextHealth {
+  // F1: an empty file is empty, not broken — decide before any lineage
+  // logic so "no entries" never degrades to lineage_unresolved.
+  if (entries.length === 0) {
+    return finish({
+      boundaries: [],
+      branch: null,
+      limitations: [...PI_LIMITATIONS],
+      model: { changedAt: null, id: null, lastChange: null, provider: null },
+      sessionId: null,
+      source: "pi-jsonl",
+      sourceUpdatedAt: null,
+      usage: unavailableUsage("no_usage_recorded"),
+    });
+  }
   const last = entries.at(-1) ?? null;
   const lineage = last ? activeLineage(last, indexById(entries)) : null;
   if (!last || !lineage) {
@@ -75,18 +93,16 @@ export function projectPiContextHealth(path: string, entries: JsonlEntry[]): Con
     });
   }
 
-  let sessionId: string | null = null;
+  const sessionId: string | null = headerSessionId(entries);
   const model: ModelObservation = { changedAt: null, id: null, lastChange: null, provider: null };
+
   const boundaries: Boundary[] = [];
   let reading: UsageCandidate | null = null;
+  let lastAssistantPosition: number | null = null;
   const leafIsBranchSummary = stringField(last.value.type) === "branch_summary";
 
   lineage.forEach((entry, position) => {
     const type = stringField(entry.value.type);
-    if (type === "session") {
-      sessionId = stringField(entry.value.id) ?? sessionId;
-      return;
-    }
     if (type === "model_change") {
       observeModel(
         model,
@@ -115,6 +131,9 @@ export function projectPiContextHealth(path: string, entries: JsonlEntry[]): Con
     if (type !== "message") return; // branch_summary usage is never a reading
     const message = recordField(entry.value.message);
     if (stringField(message.role) !== "assistant") return;
+    // O3: the position is tracked whether or not this turn carried usage —
+    // a later turn without usage still grew the context by an unknown amount.
+    lastAssistantPosition = position;
     const timestamp = timestampFrom(entry.value.timestamp) ?? timestampFrom(message.timestamp);
     observeModel(model, message.model, message.provider, position, timestamp);
     const tokens = promptTokens(message.usage, ["input", "cacheRead", "cacheWrite"]);
@@ -133,6 +152,7 @@ export function projectPiContextHealth(path: string, entries: JsonlEntry[]): Con
     boundaries,
     branch: null,
     branchMarker: leafIsBranchSummary ? "branch_switched_since_reading" : null,
+    lastAssistantPosition,
     lastModelChange: model.lastChange,
     leafIsBranchSummary,
     reading,
@@ -155,6 +175,7 @@ export function projectClaudeContextHealth(path: string, entries: JsonlEntry[]):
   const model: ModelObservation = { changedAt: null, id: null, lastChange: null, provider: null };
   const boundaries: Boundary[] = [];
   let reading: UsageCandidate | null = null;
+  let lastAssistantPosition: number | null = null;
   let previousAssistantModel: string | null = null;
   let sessionId: string | null = null;
   const sessionIds = new Set<string>();
@@ -184,6 +205,8 @@ export function projectClaudeContextHealth(path: string, entries: JsonlEntry[]):
       return;
     }
     if (type !== "assistant" || entry.value.isSidechain === true) return;
+    // O3: the position is tracked whether or not this entry carried usage.
+    lastAssistantPosition = position;
     const message = recordField(entry.value.message);
     const timestamp = timestampFrom(entry.value.timestamp) ?? timestampFrom(message.timestamp);
     // Claude records no provider on the message; "anthropic" is not invented.
@@ -216,6 +239,7 @@ export function projectClaudeContextHealth(path: string, entries: JsonlEntry[]):
     boundaries,
     branch: stringField(entries.at(-1)?.value.gitBranch),
     branchMarker: null,
+    lastAssistantPosition,
     lastModelChange: model.lastChange,
     leafIsBranchSummary: false,
     reading,
@@ -239,6 +263,7 @@ function usageReading(input: {
   boundaries: Boundary[];
   branch: string | null;
   branchMarker: "branch_switched_since_reading" | null;
+  lastAssistantPosition: number | null;
   lastModelChange: ModelChange | null;
   leafIsBranchSummary: boolean;
   reading: UsageCandidate | null;
@@ -259,6 +284,22 @@ function usageReading(input: {
       ...unavailableUsage("model_changed_since_reading"),
       ref: reading.ref,
       reportedAt: reading.reportedAt,
+    };
+  }
+  // A later assistant turn with no usable usage means the context grew by
+  // an unknown amount: keep the tokens, but they no longer describe this
+  // turn. (Precedence: below compaction and model change, above branch
+  // markers — see the module comment.)
+  if (input.lastAssistantPosition !== null && input.lastAssistantPosition > reading.position) {
+    return {
+      current: false,
+      kind: "last_reported",
+      percent: null,
+      reason: "later_turn_without_usage",
+      ref: reading.ref,
+      reportedAt: reading.reportedAt,
+      tokens: reading.tokens,
+      window: null,
     };
   }
   // current:false markers keep the tokens but say why the reading may no
@@ -314,7 +355,8 @@ function finish(input: {
 
 function unavailableUsage(reason: string): ContextUsageReading {
   return {
-    current: true,
+    // A reading that does not exist is never current (S1).
+    current: false,
     kind: "unavailable",
     percent: null,
     reason,
@@ -323,6 +365,14 @@ function unavailableUsage(reason: string): ContextUsageReading {
     tokens: null,
     window: null,
   };
+}
+
+/** The header entry's id: the first `type: "session"` entry in file order. */
+function headerSessionId(entries: JsonlEntry[]): string | null {
+  for (const entry of entries) {
+    if (stringField(entry.value.type) === "session") return stringField(entry.value.id);
+  }
+  return null;
 }
 
 /** The parentId chain from the leaf to the root, in root→leaf order; null when broken. */
@@ -411,17 +461,17 @@ function compactionTrigger(value: unknown): ContextCompactionBoundary["trigger"]
   return "unknown";
 }
 
-/** Sum of the billing fields; null when the usage records none of them. */
+/** Sum of the billing fields; null when no usage is recorded — a sum of 0 is no usage. */
 function promptTokens(usage: unknown, fields: string[]): number | null {
   if (typeof usage !== "object" || usage === null) return null;
   const record = usage as Record<string, unknown>;
-  let sum: number | null = null;
+  let sum = 0;
   for (const field of fields) {
     const value = finiteNonNegative(record[field]);
     if (value === null) continue;
-    sum = (sum ?? 0) + value;
+    sum += value;
   }
-  return sum;
+  return sum > 0 ? sum : null;
 }
 
 function boundaryWithoutPosition(boundary: Boundary): ContextCompactionBoundary {

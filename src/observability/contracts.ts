@@ -94,6 +94,7 @@ export type ContextCompactionBoundary = {
 };
 
 export type ContextUsageReading = {
+  /** True only for a last_reported reading with no staleness marker; an unavailable reading is never current. */
   current: boolean;
   kind: ContextMeasurementKind;
   percent: number | null;

@@ -105,6 +105,36 @@ describe("projectClaudeContextHealth", () => {
     expect(health.limitations).toContain("claude_lineage_by_file_order");
   });
 
+  test("all-zero usage is not a reading (O2)", () => {
+    // Claude writes zeros for providers that do not report usage; a billed
+    // prompt of 0 is not a reading.
+    const health = project([
+      entry(
+        1,
+        assistant("a1", "s1", "2026-09-13T11:01:00.000Z", {
+          input_tokens: 0,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        }),
+      ),
+    ]);
+    expect(health.usage).toMatchObject({
+      kind: "unavailable",
+      reason: "no_usage_recorded",
+      tokens: null,
+    });
+  });
+
+  test("an empty file records no usage (F1)", () => {
+    const health = project([]);
+    expect(health.usage).toMatchObject({
+      kind: "unavailable",
+      reason: "no_usage_recorded",
+      tokens: null,
+    });
+    expect(health.limitations).not.toContain("lineage_unresolved");
+  });
+
   test("maps a manual compact_boundary and blocks usage recorded before it", () => {
     const health = project([
       ...threeAssistants,
@@ -120,6 +150,7 @@ describe("projectClaudeContextHealth", () => {
       ),
     ]);
     expect(health.usage).toMatchObject({
+      current: false,
       kind: "unavailable",
       reason: "post_compaction_no_turn",
       tokens: null,
@@ -150,6 +181,8 @@ describe("projectClaudeContextHealth", () => {
   });
 
   test("a branch change after the reading marks it stale but keeps tokens", () => {
+    // The branch change arrives on a user entry: an assistant entry here
+    // would also be a later turn without usage (lower precedence marker).
     const health = project([
       entry(
         1,
@@ -159,10 +192,12 @@ describe("projectClaudeContextHealth", () => {
           cache_read_input_tokens: 0,
         }),
       ),
-      entry(
-        2,
-        assistant("a2", "s1", "2026-09-13T11:02:00.000Z", null, "claude-fable-5-1", "feature"),
-      ),
+      entry(2, {
+        ...base("s1", "2026-09-13T11:02:00.000Z", "feature"),
+        type: "user",
+        uuid: "u1",
+        message: { role: "user", content: [{ type: "text", text: "synthetic ask" }] },
+      }),
     ]);
     expect(health.usage).toMatchObject({
       current: false,
@@ -217,6 +252,53 @@ describe("projectClaudeContextHealth", () => {
     ]);
     expect(health.lastCompaction).toMatchObject({ trigger: "unknown" });
     expect(health.usage.kind).toBe("last_reported");
+  });
+
+  test("a later assistant entry without usage marks the reading stale (O3 a)", () => {
+    const health = project([
+      entry(
+        1,
+        assistant("a1", "s1", "2026-09-13T11:01:00.000Z", {
+          input_tokens: 10,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        }),
+      ),
+      entry(2, assistant("a2", "s1", "2026-09-13T11:02:00.000Z", null)),
+    ]);
+    expect(health.usage).toMatchObject({
+      current: false,
+      kind: "last_reported",
+      reason: "later_turn_without_usage",
+      tokens: 10,
+    });
+  });
+
+  test("a later assistant entry with all-zero usage marks the reading stale (O3 b)", () => {
+    const health = project([
+      entry(
+        1,
+        assistant("a1", "s1", "2026-09-13T11:01:00.000Z", {
+          input_tokens: 10,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        }),
+      ),
+      entry(
+        2,
+        assistant("a2", "s1", "2026-09-13T11:02:00.000Z", {
+          input_tokens: 0,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        }),
+      ),
+    ]);
+    expect(health.usage).toMatchObject({
+      current: false,
+      kind: "last_reported",
+      reason: "later_turn_without_usage",
+      tokens: 10,
+    });
   });
 
   test("a model change sets changedAt, and one after the reading invalidates it", () => {
