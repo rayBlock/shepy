@@ -41,7 +41,9 @@ import {
   agentOrchestratorSetInputSchema,
   agentReadInputSchema,
   inboxAckInputSchema,
+  inboxDeferInputSchema,
   inboxDeliveredInputSchema,
+  inboxGetInputSchema,
   inboxLeaseInputSchema,
   inboxListInputSchema,
   inboxRetireInputSchema,
@@ -494,8 +496,14 @@ export class ObservabilityRpcServer {
       }
       case "inbox.list": {
         assertSchema(inboxListInputSchema, params);
-        const input = params as { limit?: number; profileId: string; state?: string };
+        const input = params as {
+          before?: number;
+          limit?: number;
+          profileId: string;
+          state?: string;
+        };
         const obligations = this.#requireDelivery().inboxList({
+          ...(input.before !== undefined ? { before: input.before } : {}),
           ...(input.limit !== undefined ? { limit: input.limit } : {}),
           profileId: input.profileId,
           ...(input.state
@@ -541,6 +549,19 @@ export class ObservabilityRpcServer {
           ids: input.ids,
           leaseToken: input.leaseToken,
         });
+      }
+      case "inbox.defer": {
+        // Same wire shape as inbox.nack minus the error code: the deferral
+        // reason is daemon-side constant (deferred_over_budget), the caller
+        // only proves its lease and names the rows.
+        assertSchema(inboxDeferInputSchema, params);
+        const input = params as { ids: string[]; leaseToken: string };
+        return this.#requireDelivery().inboxDefer(input);
+      }
+      case "inbox.get": {
+        assertSchema(inboxGetInputSchema, params);
+        const input = params as { obligationId: string };
+        return { obligation: this.#requireDelivery().inboxGet(input.obligationId) };
       }
       case "inbox.retry": {
         assertSchema(inboxRetryInputSchema, params);

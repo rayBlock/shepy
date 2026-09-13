@@ -381,6 +381,11 @@ export class ProfileDeliveryService {
     return this.#obligations.nack(input);
   }
 
+  /** Over-budget return — see DeliveryObligationStore.defer. */
+  inboxDefer(input: { ids: string[]; leaseToken: string }) {
+    return this.#obligations.defer(input);
+  }
+
   /**
    * Read surface — and the token boundary for every obligation row that
    * leaves the daemon. inbox.list presents no credential at all, so no row
@@ -392,12 +397,35 @@ export class ProfileDeliveryService {
    * The only read that may still carry a token is inboxLease, which serves
    * exclusively rows stamped with the token the caller itself presented.
    */
-  inboxList(input: { limit?: number; profileId: string; state?: Obligation["state"] }) {
+  inboxList(input: {
+    before?: number;
+    limit?: number;
+    profileId: string;
+    state?: Obligation["state"];
+  }) {
     return this.#obligations.list(input).map((obligation) => ({
       ...obligation,
       deliveredHarnessTurnId: null as null,
       leaseToken: null as null,
     }));
+  }
+
+  /**
+   * Single-obligation read for `shepy inbox get` — the read-back a deferred
+   * outcome's stub points at. Same token boundary as inboxList: this path
+   * presents no credential, so no row it serves may carry one (see the
+   * comment there), and the event snapshot rides exactly as it does on the
+   * lease — the immutable append-time excerpt, never a live re-read.
+   */
+  inboxGet(obligationId: string) {
+    const obligation = this.#obligations.byId(obligationId);
+    if (!obligation) return null;
+    return {
+      ...obligation,
+      deliveredHarnessTurnId: null as null,
+      leaseToken: null as null,
+      outcome: this.#outcomeSnapshotFor(obligation.agentEventId),
+    };
   }
 
   /** Operator retire — see DeliveryObligationStore.retire. */

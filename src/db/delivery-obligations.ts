@@ -88,6 +88,14 @@ export class DeliveryObligationStore {
     return row ? toObligation(row) : undefined;
   }
 
+  /** Single-obligation read for `inbox.get` — the deferred stub's read-back. */
+  byId(id: string): Obligation | undefined {
+    const row = this.#sqlite.prepare("select * from delivery_obligations where id = ?").get(id) as
+      | ObligationRow
+      | undefined;
+    return row ? toObligation(row) : undefined;
+  }
+
   /** Deliverable batch: pending rows plus expired leases, oldest first (§6.2.4/§9.3). */
   pendingBatch(input: { limit?: number; now?: number; profileId: string }): Obligation[] {
     const now = input.now ?? Date.now();
@@ -182,6 +190,33 @@ export class DeliveryObligationStore {
       }
       return { acked, rejected };
     });
+  }
+
+  /**
+   * leased → pending WITHOUT burning a delivery attempt: the harness's
+   * formatter could not represent these rows inside its budget, so nobody
+   * ever saw them. attempt_count returns to its pre-lease value (floored at
+   * zero — the lease-time increment is undone, not punished) and the deferral
+   * is recorded as last_error_code, visible in inbox list but never counted
+   * against MAX_DELIVERY_ATTEMPTS. Token-fenced exactly like nack, and only
+   * rows still in `leased` move: a delivered row was represented and is the
+   * ack path's business, not ours.
+   */
+  defer(input: { ids: string[]; leaseToken: string }): { deferred: number } {
+    let deferred = 0;
+    for (const id of input.ids) {
+      const result = this.#sqlite
+        .prepare(
+          `update delivery_obligations
+						 set state = 'pending', lease_token = null, lease_expires_at = null,
+							     attempt_count = max(attempt_count - 1, 0),
+							     last_error_code = 'deferred_over_budget'
+						 where id = ? and lease_token = ? and state = 'leased'`,
+        )
+        .run(id, input.leaseToken);
+      deferred += Number(result.changes);
+    }
+    return { deferred };
   }
 
   /** Failed/interrupted/disconnected → pending with the error recorded (§9.2). */
@@ -310,17 +345,26 @@ export class DeliveryObligationStore {
     return { retired: Number(result.changes) };
   }
 
-  list(input: { limit?: number; profileId: string; state?: ObligationState }): Obligation[] {
+  list(input: {
+    before?: number;
+    limit?: number;
+    profileId: string;
+    state?: ObligationState;
+  }): Obligation[] {
     const params: Array<string | number> = [input.profileId];
-    let stateFilter = "";
+    let filters = "";
     if (input.state) {
-      stateFilter = " and state = ?";
+      filters += " and state = ?";
       params.push(input.state);
+    }
+    if (input.before !== undefined) {
+      filters += " and agent_event_id < ?";
+      params.push(input.before);
     }
     params.push(input.limit ?? 50);
     const rows = this.#sqlite
       .prepare(
-        `select * from delivery_obligations where profile_id = ?${stateFilter} order by agent_event_id desc limit ?`,
+        `select * from delivery_obligations where profile_id = ?${filters} order by agent_event_id desc limit ?`,
       )
       .all(...params) as ObligationRow[];
     return rows.map(toObligation);

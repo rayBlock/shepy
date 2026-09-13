@@ -2123,6 +2123,201 @@ describe("shepy profile owner CLI verb (operator surface)", () => {
   });
 });
 
+describe("obligation defer — over-budget rows return to pending without burning an attempt", () => {
+  test("defers only rows leased under the presented token, floors attempts at zero", () => {
+    const { agents, delivery, obligations, sqlite } = fixture();
+    const worker = agents.list().find((row) => row.name === "driffs-worker");
+    if (!worker) throw new Error("fixture: driffs-worker missing");
+    for (const eventId of [60, 61, 62]) {
+      delivery.projectAgentEvent({
+        ...eventFor({ eventId, worker: "driffs" }),
+        agentId: worker.id,
+      });
+    }
+    const claim = delivery.claim({
+      harnessKind: "pi",
+      harnessSessionRefJson: "{}",
+      herdrSessionName: "default",
+      paneId: "wX:p1",
+      profileId: "driffs",
+      subscriberId: "sub-1",
+      terminalId: "tX",
+    });
+    if (claim.kind !== "claimed") throw new Error("claim failed");
+    const batch = delivery.inboxLease({ leaseToken: claim.leaseToken, profileId: "driffs" });
+    expect(batch.obligations).toHaveLength(3);
+    // Drive one leased row to attempt_count 0 while leased (the state an
+    // older schema could have left): the decrement must floor at zero.
+    sqlite
+      .prepare("update delivery_obligations set attempt_count = 0 where agent_event_id = 62")
+      .run();
+    // One row was represented (delivered): defer must never touch it.
+    const represented = batch.obligations.find((row) => row.agentEventId === 60);
+    if (!represented) throw new Error("fixture: obligation for event 60 missing");
+    delivery.inboxDelivered({
+      ids: [represented.id],
+      leaseToken: claim.leaseToken,
+      ownerSessionRefJson: "{}",
+    });
+
+    const deferred = delivery.inboxDefer({
+      ids: batch.obligations.map((row) => row.id),
+      leaseToken: claim.leaseToken,
+    });
+    expect(deferred).toEqual({ deferred: 2 });
+
+    const stillDelivered = obligations.byId(represented.id);
+    expect(stillDelivered?.state).toBe("delivered");
+    expect(stillDelivered?.attemptCount).toBe(1);
+    expect(stillDelivered?.leaseToken).toBe(claim.leaseToken);
+
+    for (const eventId of [61, 62]) {
+      const row = delivery
+        .inboxList({ profileId: "driffs", state: "pending" })
+        .find((pending) => pending.agentEventId === eventId);
+      expect(row?.state).toBe("pending");
+      expect(row?.lastErrorCode).toBe("deferred_over_budget");
+    }
+    const byEvent = new Map(
+      delivery
+        .inboxList({ profileId: "driffs", state: "pending" })
+        .map((row) => [row.agentEventId, row]),
+    );
+    // Pre-lease value restored…
+    expect(byEvent.get(61)?.attemptCount).toBe(0);
+    // …and floored at zero, never negative.
+    expect(byEvent.get(62)?.attemptCount).toBe(0);
+    expect(byEvent.get(61)?.leaseToken).toBeNull();
+    expect(byEvent.get(61)?.leaseExpiresAt).toBeNull();
+  });
+
+  test("a foreign token defers nothing", () => {
+    const { agents, delivery, obligations } = fixture();
+    const worker = agents.list().find((row) => row.name === "driffs-worker");
+    if (!worker) throw new Error("fixture: driffs-worker missing");
+    delivery.projectAgentEvent({
+      ...eventFor({ eventId: 63, worker: "driffs" }),
+      agentId: worker.id,
+    });
+    const claim = delivery.claim({
+      harnessKind: "pi",
+      harnessSessionRefJson: "{}",
+      herdrSessionName: "default",
+      paneId: "wX:p1",
+      profileId: "driffs",
+      subscriberId: "sub-1",
+      terminalId: "tX",
+    });
+    if (claim.kind !== "claimed") throw new Error("claim failed");
+    const batch = delivery.inboxLease({ leaseToken: claim.leaseToken, profileId: "driffs" });
+    expect(
+      delivery.inboxDefer({ ids: batch.obligations.map((row) => row.id), leaseToken: "forged" }),
+    ).toEqual({
+      deferred: 0,
+    });
+    const leased = obligations.list({ profileId: "driffs", state: "leased" });
+    expect(leased).toHaveLength(batch.obligations.length);
+    expect(leased[0]?.attemptCount).toBe(1);
+  });
+});
+
+describe("inbox.get and inbox.list paging — the operator read-back", () => {
+  test("inbox.get returns the redacted obligation with its snapshot; unknown id is a null, not an error", async () => {
+    const { built, client, server } = await rpcFixture();
+    try {
+      const worker = built.agents.list().find((row) => row.name === "driffs-worker");
+      if (!worker) throw new Error("fixture: driffs-worker missing");
+      const stored = built.agentEvents.append({
+        agentId: worker.id,
+        compactHistory: {
+          historyRef: null,
+          lastAssistantMessage: {
+            ref: "r-get",
+            role: "assistant",
+            text: "deferred outcome body",
+            timestamp: null,
+          },
+          lastToolResult: null,
+          lastUserMessage: null,
+          messageCount: 1,
+          source: "hermes-sqlite",
+          updatedAt: null,
+        } as never,
+        herdrSessionName: "default",
+        idempotencyKey: "get-1",
+        paneId: "wA:p1",
+        payload: { agent: "hermes", from: "working", name: "driffs-worker", to: "done" },
+        type: "agent.done",
+        workspaceId: "wA",
+      });
+      built.delivery.projectAgentEvent(stored);
+      const claim = (await client.request("profile.claim", CLAIM_PANE_X)) as {
+        result: { kind: string; leaseToken: string };
+      };
+      if (claim.result.kind !== "claimed") throw new Error("claim failed");
+      // Lease so the row CARRIES a credential: the read-back must still not.
+      const lease = (await client.request("inbox.lease", {
+        leaseToken: claim.result.leaseToken,
+        profileId: "driffs",
+      })) as { obligations: Array<{ id: string }> };
+      const obligationId = lease.obligations[0]?.id;
+      if (!obligationId) throw new Error("fixture: leased obligation missing");
+
+      const got = (await client.request("inbox.get", { obligationId })) as {
+        obligation: {
+          deliveredHarnessTurnId: string | null;
+          id: string;
+          leaseToken: string | null;
+          outcome: { excerpt: { text: string } | null } | null;
+        } | null;
+      };
+      // Same token boundary as inbox.list: a read that presents no credential
+      // may never serve one, even for the caller's own leased row.
+      expect(got.obligation?.id).toBe(obligationId);
+      expect(got.obligation?.leaseToken).toBeNull();
+      expect(got.obligation?.deliveredHarnessTurnId).toBeNull();
+      expect(got.obligation?.outcome?.excerpt?.text).toBe("deferred outcome body");
+
+      await expect(client.request("inbox.get", { obligationId: "nope" })).resolves.toEqual({
+        obligation: null,
+      });
+    } finally {
+      client.close();
+      await server.stop();
+      built.sqlite.close();
+    }
+  });
+
+  test("inbox.list pages with before: three rows, before the middle id leaves only the oldest", async () => {
+    const { built, client, server } = await rpcFixture();
+    try {
+      const worker = built.agents.list().find((row) => row.name === "driffs-worker");
+      if (!worker) throw new Error("fixture: driffs-worker missing");
+      for (const eventId of [81, 82, 83]) {
+        built.delivery.projectAgentEvent({
+          ...eventFor({ eventId, worker: "driffs" }),
+          agentId: worker.id,
+        });
+      }
+      const listed = (await client.request("inbox.list", { profileId: "driffs" })) as {
+        obligations: Array<{ agentEventId: number }>;
+      };
+      expect(listed.obligations.map((row) => row.agentEventId)).toEqual([83, 82, 81]);
+      const middle = listed.obligations[1];
+      if (!middle) throw new Error("fixture: middle row missing");
+      const before = (await client.request("inbox.list", {
+        before: middle.agentEventId,
+        profileId: "driffs",
+      })) as { obligations: Array<{ agentEventId: number }> };
+      expect(before.obligations.map((row) => row.agentEventId)).toEqual([81]);
+    } finally {
+      client.close();
+      await server.stop();
+      built.sqlite.close();
+    }
+  });
+});
+
 describe("selector ambiguity is fail-closed on BOTH paths (§7, §6.1.3)", () => {
   const WORKER_CWD = "/Users/ray/dev/driffs";
 

@@ -192,6 +192,9 @@ export const profileReleaseInputSchema = Type.Object(
 
 export const inboxListInputSchema = Type.Object(
   {
+    // Cursor: only rows strictly OLDER than this agent event id (newest-first
+    // order unchanged). The read-back paging for a deferred tail.
+    before: Type.Optional(Type.Integer({ minimum: 0 })),
     limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 500 })),
     profileId: Type.String({ minLength: 1 }),
     state: Type.Optional(
@@ -233,6 +236,19 @@ export const inboxAckInputSchema = Type.Object(
     leaseToken: Type.String({ minLength: 1 }),
     profileId: Type.String({ minLength: 1 }),
   },
+  { additionalProperties: false },
+);
+
+export const inboxDeferInputSchema = Type.Object(
+  {
+    ids: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
+    leaseToken: Type.String({ minLength: 1 }),
+  },
+  { additionalProperties: false },
+);
+
+export const inboxGetInputSchema = Type.Object(
+  { obligationId: Type.String({ minLength: 1 }) },
   { additionalProperties: false },
 );
 
