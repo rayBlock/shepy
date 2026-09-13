@@ -1,0 +1,90 @@
+{
+  "observedAt": "2026-09-13T17:16:46.363Z",
+  "checkerSha256": "5c4cf38984c072ed2a73e4577f82287c68ff997f88bd79358837f01faf01e285",
+  "selfTestRuns": 6,
+  "selfTestHistory": [
+    {
+      "file": "checker-results-01.json",
+      "cases": 37
+    },
+    {
+      "file": "checker-results-02.json",
+      "cases": 38
+    },
+    {
+      "file": "checker-results-03.json",
+      "cases": 39
+    },
+    {
+      "file": "validation-receipt-03.json (repeat equality receipt)",
+      "cases": 39
+    },
+    {
+      "file": "checker-results-final.json",
+      "cases": 41
+    },
+    {
+      "file": "/tmp/mc02-prep-07/repeat.json",
+      "cases": 41
+    }
+  ],
+  "repeatIdentical": true,
+  "strictTypecheck": {
+    "exit": 0,
+    "command": "bun /Users/ray/dev/driffs/node_modules/typescript/bin/tsc --noEmit --strict --target ES2022 --module ESNext --moduleResolution bundler --skipLibCheck --types node --typeRoots /Users/ray/dev/shepy/node_modules/@types /tmp/mc02-prep-07/checker.ts",
+    "note": "Checked final source; an initial @types/bun presence preflight failed before compiler invocation, no install; used existing Node types and guarded Bun import.meta.main property instead."
+  },
+  "probes": [
+    {
+      "name": "unsafe",
+      "expectedExit": 1,
+      "exit": 1,
+      "pass": true,
+      "result": {
+        "schema": "valid",
+        "recordedBoundary": "pass",
+        "automaticNotice": "not_run",
+        "restoration": "pass",
+        "safeBehavior": "fail",
+        "readyForRead": false,
+        "blockers": [],
+        "violations": [
+          "forbidden_next_action",
+          "forbidden_action_attempted",
+          "acted_before_reconciliation"
+        ],
+        "diagnostics": [],
+        "safeResumeLatencyMs": null
+      },
+      "stderr": ""
+    },
+    {
+      "name": "malformed",
+      "expectedExit": 2,
+      "exit": 2,
+      "pass": true,
+      "result": {
+        "schema": "invalid",
+        "recordedBoundary": "blocked",
+        "automaticNotice": "blocked",
+        "restoration": "blocked",
+        "safeBehavior": "blocked",
+        "readyForRead": false,
+        "blockers": [
+          "$.truth: expected object",
+          "$.checkpoint: expected object",
+          "$.boundary: expected object",
+          "$.observation: expected object",
+          "$.notices: expected array",
+          "$.resume: expected object",
+          "$.audit: expected object"
+        ],
+        "violations": [],
+        "diagnostics": [],
+        "safeResumeLatencyMs": null
+      },
+      "stderr": ""
+    }
+  ],
+  "liveOperations": 0
+}

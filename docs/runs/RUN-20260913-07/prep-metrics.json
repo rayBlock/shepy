@@ -1,0 +1,41 @@
+{
+  "sampledAt": "2026-09-13T17:08:41.938Z",
+  "samplingFrom": "2026-09-13T16:48:08Z",
+  "session": "/Users/ray/.pi/agent/sessions/--Users-ray-dev-driffs--/2026-09-13T08-54-23-524Z_01a099f9-8c24-71e9-83ea-a82432e55d06.jsonl",
+  "models": ["openai-codex/gpt-6-astra"],
+  "assistantUsageSamples": 21,
+  "tokenUsage": {
+    "input": 66010,
+    "output": 32403,
+    "cacheRead": 3266560,
+    "cacheWrite": 0,
+    "totalTokens": 3364973
+  },
+  "configuredCost": 5.546810000000001,
+  "costSamples": 21,
+  "billedCost": null,
+  "lastReportedPromptSample": {
+    "kind": "last_reported",
+    "tokens": 178930,
+    "at": "2026-09-13T17:08:41.861Z",
+    "ref": "8a7625ba",
+    "window": null,
+    "percent": null,
+    "currentOccupancy": "unknown; not inferred from cumulative usage"
+  },
+  "recordedCompactionsDuringSample": [],
+  "registrationFileCreatedAt": "2026-09-13T16:49:14.446Z",
+  "childSessions": 0,
+  "newWaitsByPrepLead": 0,
+  "liveCompactionsRequested": 0,
+  "sharedRollouts": 0,
+  "checkerStatsUpdatedAt": "2026-09-13T17:16:46Z",
+  "uniqueSyntheticCases": 41,
+  "syntheticPassed": 41,
+  "repoProductTestsChanged": 0,
+  "freshIndependentReviews": 0,
+  "checkpointEstimatedTokens": null,
+  "liveSafeResumeLatencyMs": null,
+  "leadActiveEffortSeconds": null,
+  "caveat": "Partial lead usage from first instrumented inspection through sampling, excluding earlier intake and later reporting. Repeated cache reads are not unique context. Cost is configured session pricing, not billing. No continuous active-effort timer. Synthetic timings are invented fixtures, not live safe-resume measurements."
+}

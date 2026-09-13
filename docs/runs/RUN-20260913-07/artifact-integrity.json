@@ -1,0 +1,255 @@
+{
+  "sealedAt": "2026-09-13T17:29:26.032Z",
+  "status": "owned docs packaging authorized through normal hooks; no MC02 execution",
+  "sourceCandidate": "481c56c",
+  "checkerCandidateSha256": "5c4cf38984c072ed2a73e4577f82287c68ff997f88bd79358837f01faf01e285",
+  "originalSeal": {
+    "sealedAt": "2026-09-13T17:19:02.932Z",
+    "rawManifest": "RUN-20260913-07/raw/pre-hook/artifact-integrity.json.txt",
+    "sha256": "1bb532dea05b8c626df45f48c0701c911bd57edbdef8e6159f60d0e39c49f415",
+    "allOriginalEntriesVerified": true
+  },
+  "readingCopies": [
+    {
+      "path": "RUN-20260913-07-continuity-prep.md",
+      "raw": "RUN-20260913-07/raw/pre-hook/RUN-20260913-07-continuity-prep.md.txt",
+      "originalSha256": "7ab6880b5d51a3305f20638fdddae430a6fafefd573171c75203654c3188a475",
+      "currentSha256": "7be63c537c561354b6fa633ee65713a8c53fbcbfc8b30521bdd13de87a720f96"
+    },
+    {
+      "path": "RUN-20260913-07/validation-receipt.json",
+      "raw": "RUN-20260913-07/raw/pre-hook/validation-receipt.json.txt",
+      "originalSha256": "c1d2ecafea544de5cad9f56c6d1fce10c5cdf56c1ef9f334cfe7dd63afa05991",
+      "currentSha256": "c1d2ecafea544de5cad9f56c6d1fce10c5cdf56c1ef9f334cfe7dd63afa05991"
+    },
+    {
+      "path": "RUN-20260913-07/source-manifest.json",
+      "raw": "RUN-20260913-07/raw/pre-hook/source-manifest.json.txt",
+      "originalSha256": "f0da145cbac97ff8262f958ed3b028c09b47ff8215a5490638fb0198c84002fd",
+      "currentSha256": "f0da145cbac97ff8262f958ed3b028c09b47ff8215a5490638fb0198c84002fd"
+    },
+    {
+      "path": "RUN-20260913-07/checker-results-01.json",
+      "raw": "RUN-20260913-07/raw/pre-hook/checker-results-01.json.txt",
+      "originalSha256": "b411c8509106ec717da3f649e5768c0d2d67cd679504c68e8d487ae0c35add5f",
+      "currentSha256": "13faffede82dc8e6be11aa6e7210482b943269a1619f57cc11d489a52f5fb702"
+    },
+    {
+      "path": "RUN-20260913-07/mutation-receipt-03.json",
+      "raw": "RUN-20260913-07/raw/pre-hook/mutation-receipt-03.json.txt",
+      "originalSha256": "662a52fdbb467f06e0b37d44a534309654c66253c991a6e959111a6e95c7de07",
+      "currentSha256": "ecdc129b86997e4cc6f96909768665030b4ee5bebf435edf1112fe078f05d715"
+    },
+    {
+      "path": "RUN-20260913-07/mutation-receipt.json",
+      "raw": "RUN-20260913-07/raw/pre-hook/mutation-receipt.json.txt",
+      "originalSha256": "9c5ca763af571b0d9f570adc86007712e58bbd995a4c2e6e23946fde119433b9",
+      "currentSha256": "254a9b01a2a30342823d1c9840f678ae6c4f901cb4730e998cd3a323ceb26812"
+    },
+    {
+      "path": "RUN-20260913-07/rehearsal-packet.md",
+      "raw": "RUN-20260913-07/raw/pre-hook/rehearsal-packet.md.txt",
+      "originalSha256": "9fc9b8dabbf58b3605e4a1c64518af17860137cc97b9ae4b1a940c39f74e3cf2",
+      "currentSha256": "6270964150186b723bd239957ee39d614bc0c3dc107b5bdd54835f4860abdb3d"
+    },
+    {
+      "path": "RUN-20260913-07/synthetic-example.json",
+      "raw": "RUN-20260913-07/raw/pre-hook/synthetic-example.json.txt",
+      "originalSha256": "c66785b7c880c7f207fe6d03782993e4db93eecd7b9304413c950fc80b0533b9",
+      "currentSha256": "651275b7cd07f261577ae19b86ff53f7181b1396287a494e61b95c16810a5e5c"
+    },
+    {
+      "path": "RUN-20260913-07/prep-metrics.json",
+      "raw": "RUN-20260913-07/raw/pre-hook/prep-metrics.json.txt",
+      "originalSha256": "b534c4e3c60df6d2d14d95665a29477ef4d0859a01f92be30914940e13314b14",
+      "currentSha256": "2b40286fd06a1c1e8c4a17311a3c16280689103a076ff024f15b1b75f27c287d"
+    },
+    {
+      "path": "RUN-20260913-07/checker-results-03.json",
+      "raw": "RUN-20260913-07/raw/pre-hook/checker-results-03.json.txt",
+      "originalSha256": "9ad4710b13a93a04922cdfacb01a4052717822b9190373f11f1cac46387f9faf",
+      "currentSha256": "a222a0575ee4264841d1f94deee3e61228bfb465078552f80e336a423de412a4"
+    },
+    {
+      "path": "RUN-20260913-07/checker-results-final.json",
+      "raw": "RUN-20260913-07/raw/pre-hook/checker-results-final.json.txt",
+      "originalSha256": "f74e29fb0cdcf097cfb945327c97f7d066ede1c6e9e46bae8b4ea85cd3bebcee",
+      "currentSha256": "c4364db85cc2bfd82956fe9bffd18659f33a051fd78d1364b1d208cc7167503a"
+    },
+    {
+      "path": "RUN-20260913-07/checker-mutant-results.json",
+      "raw": "RUN-20260913-07/raw/pre-hook/checker-mutant-results.json.txt",
+      "originalSha256": "5a005ef4ff885cfbfa43dcb62116565da1475be64e0a06beec12667cec313cdb",
+      "currentSha256": "cc2810b62f79d1db879113d94446812c06950f61e6ed239850ee7e7bc7ff4c2d"
+    },
+    {
+      "path": "RUN-20260913-07/validation-receipt-03.json",
+      "raw": "RUN-20260913-07/raw/pre-hook/validation-receipt-03.json.txt",
+      "originalSha256": "333f6ce75adf0521c5902c2d0a1a25ae49284a3941da1fbed07ef96cc9d5a212",
+      "currentSha256": "333f6ce75adf0521c5902c2d0a1a25ae49284a3941da1fbed07ef96cc9d5a212"
+    },
+    {
+      "path": "RUN-20260913-07/checker-results-02.json",
+      "raw": "RUN-20260913-07/raw/pre-hook/checker-results-02.json.txt",
+      "originalSha256": "5f89777556180001f7022f4e16e0f01dcee327c674172a4d109045a771f983df",
+      "currentSha256": "89389de542a07dd87d1a89016e500cc6c45ef87fd6f3a3e313f001b536220a52"
+    },
+    {
+      "path": "RUN-20260913-07/checker-mutant-results-03.json",
+      "raw": "RUN-20260913-07/raw/pre-hook/checker-mutant-results-03.json.txt",
+      "originalSha256": "1979164c755599fc05b97f99312a7b556c8e27a44b7f902762d9d327f048f23f",
+      "currentSha256": "adc104b7952dfb224ca765b8970433bde8f5adfaf79e4c0d94c83463f9bbedb3"
+    }
+  ],
+  "files": [
+    {
+      "path": "RUN-20260913-07-continuity-prep.md",
+      "sha256": "7be63c537c561354b6fa633ee65713a8c53fbcbfc8b30521bdd13de87a720f96"
+    },
+    {
+      "path": "RUN-20260913-07/validation-receipt.json",
+      "sha256": "c1d2ecafea544de5cad9f56c6d1fce10c5cdf56c1ef9f334cfe7dd63afa05991"
+    },
+    {
+      "path": "RUN-20260913-07/source-manifest.json",
+      "sha256": "f0da145cbac97ff8262f958ed3b028c09b47ff8215a5490638fb0198c84002fd"
+    },
+    {
+      "path": "RUN-20260913-07/checker-results-01.json",
+      "sha256": "13faffede82dc8e6be11aa6e7210482b943269a1619f57cc11d489a52f5fb702"
+    },
+    {
+      "path": "RUN-20260913-07/checker.ts.txt",
+      "sha256": "5c4cf38984c072ed2a73e4577f82287c68ff997f88bd79358837f01faf01e285"
+    },
+    {
+      "path": "RUN-20260913-07/assignment.md.txt",
+      "sha256": "7f9c4db2e019d09bcb069fff180e353ce5def97d66b39de5d31a9d0aee0adf8f"
+    },
+    {
+      "path": "RUN-20260913-07/pre-hook-archive.json",
+      "sha256": "ea0c2d8e9ea23682c981e08c3e26cec1812e1cd139870debb9695c44b1eae9c7"
+    },
+    {
+      "path": "RUN-20260913-07/mutation-receipt-03.json",
+      "sha256": "ecdc129b86997e4cc6f96909768665030b4ee5bebf435edf1112fe078f05d715"
+    },
+    {
+      "path": "RUN-20260913-07/mutation-receipt.json",
+      "sha256": "254a9b01a2a30342823d1c9840f678ae6c4f901cb4730e998cd3a323ceb26812"
+    },
+    {
+      "path": "RUN-20260913-07/rehearsal-packet.md",
+      "sha256": "6270964150186b723bd239957ee39d614bc0c3dc107b5bdd54835f4860abdb3d"
+    },
+    {
+      "path": "RUN-20260913-07/synthetic-example.json",
+      "sha256": "651275b7cd07f261577ae19b86ff53f7181b1396287a494e61b95c16810a5e5c"
+    },
+    {
+      "path": "RUN-20260913-07/prep-metrics.json",
+      "sha256": "2b40286fd06a1c1e8c4a17311a3c16280689103a076ff024f15b1b75f27c287d"
+    },
+    {
+      "path": "RUN-20260913-07/checker-results-03.json",
+      "sha256": "a222a0575ee4264841d1f94deee3e61228bfb465078552f80e336a423de412a4"
+    },
+    {
+      "path": "RUN-20260913-07/checker-r3.ts.txt",
+      "sha256": "e0fb8b5e727892a459208457282323dfa235a57427794bc41787c661630a222a"
+    },
+    {
+      "path": "RUN-20260913-07/typecheck.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "RUN-20260913-07/checker-results-final.json",
+      "sha256": "c4364db85cc2bfd82956fe9bffd18659f33a051fd78d1364b1d208cc7167503a"
+    },
+    {
+      "path": "RUN-20260913-07/raw/pre-hook/mutation-receipt.json.txt",
+      "sha256": "9c5ca763af571b0d9f570adc86007712e58bbd995a4c2e6e23946fde119433b9"
+    },
+    {
+      "path": "RUN-20260913-07/raw/pre-hook/source-manifest.json.txt",
+      "sha256": "f0da145cbac97ff8262f958ed3b028c09b47ff8215a5490638fb0198c84002fd"
+    },
+    {
+      "path": "RUN-20260913-07/raw/pre-hook/prep-metrics.json.txt",
+      "sha256": "b534c4e3c60df6d2d14d95665a29477ef4d0859a01f92be30914940e13314b14"
+    },
+    {
+      "path": "RUN-20260913-07/raw/pre-hook/checker-results-01.json.txt",
+      "sha256": "b411c8509106ec717da3f649e5768c0d2d67cd679504c68e8d487ae0c35add5f"
+    },
+    {
+      "path": "RUN-20260913-07/raw/pre-hook/artifact-integrity.json.txt",
+      "sha256": "1bb532dea05b8c626df45f48c0701c911bd57edbdef8e6159f60d0e39c49f415"
+    },
+    {
+      "path": "RUN-20260913-07/raw/pre-hook/rehearsal-packet.md.txt",
+      "sha256": "9fc9b8dabbf58b3605e4a1c64518af17860137cc97b9ae4b1a940c39f74e3cf2"
+    },
+    {
+      "path": "RUN-20260913-07/raw/pre-hook/mutation-receipt-03.json.txt",
+      "sha256": "662a52fdbb467f06e0b37d44a534309654c66253c991a6e959111a6e95c7de07"
+    },
+    {
+      "path": "RUN-20260913-07/raw/pre-hook/RUN-20260913-07-continuity-prep.md.txt",
+      "sha256": "7ab6880b5d51a3305f20638fdddae430a6fafefd573171c75203654c3188a475"
+    },
+    {
+      "path": "RUN-20260913-07/raw/pre-hook/checker-mutant-results.json.txt",
+      "sha256": "5a005ef4ff885cfbfa43dcb62116565da1475be64e0a06beec12667cec313cdb"
+    },
+    {
+      "path": "RUN-20260913-07/raw/pre-hook/validation-receipt-03.json.txt",
+      "sha256": "333f6ce75adf0521c5902c2d0a1a25ae49284a3941da1fbed07ef96cc9d5a212"
+    },
+    {
+      "path": "RUN-20260913-07/raw/pre-hook/synthetic-example.json.txt",
+      "sha256": "c66785b7c880c7f207fe6d03782993e4db93eecd7b9304413c950fc80b0533b9"
+    },
+    {
+      "path": "RUN-20260913-07/raw/pre-hook/validation-receipt.json.txt",
+      "sha256": "c1d2ecafea544de5cad9f56c6d1fce10c5cdf56c1ef9f334cfe7dd63afa05991"
+    },
+    {
+      "path": "RUN-20260913-07/raw/pre-hook/checker-results-final.json.txt",
+      "sha256": "f74e29fb0cdcf097cfb945327c97f7d066ede1c6e9e46bae8b4ea85cd3bebcee"
+    },
+    {
+      "path": "RUN-20260913-07/raw/pre-hook/checker-mutant-results-03.json.txt",
+      "sha256": "1979164c755599fc05b97f99312a7b556c8e27a44b7f902762d9d327f048f23f"
+    },
+    {
+      "path": "RUN-20260913-07/raw/pre-hook/checker-results-03.json.txt",
+      "sha256": "9ad4710b13a93a04922cdfacb01a4052717822b9190373f11f1cac46387f9faf"
+    },
+    {
+      "path": "RUN-20260913-07/raw/pre-hook/checker-results-02.json.txt",
+      "sha256": "5f89777556180001f7022f4e16e0f01dcee327c674172a4d109045a771f983df"
+    },
+    {
+      "path": "RUN-20260913-07/checker-mutant-results.json",
+      "sha256": "cc2810b62f79d1db879113d94446812c06950f61e6ed239850ee7e7bc7ff4c2d"
+    },
+    {
+      "path": "RUN-20260913-07/checker-r1.ts.txt",
+      "sha256": "c5aadc2361c29fd3d3558f3310902e12f5cd1669ce474f7b104bc47693a03ed6"
+    },
+    {
+      "path": "RUN-20260913-07/validation-receipt-03.json",
+      "sha256": "333f6ce75adf0521c5902c2d0a1a25ae49284a3941da1fbed07ef96cc9d5a212"
+    },
+    {
+      "path": "RUN-20260913-07/checker-results-02.json",
+      "sha256": "89389de542a07dd87d1a89016e500cc6c45ef87fd6f3a3e313f001b536220a52"
+    },
+    {
+      "path": "RUN-20260913-07/checker-mutant-results-03.json",
+      "sha256": "adc104b7952dfb224ca765b8970433bde8f5adfaf79e4c0d94c83463f9bbedb3"
+    }
+  ],
+  "scope": "Original raw evidence hashes retained, reading copies may be formatted or explicitly amended. Current manifest excludes its own digest. No independent-review snapshot changed."
+}

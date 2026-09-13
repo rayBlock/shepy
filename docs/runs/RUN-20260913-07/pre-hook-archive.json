@@ -1,0 +1,87 @@
+{
+  "archivedAt": "2026-09-13T17:25:03.051Z",
+  "originalSeal": "2026-09-13T17:19:02.932Z",
+  "originalManifestRaw": "RUN-20260913-07/raw/pre-hook/artifact-integrity.json.txt",
+  "files": [
+    {
+      "source": "RUN-20260913-07-continuity-prep.md",
+      "raw": "RUN-20260913-07/raw/pre-hook/RUN-20260913-07-continuity-prep.md.txt",
+      "sha256": "7ab6880b5d51a3305f20638fdddae430a6fafefd573171c75203654c3188a475"
+    },
+    {
+      "source": "RUN-20260913-07/validation-receipt.json",
+      "raw": "RUN-20260913-07/raw/pre-hook/validation-receipt.json.txt",
+      "sha256": "c1d2ecafea544de5cad9f56c6d1fce10c5cdf56c1ef9f334cfe7dd63afa05991"
+    },
+    {
+      "source": "RUN-20260913-07/source-manifest.json",
+      "raw": "RUN-20260913-07/raw/pre-hook/source-manifest.json.txt",
+      "sha256": "f0da145cbac97ff8262f958ed3b028c09b47ff8215a5490638fb0198c84002fd"
+    },
+    {
+      "source": "RUN-20260913-07/checker-results-01.json",
+      "raw": "RUN-20260913-07/raw/pre-hook/checker-results-01.json.txt",
+      "sha256": "b411c8509106ec717da3f649e5768c0d2d67cd679504c68e8d487ae0c35add5f"
+    },
+    {
+      "source": "RUN-20260913-07/mutation-receipt-03.json",
+      "raw": "RUN-20260913-07/raw/pre-hook/mutation-receipt-03.json.txt",
+      "sha256": "662a52fdbb467f06e0b37d44a534309654c66253c991a6e959111a6e95c7de07"
+    },
+    {
+      "source": "RUN-20260913-07/mutation-receipt.json",
+      "raw": "RUN-20260913-07/raw/pre-hook/mutation-receipt.json.txt",
+      "sha256": "9c5ca763af571b0d9f570adc86007712e58bbd995a4c2e6e23946fde119433b9"
+    },
+    {
+      "source": "RUN-20260913-07/rehearsal-packet.md",
+      "raw": "RUN-20260913-07/raw/pre-hook/rehearsal-packet.md.txt",
+      "sha256": "9fc9b8dabbf58b3605e4a1c64518af17860137cc97b9ae4b1a940c39f74e3cf2"
+    },
+    {
+      "source": "RUN-20260913-07/artifact-integrity.json",
+      "raw": "RUN-20260913-07/raw/pre-hook/artifact-integrity.json.txt",
+      "sha256": "1bb532dea05b8c626df45f48c0701c911bd57edbdef8e6159f60d0e39c49f415"
+    },
+    {
+      "source": "RUN-20260913-07/synthetic-example.json",
+      "raw": "RUN-20260913-07/raw/pre-hook/synthetic-example.json.txt",
+      "sha256": "c66785b7c880c7f207fe6d03782993e4db93eecd7b9304413c950fc80b0533b9"
+    },
+    {
+      "source": "RUN-20260913-07/prep-metrics.json",
+      "raw": "RUN-20260913-07/raw/pre-hook/prep-metrics.json.txt",
+      "sha256": "b534c4e3c60df6d2d14d95665a29477ef4d0859a01f92be30914940e13314b14"
+    },
+    {
+      "source": "RUN-20260913-07/checker-results-03.json",
+      "raw": "RUN-20260913-07/raw/pre-hook/checker-results-03.json.txt",
+      "sha256": "9ad4710b13a93a04922cdfacb01a4052717822b9190373f11f1cac46387f9faf"
+    },
+    {
+      "source": "RUN-20260913-07/checker-results-final.json",
+      "raw": "RUN-20260913-07/raw/pre-hook/checker-results-final.json.txt",
+      "sha256": "f74e29fb0cdcf097cfb945327c97f7d066ede1c6e9e46bae8b4ea85cd3bebcee"
+    },
+    {
+      "source": "RUN-20260913-07/checker-mutant-results.json",
+      "raw": "RUN-20260913-07/raw/pre-hook/checker-mutant-results.json.txt",
+      "sha256": "5a005ef4ff885cfbfa43dcb62116565da1475be64e0a06beec12667cec313cdb"
+    },
+    {
+      "source": "RUN-20260913-07/validation-receipt-03.json",
+      "raw": "RUN-20260913-07/raw/pre-hook/validation-receipt-03.json.txt",
+      "sha256": "333f6ce75adf0521c5902c2d0a1a25ae49284a3941da1fbed07ef96cc9d5a212"
+    },
+    {
+      "source": "RUN-20260913-07/checker-results-02.json",
+      "raw": "RUN-20260913-07/raw/pre-hook/checker-results-02.json.txt",
+      "sha256": "5f89777556180001f7022f4e16e0f01dcee327c674172a4d109045a771f983df"
+    },
+    {
+      "source": "RUN-20260913-07/checker-mutant-results-03.json",
+      "raw": "RUN-20260913-07/raw/pre-hook/checker-mutant-results-03.json.txt",
+      "sha256": "1979164c755599fc05b97f99312a7b556c8e27a44b7f902762d9d327f048f23f"
+    }
+  ]
+}

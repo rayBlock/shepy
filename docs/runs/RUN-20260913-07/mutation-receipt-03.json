@@ -1,0 +1,14 @@
+{
+  "kind": "expected-negative mutation, not a product failure",
+  "target": "run-local checker duplicate-processing guard only",
+  "baseSha256": "e0fb8b5e727892a459208457282323dfa235a57427794bc41787c661630a222a",
+  "mutantSha256": "b47747e0036f23704dae83058d2d859c1861aedbf9f67dcb4872a46a89f356b1",
+  "replacement": {
+    "old": "if(new Set(processed).size!==processed.length) fail('boundary_processed_twice');",
+    "new": "/* SYNTHETIC MUTANT: duplicate processing guard removed */"
+  },
+  "exitCode": 1,
+  "failedCases": ["duplicate-notice-causes-double-processing"],
+  "killed": true,
+  "stderr": ""
+}

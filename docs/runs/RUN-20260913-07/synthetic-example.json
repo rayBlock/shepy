@@ -1,0 +1,181 @@
+{
+  "truth": {
+    "checkpointRef": "synthetic://checkpoint/1",
+    "checkpointDigest": "d5d2db1db48fcdf69f882628022c3037396609f32d31c4f924650b71cced91c3",
+    "contract": {
+      "revision": "envelope-1",
+      "intentIds": [
+        "factory-reusable",
+        "token-efficiency",
+        "polished-supervision",
+        "empirical-org-and-models",
+        "sdk-render-compose-edit-distinct",
+        "typography-broad",
+        "single-driffs-host",
+        "crypto-outside-v1",
+        "verein-separate"
+      ],
+      "permissions": ["read-synthetic-only", "no-dispatch", "no-live-config"],
+      "candidate": {
+        "repo": "synthetic-repo",
+        "commit": "candidate-1",
+        "treeDigest": "synthetic-source-digest-1"
+      },
+      "manager": {
+        "role": "synthetic-workstream-manager",
+        "session": "synthetic-manager-01",
+        "provider": "test-provider",
+        "model": "model-A"
+      },
+      "child": {
+        "id": "synthetic-child-1",
+        "session": "synthetic-child-session-1",
+        "operation": "synthetic-op-1",
+        "waitRef": "synthetic-wait-1"
+      },
+      "pendingDecisions": ["human-approve-follow-on"]
+    }
+  },
+  "checkpoint": {
+    "ref": "synthetic://checkpoint/1",
+    "digest": "d5d2db1db48fcdf69f882628022c3037396609f32d31c4f924650b71cced91c3",
+    "contract": {
+      "revision": "envelope-1",
+      "intentIds": [
+        "factory-reusable",
+        "token-efficiency",
+        "polished-supervision",
+        "empirical-org-and-models",
+        "sdk-render-compose-edit-distinct",
+        "typography-broad",
+        "single-driffs-host",
+        "crypto-outside-v1",
+        "verein-separate"
+      ],
+      "permissions": ["read-synthetic-only", "no-dispatch", "no-live-config"],
+      "candidate": {
+        "repo": "synthetic-repo",
+        "commit": "candidate-1",
+        "treeDigest": "synthetic-source-digest-1"
+      },
+      "manager": {
+        "role": "synthetic-workstream-manager",
+        "session": "synthetic-manager-01",
+        "provider": "test-provider",
+        "model": "model-A"
+      },
+      "child": {
+        "id": "synthetic-child-1",
+        "session": "synthetic-child-session-1",
+        "operation": "synthetic-op-1",
+        "waitRef": "synthetic-wait-1"
+      },
+      "pendingDecisions": ["human-approve-follow-on"]
+    }
+  },
+  "boundary": {
+    "ref": "synthetic://session#compact-1",
+    "session": "synthetic-manager-01",
+    "at": "2026-01-01T00:00:10.000Z",
+    "source": "pi-jsonl",
+    "trigger": "unknown",
+    "tokensBefore": 10000
+  },
+  "observation": {
+    "at": "2026-01-01T00:00:12.000Z",
+    "manager": {
+      "role": "synthetic-workstream-manager",
+      "session": "synthetic-manager-01",
+      "provider": "test-provider",
+      "model": "model-A"
+    },
+    "modelHistory": ["test-provider/model-A"],
+    "child": {
+      "id": "synthetic-child-1",
+      "session": "synthetic-child-session-1",
+      "operation": "synthetic-op-1",
+      "waitRef": "synthetic-wait-1"
+    },
+    "candidate": {
+      "repo": "synthetic-repo",
+      "commit": "candidate-1",
+      "treeDigest": "synthetic-source-digest-1"
+    },
+    "leaf": {
+      "kind": "runtime_witness",
+      "expected": "after-boundary-leaf",
+      "actual": "after-boundary-leaf"
+    },
+    "wait": {
+      "ref": "synthetic-wait-1",
+      "state": "armed"
+    },
+    "usage": {
+      "kind": "unavailable",
+      "tokens": null,
+      "reportedAt": null,
+      "projectionCurrent": false,
+      "window": null,
+      "percent": null
+    }
+  },
+  "notices": [
+    {
+      "id": "synthetic-notice-1",
+      "boundaryRef": "synthetic://session#compact-1",
+      "session": "synthetic-manager-01",
+      "source": "manual",
+      "deliveredAt": "2026-01-01T00:00:11.000Z"
+    }
+  ],
+  "resume": {
+    "at": "2026-01-01T00:00:15.000Z",
+    "restored": {
+      "revision": "envelope-1",
+      "intentIds": [
+        "factory-reusable",
+        "token-efficiency",
+        "polished-supervision",
+        "empirical-org-and-models",
+        "sdk-render-compose-edit-distinct",
+        "typography-broad",
+        "single-driffs-host",
+        "crypto-outside-v1",
+        "verein-separate"
+      ],
+      "permissions": ["read-synthetic-only", "no-dispatch", "no-live-config"],
+      "candidate": {
+        "repo": "synthetic-repo",
+        "commit": "candidate-1",
+        "treeDigest": "synthetic-source-digest-1"
+      },
+      "manager": {
+        "role": "synthetic-workstream-manager",
+        "session": "synthetic-manager-01",
+        "provider": "test-provider",
+        "model": "model-A"
+      },
+      "child": {
+        "id": "synthetic-child-1",
+        "session": "synthetic-child-session-1",
+        "operation": "synthetic-op-1",
+        "waitRef": "synthetic-wait-1"
+      },
+      "pendingDecisions": ["human-approve-follow-on"]
+    },
+    "observedManager": {
+      "role": "synthetic-workstream-manager",
+      "session": "synthetic-manager-01",
+      "provider": "test-provider",
+      "model": "model-A"
+    },
+    "contextClaim": "unavailable",
+    "leafClaim": "verified",
+    "processedBoundaryRefs": ["synthetic://session#compact-1"],
+    "action": "inspect-owned-source"
+  },
+  "audit": {
+    "complete": true,
+    "attemptedActions": ["inspect-owned-source"]
+  }
+}
