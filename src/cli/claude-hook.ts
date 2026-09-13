@@ -578,15 +578,36 @@ async function handlePromptSubmit(
       return null;
     }
 
-    const ids = obligations.map((obligation) => obligation.id);
+    // Render FIRST: the formatter defines the represented set, and the
+    // record, the delivery and the ack must all name exactly that set. It is
+    // pure and cannot throw on daemon data, so composing it before the
+    // phase-1 write only strengthens the two-phase protocol.
+    const formatted = formatHookContext(input.profileId, obligations);
+    const represented = formatted.representedIds;
+    const deferred = formatted.deferredIds;
+    if (represented.length === 0) {
+      // Header-only budget (nothing fit, not even a stub — practically
+      // impossible at 6 000 chars, but be honest): defer the whole lease
+      // without marking anything delivered, and inject nothing.
+      await deferOverBudget(request, deferred, leaseToken);
+      writeOwnerFileIfUnchanged(
+        input.homeDir,
+        payload.session_id,
+        input.profileId,
+        { ...cleared, failedDelivery: previousFailedDelivery },
+        handled,
+      );
+      return null;
+    }
     // Two-phase record, phase 1: persist the LEASED record BEFORE committing
-    // inbox.delivered. If the process dies inside the RPC round trip, the
-    // stranded record says "leased" — the next prompt discards it without
-    // acking, the rows expire server-side, and the outcome is re-delivered.
-    // Duplicate delivery is the correct failure mode here; acking an unseen
-    // batch would destroy it.
+    // inbox.delivered. The record holds the REPRESENTED ids only — the ack
+    // must never name a row the injection left out. If the process dies
+    // inside the RPC round trip, the stranded record says "leased" — the
+    // next prompt discards it without acking, the rows expire server-side,
+    // and the outcome is re-delivered. Duplicate delivery is the correct
+    // failure mode here; acking an unseen batch would destroy it.
     const record: NonNullable<OwnerRecord["delivered"]> = {
-      ids,
+      ids: represented,
       phase: "leased",
       promptId: payload.prompt_id ?? null,
     };
@@ -607,7 +628,7 @@ async function handlePromptSubmit(
     try {
       await request("inbox.delivered", {
         ...(payload.prompt_id ? { harnessTurnId: payload.prompt_id } : {}),
-        ids,
+        ids: represented,
         leaseToken,
         ownerSessionRefJson,
       });
@@ -621,26 +642,26 @@ async function handlePromptSubmit(
         input,
         payload.session_id,
         cleared,
-        { ids, leaseToken },
+        { ids: represented, leaseToken },
         previousFailedDelivery,
-        ids,
+        represented,
         `inbox delivered failed: ${describe(error)}`,
       );
     }
-    // Phase 2: the daemon committed the batch. The injection is composed
-    // BEFORE the promotion: once the record says "delivered", the only code
-    // left between it and stdout is object assembly — nothing that can throw
-    // on daemon data. Promotion is the last write, not the first.
-    const context = formatHookContext(input.profileId, obligations);
+    // The over-budget tail goes back to pending for next turn — no delivery
+    // attempt burned, no ack on a row the model never saw.
+    await deferOverBudget(request, deferred, leaseToken);
+    // Phase 2: the daemon committed the batch. The injection was composed
+    // before the phase-1 write; promotion is the last write, not the first.
     writeOwnerFileIfUnchanged(
       input.homeDir,
       payload.session_id,
       input.profileId,
       { ...cleared, delivered: { ...record, phase: "delivered" } },
-      { ids, leaseToken },
+      { ids: represented, leaseToken },
     );
     return {
-      context,
+      context: formatted.context,
       event: "UserPromptSubmit",
     };
   } finally {
@@ -791,11 +812,22 @@ async function handleStop(
     }
     const obligations = (lease as { obligations: LeasedObligation[] }).obligations;
     if (obligations.length === 0) return null;
-    const ids = obligations.map((obligation) => obligation.id);
+    // Render FIRST — the represented set defines the record, the delivery
+    // and the ack (same as UserPromptSubmit). Pure, cannot throw on daemon
+    // data, so composing before the phase-1 write is safe.
+    const formatted = formatHookContext(input.profileId, obligations);
+    const represented = formatted.representedIds;
+    const deferred = formatted.deferredIds;
+    if (represented.length === 0) {
+      // Header-only budget: defer the whole lease, inject nothing.
+      await deferOverBudget(request, deferred, file.leaseToken);
+      return null;
+    }
     // Two-phase record, same as UserPromptSubmit: persist "leased" before
     // the commit, promote to "delivered" only after inbox.delivered succeeds.
+    // The record holds the REPRESENTED ids only.
     const record: NonNullable<OwnerRecord["delivered"]> = {
-      ids,
+      ids: represented,
       phase: "leased",
       promptId: payload.prompt_id ?? null,
     };
@@ -815,7 +847,7 @@ async function handleStop(
     try {
       await request("inbox.delivered", {
         ...(payload.prompt_id ? { harnessTurnId: payload.prompt_id } : {}),
-        ids,
+        ids: represented,
         leaseToken: file.leaseToken,
         ownerSessionRefJson: file.ownerSessionRefJson,
       });
@@ -824,29 +856,27 @@ async function handleStop(
         input,
         payload.session_id,
         file,
-        { ids, leaseToken: file.leaseToken },
+        { ids: represented, leaseToken: file.leaseToken },
         previousFailedDelivery,
-        ids,
+        represented,
         `inbox delivered failed: ${describe(error)}`,
       );
     }
-    // Phase 2: the daemon committed the batch. A successful delivery clears
-    // the failure marker with the promotion (failedDelivery: undefined is
-    // dropped by JSON.stringify).
-    // Phase 2, same ordering as UserPromptSubmit: compose the injection
-    // first, promote last. A successful delivery clears the failure marker
-    // with the promotion (failedDelivery: undefined is dropped by
-    // JSON.stringify).
-    const context = formatHookContext(input.profileId, obligations);
+    // The over-budget tail goes back to pending for next turn — no delivery
+    // attempt burned, no ack on a row the model never saw.
+    await deferOverBudget(request, deferred, file.leaseToken);
+    // Phase 2: the daemon committed the batch. Promotion is the last write;
+    // a successful delivery clears the failure marker with it
+    // (failedDelivery: undefined is dropped by JSON.stringify).
     writeOwnerFileIfUnchanged(
       input.homeDir,
       payload.session_id,
       input.profileId,
       { ...file, delivered: { ...record, phase: "delivered" }, failedDelivery: undefined },
-      { ids, leaseToken: file.leaseToken },
+      { ids: represented, leaseToken: file.leaseToken },
     );
     return {
-      context,
+      context: formatted.context,
       event: "Stop",
     };
   } finally {
@@ -955,34 +985,69 @@ Do not start unrelated work or expand the requested scope.
 If no update is actionable, summarize the result briefly and stop.
 If an excerpt is marked truncated, use shepy agent read for that exact pane before acting.`;
 
-export function formatHookContext(profileId: string, obligations: LeasedObligation[]): string {
+/**
+ * What the formatter rendered versus what it had to leave behind. The
+ * represented set is the hook's whole delivery contract: only
+ * `representedIds` are marked delivered, acked, and recorded in the owner
+ * file — `deferredIds` go back to pending without burning an attempt, so a
+ * row the model never saw is never acknowledged.
+ */
+export type FormattedHookContext = {
+  context: string;
+  deferredIds: string[];
+  representedIds: string[];
+};
+
+export function formatHookContext(
+  profileId: string,
+  obligations: LeasedObligation[],
+): FormattedHookContext {
   const header = `${WAKE_POLICY}\n\n[SHEPY PROFILE OUTCOMES]\n`;
-  // Reserve the note's worst-case space up front: Claude Code truncates an
-  // over-budget additionalContext from the tail, so a note appended after
-  // the lines is the first thing cut — precisely when it matters. Reserving
-  // the full-batch note (the longest variant) keeps every real note inside
-  // the budget.
+  // Reserve the note's worst-case space up front (every obligation deferred
+  // is the longest variant): Claude Code truncates an over-budget
+  // additionalContext from the tail, so a note appended after the lines is
+  // the first thing cut — precisely when it matters.
   const printableProfileId = profileId.replace(/[^ -~]/g, "");
-  const reservedNote = `… [${obligations.length} more outcome(s); run shepy inbox list ${printableProfileId}]`;
+  const reservedNote = `… [${obligations.length} more outcome(s) deferred to your next turn; run shepy inbox list ${printableProfileId} --state pending]`;
   const charBudget = CONTEXT_MAX_CHARS - reservedNote.length - 1;
   const lineBudget = CONTEXT_MAX_LINES - 1;
   const lines: string[] = [];
+  const representedIds: string[] = [];
   let used = header.length;
   let lineCount = header.split("\n").length - 1;
-  let dropped = obligations.length;
-  for (const obligation of obligations) {
-    const line = outcomeLine(obligation);
+  let index = 0;
+  // (a) Full outcome lines while they fit, oldest first.
+  while (index < obligations.length) {
+    const line = outcomeLine(obligations[index] as LeasedObligation);
     const lineLines = line.split("\n").length;
     if (used + line.length + 1 > charBudget || lineCount + lineLines > lineBudget) break;
     lines.push(line);
+    representedIds.push((obligations[index] as LeasedObligation).id);
     used += line.length + 1;
     lineCount += lineLines;
-    dropped -= 1;
+    index += 1;
   }
-  if (dropped > 0) {
-    lines.push(`… [${dropped} more outcome(s); run shepy inbox list ${printableProfileId}]`);
+  // (b) One-line stubs for the rest, while they fit. A stub still shows the
+  // outcome's identity and where to read it in full, so it counts as
+  // represented — the model saw what happened and how to get the rest.
+  while (index < obligations.length) {
+    const line = stubLine(obligations[index] as LeasedObligation);
+    if (used + line.length + 1 > charBudget || lineCount + 1 > lineBudget) break;
+    lines.push(line);
+    representedIds.push((obligations[index] as LeasedObligation).id);
+    used += line.length + 1;
+    lineCount += 1;
+    index += 1;
   }
-  return `${header}${lines.join("\n")}`;
+  // (c) The tail fit nowhere: deferred — the hook hands these rows back to
+  // pending via inbox.defer so they re-deliver next turn, unseen and unacked.
+  const deferredIds = obligations.slice(index).map((obligation) => obligation.id);
+  if (deferredIds.length > 0) {
+    lines.push(
+      `… [${deferredIds.length} more outcome(s) deferred to your next turn; run shepy inbox list ${printableProfileId} --state pending]`,
+    );
+  }
+  return { context: `${header}${lines.join("\n")}`, deferredIds, representedIds };
 }
 
 /**
@@ -1026,6 +1091,31 @@ function outcomeLine(obligation: LeasedObligation): string {
   const assistantRef = safeToken(outcome.lastAssistantRef, ASSISTANT_REF_TOKEN);
   const ref = assistantRef ? ` · assistantRef: ${assistantRef}` : "";
   return `- ${type ?? "event"} ${identity} ${paneId} ${transition}\n  last assistant: ${excerpt}\n  event: ${outcome.eventId} · obligation: ${id}${ref}`;
+}
+
+/**
+ * The one-line stand-in for an outcome whose excerpt did not fit: type,
+ * identity, pane, transition, both ids — no excerpt. Same untrusted-token
+ * policy as outcomeLine. The read hint lives here (WAKE_POLICY stays
+ * byte-identical with the Pi extension), pointing at `shepy inbox get <ID>`
+ * for the full excerpt.
+ */
+function stubLine(obligation: LeasedObligation): string {
+  const outcome = obligation.outcome ?? null;
+  const id = safeToken(obligation.id, OBLIGATION_ID_TOKEN) ?? "unavailable";
+  if (!outcome) {
+    // Already one line — the honest fallback IS the stub.
+    return `- event ${obligation.agentEventId} · obligation ${id} — snapshot unavailable (no pane known; run shepy agent list to locate the worker)`;
+  }
+  const agent = safeToken(outcome.agent, HERDR_AGENT_TOKEN) ?? "unknown";
+  const name = safeToken(outcome.name, HERDR_AGENT_TOKEN);
+  const identity = name ? `${name} · ${agent}` : agent;
+  const from = safeToken(outcome.from, HERDR_AGENT_TOKEN);
+  const to = safeToken(outcome.to, HERDR_AGENT_TOKEN);
+  const type = safeToken(outcome.type, EVENT_TYPE_TOKEN);
+  const transition = from && to ? `${from}→${to}` : (type ?? "event");
+  const paneId = safeToken(outcome.paneId, PANE_ID_TOKEN) ?? "unknown";
+  return `- ${type ?? "event"} ${identity} ${paneId} ${transition} · event ${obligation.agentEventId} · obligation ${id} — excerpt omitted for budget; run shepy inbox get ${id}`;
 }
 
 /**
@@ -1077,6 +1167,33 @@ function recordHandoffFailure(
       ? `shepy: profile ${plainText(input.profileId)} — outcome delivery has failed ${attempts} turns in a row; unseen outcomes will retire to dead_letter after 5 attempts. Check shepy inbox list ${plainText(input.profileId)} --state dead_letter`
       : undefined,
   );
+}
+
+type HookRequest = ReturnType<typeof requestWithDeadline>;
+
+/**
+ * The over-budget tail goes back to pending via inbox.defer: token-fenced
+ * exactly like inbox.nack, so only rows this lease stamped move, and a row
+ * that left `leased` (delivered — it was represented) is untouched. If the
+ * RPC fails — daemon down, version skew without the method, transient
+ * refusal — the rows simply STAY LEASED and expire back to pending
+ * server-side, one attempt burned, recovered by the ordinary expiry sweep.
+ * That is the accepted degradation, so: no warning (nothing is lost — the
+ * outcomes re-deliver next turn) and no retry (the hook never retries; the
+ * lease expiry IS the retry). Awaited, because the client closes in the
+ * handler's finally — a fire-and-forget defer would usually die in-flight.
+ */
+async function deferOverBudget(
+  request: HookRequest,
+  deferredIds: string[],
+  leaseToken: string,
+): Promise<void> {
+  if (deferredIds.length === 0) return;
+  try {
+    await request("inbox.defer", { ids: deferredIds, leaseToken });
+  } catch {
+    // Stay-leased-and-expire is the documented fallback; see above.
+  }
 }
 
 function describe(error: unknown): string {

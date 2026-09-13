@@ -1609,10 +1609,143 @@ describe("claude-hook injected-context budget", () => {
         type: "agent.idle",
       },
     }));
-    const context = formatHookContext("driffs", obligations);
+    const formatted = formatHookContext("driffs", obligations);
+    expect(formatted.context.length).toBeLessThanOrEqual(CONTEXT_MAX_CHARS);
+    expect(formatted.context.split("\n").length).toBeLessThanOrEqual(CONTEXT_MAX_LINES);
+    expect(formatted.context).toContain("run shepy inbox list driffs");
+  });
+});
+
+describe("claude-hook represented set equals acknowledged set", () => {
+  test("a full batch defers what the budget cannot render and acks only the represented rows", async () => {
+    const fixture = await openHookServer();
+    // 20 obligations (the whole lease batch) with daemon-cap 2 000-char
+    // excerpts: the formatter can render only a few full lines, stubs pick
+    // up a handful more, and the tail MUST come back as pending instead of
+    // being acked unseen (the round-4 ghost-ack defect).
+    for (let i = 0; i < 20; i += 1) {
+      projectOutcome(fixture, `hook-over-${i}`, "y".repeat(2_000));
+    }
+    // Pre-lease attempt counts, captured BEFORE the hook leases anything:
+    // deferral must hand the rows back exactly as they were, attempts and all.
+    const before = new Map(
+      fixture.obligations
+        .list({ profileId: "driffs", state: "pending" })
+        .map((row) => [row.id, row.attemptCount]),
+    );
+    expect(before.size).toBe(20);
+    const leasedIds = [...before.keys()];
+
+    const { code, stdout } = await runHook(fixture, promptPayload());
+    expect(code).toBe(0);
+    const context =
+      (JSON.parse(stdout) as { hookSpecificOutput?: { additionalContext?: string } })
+        .hookSpecificOutput?.additionalContext ?? "";
+
+    // The owner file's delivered record IS the represented set now: only
+    // outcomes the injection actually rendered may be delivered and acked.
+    const representedIds = readOwnerFile(fixture).delivered?.ids ?? [];
+    expect(representedIds.length).toBeGreaterThan(0);
+    expect(representedIds.length).toBeLessThan(20);
+    for (const id of representedIds) {
+      expect(context).toContain(id);
+    }
+    // And no id outside the represented set may appear anywhere in the
+    // injection — an id in the text the model saw is a claim of visibility.
+    const deferredIds = leasedIds.filter((id) => !representedIds.includes(id));
+    expect(deferredIds.length).toBeGreaterThan(0);
+    for (const id of deferredIds) {
+      expect(context).not.toContain(id);
+    }
+    // Union holds by construction here, but pin it anyway.
+    expect(representedIds.length + deferredIds.length).toBe(20);
+    expect(context).toContain(`${deferredIds.length} more outcome(s) deferred`);
     expect(context.length).toBeLessThanOrEqual(CONTEXT_MAX_CHARS);
     expect(context.split("\n").length).toBeLessThanOrEqual(CONTEXT_MAX_LINES);
-    expect(context).toContain("run shepy inbox list driffs");
+
+    // The ack-only Stop (stop_hook_active — the injection loop's own Stop):
+    // settles exactly the represented record, leases nothing new. A delivery
+    // Stop would re-lease the deferred rows by design; this one pins the
+    // post-defer state.
+    const stop = await runHook(fixture, stopPayload({ stop_hook_active: true }));
+    expect(stop.code).toBe(0);
+    expect(stop.stdout).toBe("");
+
+    const acked = fixture.obligations.list({ profileId: "driffs", state: "acked" });
+    expect(new Set(acked.map((row) => row.id))).toEqual(new Set(representedIds));
+    const pending = fixture.obligations.list({ profileId: "driffs", state: "pending" });
+    expect(new Set(pending.map((row) => row.id))).toEqual(new Set(deferredIds));
+    for (const row of pending) {
+      // Deferral burns no delivery attempt: back to the pre-lease value.
+      expect(row.attemptCount).toBe(before.get(row.id));
+      expect(row.lastErrorCode).toBe("deferred_over_budget");
+    }
+  });
+});
+
+describe("claude-hook formatter representation sets", () => {
+  const obligationWith = (index: number, excerptChars: number): LeasedObligation => ({
+    agentEventId: index,
+    id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+    outcome: {
+      agent: "hermes",
+      eventId: index,
+      excerpt: { text: "x".repeat(excerptChars), truncated: false },
+      from: "working",
+      lastAssistantRef: null,
+      name: "builder",
+      paneId: "w2:p1",
+      to: "done",
+      type: "agent.done",
+    },
+  });
+
+  test("(a) everything fits: full lines only, nothing deferred", () => {
+    const obligations = [1, 2, 3].map((i) => obligationWith(i, 50));
+    const formatted = formatHookContext("driffs", obligations);
+    expect(formatted.representedIds).toEqual(obligations.map((o) => o.id));
+    expect(formatted.deferredIds).toEqual([]);
+    expect(formatted.context).toContain("last assistant:");
+    expect(formatted.context).not.toContain("excerpt omitted for budget");
+    expect(formatted.context).not.toContain("… [");
+  });
+
+  test("(b) overflow with room for stubs: full lines, then stubs, nothing deferred", () => {
+    // Four near-cap excerpts: the full lines cannot all fit, but the one-line
+    // stubs pick up the rest, so nothing is deferred this turn.
+    const obligations = [1, 2, 3, 4].map((i) => obligationWith(i, 2_000));
+    const formatted = formatHookContext("driffs", obligations);
+    expect(formatted.representedIds).toEqual(obligations.map((o) => o.id));
+    expect(formatted.deferredIds).toEqual([]);
+    expect(formatted.context).toContain("last assistant:");
+    expect(formatted.context).toContain("excerpt omitted for budget");
+    expect(formatted.context).toContain("shepy inbox get");
+    expect(formatted.context).not.toContain("… [");
+  });
+
+  test("(c) overflow past stubs too: a deferred tail, an honest note, both budgets held", () => {
+    const obligations = Array.from({ length: 20 }, (_, i) => obligationWith(i + 1, 2_000));
+    const formatted = formatHookContext("driffs", obligations);
+    expect(formatted.representedIds.length).toBeGreaterThan(0);
+    expect(formatted.representedIds.length).toBeLessThan(20);
+    expect(formatted.deferredIds.length).toBeGreaterThan(0);
+    expect([...formatted.representedIds, ...formatted.deferredIds].sort()).toEqual(
+      obligations.map((o) => o.id).sort(),
+    );
+    expect(formatted.context).toContain(
+      `${formatted.deferredIds.length} more outcome(s) deferred to your next turn; run shepy inbox list driffs --state pending`,
+    );
+    expect(formatted.context.length).toBeLessThanOrEqual(CONTEXT_MAX_CHARS);
+    expect(formatted.context.split("\n").length).toBeLessThanOrEqual(CONTEXT_MAX_LINES);
+  });
+
+  test("(d) the ids in the text are exactly the represented ids", () => {
+    const obligations = Array.from({ length: 20 }, (_, i) => obligationWith(i + 1, 2_000));
+    const formatted = formatHookContext("driffs", obligations);
+    const idsInText = new Set(
+      formatted.context.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g),
+    );
+    expect(idsInText).toEqual(new Set(formatted.representedIds));
   });
 });
 
