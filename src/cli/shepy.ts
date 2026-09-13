@@ -832,7 +832,9 @@ Options:
 Usage:
   shepy wait <operationId> [options]
 
-Outcomes: settled, blocked, failed, target_lost, or wait_timeout.
+Outcomes: settled, blocked, failed, target_lost, wait_timeout, or transport_unknown
+(the wait response could not be read; the operation stays submitted and can be
+waited on again). Also: uncorrelated, already_terminal, not_submitted, not_found.
 A timeout ends this wait only — the operation stays live and a later
 correlated result can still settle it.
 
