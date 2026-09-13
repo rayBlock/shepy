@@ -30,7 +30,7 @@ const CURRENT_HERDR_WORKSPACE_ERROR =
 export const COMMAND_GROUP_VERBS = {
   agent: ["get", "list", "read"],
   daemon: ["restart", "start", "status", "stop"],
-  inbox: ["list", "retire", "retry"],
+  inbox: ["get", "list", "retire", "retry"],
   operation: ["get", "list"],
   profile: ["context", "ensure", "list", "owner", "show", "subscribe", "unsubscribe"],
 } as const;
@@ -62,6 +62,7 @@ type HelpTopic =
   | "daemon"
   | "dispatch"
   | "inbox"
+  | "inbox-get"
   | "inbox-list"
   | "inbox-retire"
   | "inbox-retry"
@@ -123,7 +124,15 @@ export type CliCommand =
       subscribe: boolean;
       workspaceId: string;
     }
-  | { command: "inbox-list"; json: boolean; profileId: string; state?: string }
+  | { command: "inbox-get"; id: string; json: boolean }
+  | {
+      command: "inbox-list";
+      before?: number;
+      json: boolean;
+      limit?: number;
+      profileId: string;
+      state?: string;
+    }
   | { command: "inbox-retire"; json: boolean; olderThanDays?: number; profileId: string }
   | { command: "inbox-retry"; id: string; json: boolean }
   | { command: "operation-dispatch"; json: boolean; profileId: string; prompt: string }
@@ -450,6 +459,12 @@ function parseInboxCommand(args: string[]): CliCommand {
   }
   if (rest.some(isHelpFlag)) return { command: "help", topic: helpTopic };
   const json = takeFlag(rest, "--json");
+  if (subcommand === "get") {
+    const [id, ...extra] = rest;
+    if (!id) throw new CliUsageError("inbox get requires <obligationId>", helpTopic);
+    rejectExtra(extra, helpTopic);
+    return { command: "inbox-get", id, json };
+  }
   if (subcommand === "retry") {
     const [id, ...extra] = rest;
     if (!id) throw new CliUsageError("inbox retry requires <obligationId>", helpTopic);
@@ -477,12 +492,30 @@ function parseInboxCommand(args: string[]): CliCommand {
   }
   if (subcommand === "list") {
     const state = takeOption(rest, "--state", helpTopic);
+    const beforeValue = takeOption(rest, "--before", helpTopic);
+    const limitValue = takeOption(rest, "--limit", helpTopic);
     const [profileId, ...extra] = rest;
     if (!profileId) throw new CliUsageError("inbox list requires <profileId>", helpTopic);
     rejectExtra(extra, helpTopic);
+    let before: number | undefined;
+    if (beforeValue !== undefined) {
+      before = Number(beforeValue);
+      if (!Number.isInteger(before) || before < 0) {
+        throw new CliUsageError("--before must be a non-negative integer", helpTopic);
+      }
+    }
+    let limit: number | undefined;
+    if (limitValue !== undefined) {
+      limit = Number(limitValue);
+      if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
+        throw new CliUsageError("--limit must be between 1 and 500", helpTopic);
+      }
+    }
     return {
+      ...(before !== undefined ? { before } : {}),
       command: "inbox-list",
       json,
+      ...(limit !== undefined ? { limit } : {}),
       profileId,
       ...(state ? { state } : {}),
     };
@@ -692,6 +725,7 @@ Usage:
   shepy inbox <command>
 
 Commands:
+  get <obligationId>        Show one obligation with its full excerpt
   list <profileId>          List obligations for a profile
   retire <profileId>        Retire a stale pending backlog
   retry <obligationId>      Retry a dead-lettered obligation
@@ -701,6 +735,19 @@ Options:
 
 Run \`shepy inbox <command> --help\` for command-specific help.
 `;
+    case "inbox-get":
+      return `Show one delivery obligation with its full excerpt.
+
+The read-back for a deferred outcome's stub: the hook's injected summary
+omits over-budget excerpts and points here. Never prints a lease token.
+
+Usage:
+  shepy inbox get <obligationId>
+
+Options:
+  --json         Print JSON
+  -h, --help     Show help
+`;
     case "inbox-list":
       return `List delivery obligations for a profile.
 
@@ -708,9 +755,11 @@ Usage:
   shepy inbox list <profileId> [options]
 
 Options:
-  --state <state>    Filter by pending|leased|delivered|acked|dead_letter
-  --json             Print JSON
-  -h, --help         Show help
+  --state <state>             Filter by pending|leased|delivered|acked|dead_letter
+  --before <agentEventId>     Only rows strictly older than this agent event
+  --limit <number>            Return 1 to 500 rows (default 50)
+  --json                      Print JSON
+  -h, --help                  Show help
 `;
     case "inbox-retire":
       return `Retire pending obligations without delivering them.
@@ -911,8 +960,13 @@ async function dispatchRpcCommand(
   if (command.command === "profile-owner") {
     return client.request("profile.owner", { profileId: command.profileId });
   }
+  if (command.command === "inbox-get") {
+    return client.request("inbox.get", { obligationId: command.id });
+  }
   if (command.command === "inbox-list") {
     return client.request("inbox.list", {
+      ...(command.before !== undefined ? { before: command.before } : {}),
+      ...(command.limit !== undefined ? { limit: command.limit } : {}),
       profileId: command.profileId,
       ...(command.state ? { state: command.state } : {}),
     });
@@ -988,6 +1042,7 @@ function formatHumanResult(command: CliCommand, result: unknown): string {
     return JSON.stringify(result, null, 2);
   if (command.command === "profile-owner")
     return formatProfileOwner(command, result as { owner?: PublicProfileOwner | null });
+  if (command.command === "inbox-get") return formatInboxGet(result as { obligation?: unknown });
   if (command.command === "inbox-list")
     return formatInboxList(
       result as {
@@ -1401,6 +1456,34 @@ function formatProfileList(result: {
   const profiles = result.profiles ?? [];
   if (profiles.length === 0) return "No Shepy profiles.";
   return profiles.map((profile) => `${profile.profileId}\t${profile.displayName}`).join("\n");
+}
+
+function formatInboxGet(result: { obligation?: unknown }): string {
+  const obligation = result.obligation as
+    | {
+        agentEventId: number;
+        attemptCount: number;
+        id: string;
+        lastErrorCode: string | null;
+        outcome?: { excerpt: { text: string; truncated: boolean } | null } | null;
+        state: string;
+      }
+    | null
+    | undefined;
+  if (!obligation) return "Obligation not found.";
+  const excerpt = obligation.outcome?.excerpt ?? null;
+  return [
+    `id: ${obligation.id}`,
+    `state: ${obligation.state}`,
+    `event: ${obligation.agentEventId}`,
+    `attempts: ${obligation.attemptCount}`,
+    `last_error: ${obligation.lastErrorCode ?? "-"}`,
+    "excerpt:",
+    // The whole point of the read-back: the FULL excerpt, never truncated —
+    // the hook's stub deferred it precisely because the summary could not
+    // carry it.
+    excerpt && excerpt.text.length > 0 ? excerpt.text : "(no assistant message)",
+  ].join("\n");
 }
 
 function formatInboxList(result: {

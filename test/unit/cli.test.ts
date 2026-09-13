@@ -283,6 +283,7 @@ describe("shepy CLI", () => {
     { args: ["profile", "context", "--help"], topic: "profile-context" },
     { args: ["profile", "subscribe", "--help"], topic: "profile-subscribe" },
     { args: ["inbox", "--help"], topic: "inbox" },
+    { args: ["inbox", "get", "--help"], topic: "inbox-get" },
     { args: ["inbox", "list", "--help"], topic: "inbox-list" },
     { args: ["inbox", "retry", "-h"], topic: "inbox-retry" },
   ])("parses contextual help for $args", ({ args, topic }) => {
@@ -315,12 +316,99 @@ describe("shepy CLI", () => {
     expect(helpText("profile")).toContain("subscribe <profileId>");
     expect(helpText("profile-subscribe")).toContain("--kind-cwd <kind>=<cwd>");
     expect(helpText("inbox")).toContain("retry <obligationId>");
+    expect(helpText("inbox")).toContain("get <obligationId>");
+    expect(helpText("inbox-get")).toContain("shepy inbox get <obligationId>");
     expect(helpText("inbox-list")).toContain("--state");
+    expect(helpText("inbox-list")).toContain("--before <agentEventId>");
+    expect(helpText("inbox-list")).toContain("--limit <number>");
   });
 
   test("renders the package version", () => {
     const manifest = JSON.parse(readFileSync("package.json", "utf8")) as { version: string };
     expect(versionText()).toBe(`shepy ${manifest.version}`);
+  });
+
+  test("parses inbox get with its obligation id and --json", () => {
+    expect(parseCliArgs(["inbox", "get", "abc-123"])).toEqual({
+      command: "inbox-get",
+      id: "abc-123",
+      json: false,
+    });
+    expect(parseCliArgs(["inbox", "get", "--json", "abc-123"])).toEqual({
+      command: "inbox-get",
+      id: "abc-123",
+      json: true,
+    });
+  });
+
+  test("parses inbox list --before and --limit", () => {
+    expect(parseCliArgs(["inbox", "list", "driffs", "--before", "82", "--limit", "5"])).toEqual({
+      before: 82,
+      command: "inbox-list",
+      json: false,
+      limit: 5,
+      profileId: "driffs",
+    });
+    expect(() => parseCliArgs(["inbox", "list", "driffs", "--before", "nope"])).toThrow(
+      "--before must be a non-negative integer",
+    );
+    expect(() => parseCliArgs(["inbox", "list", "driffs", "--limit", "0"])).toThrow(
+      "--limit must be between 1 and 500",
+    );
+  });
+
+  test("inbox get renders the full excerpt and says when the obligation is gone", async () => {
+    const calls: unknown[] = [];
+    const client: FakeClient = {
+      calls,
+      close: () => {},
+      request: async (method, params) => {
+        calls.push([method, params]);
+        return {
+          obligation: {
+            agentEventId: 82,
+            attemptCount: 1,
+            id: "abc-123",
+            lastErrorCode: "deferred_over_budget",
+            outcome: {
+              excerpt: { text: "full excerpt line one\nline two", truncated: false },
+            },
+            state: "pending",
+          },
+        };
+      },
+    };
+    const output: string[] = [];
+    await runCliCommand(
+      { command: "inbox-get", id: "abc-123", json: false },
+      {
+        connect: async () => client,
+        output: (line) => output.push(line),
+        socketPath: "/tmp/s.sock",
+      },
+    );
+    const text = output.join("\n");
+    expect(text).toContain("id: abc-123");
+    expect(text).toContain("state: pending");
+    expect(text).toContain("last_error: deferred_over_budget");
+    // The read-back exists because the stub omitted the excerpt: it must be
+    // shown in full, both lines, never truncated.
+    expect(text).toContain("full excerpt line one\nline two");
+    expect(calls).toEqual([["inbox.get", { obligationId: "abc-123" }]]);
+
+    const missing: string[] = [];
+    await runCliCommand(
+      { command: "inbox-get", id: "gone", json: false },
+      {
+        connect: async () => ({
+          close: () => {},
+          request: async () => ({ obligation: null }),
+        }),
+        output: (line) => missing.push(line),
+        socketPath: "/tmp/s.sock",
+      },
+    );
+    expect(missing.join("\n")).toContain("Obligation not found.");
   });
 
   test("adds contextual help hints only to usage errors", () => {
@@ -341,6 +429,9 @@ describe("shepy CLI", () => {
     );
     expect(formatCliError(captureError(() => parseCliArgs(["inbox", "unknown"])))).toBe(
       "Unknown inbox command: unknown\nRun `shepy inbox --help` for usage.",
+    );
+    expect(formatCliError(captureError(() => parseCliArgs(["inbox", "get"])))).toBe(
+      "inbox get requires <obligationId>\nRun `shepy inbox get --help` for usage.",
     );
     expect(formatCliError(new Error("request failed"))).toBe("request failed");
   });
