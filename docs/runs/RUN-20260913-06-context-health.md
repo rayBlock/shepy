@@ -11,13 +11,13 @@ acceptance recommendation; portfolio owns cross-program acceptance.
 
 ## Live
 
-- state: **RETURNED FOR CORRECTION by portfolio (14:2xZ)** — lead's initial acceptance at `36fe131` stands as history; two portfolio findings P1/P2 reproduced by ops; correction 2 building (4th and last child)
+- state: **CORRECTION 2 LANDED `481c56c`** — candidate returned to portfolio for its independent recheck; lead's acceptance recommendation: accept. History: initial lead acceptance `36fe131` (14:13Z) → portfolio returned for correction (P1/P2) → corrected.
 - lead: `w31:p1` (Claude Code, supervised)
-- workers: `builder-ctx-r2` (fresh) — pane/operation in lineage, profile `run-06-builder`
-- worktrees: `~/dev/shepy-wt/ctx-fix` (branch `pilot/context-health-r2`, base `a8b522c`)
-- waits armed: ONE `shepy wait <opId> --json` (background) — see lineage
-- next safe action: when the wait returns, record it; re-run the archived portfolio probe against a rebuilt dist from the candidate (in the worktree, `pnpm build` there); gate; land; hand the candidate to portfolio for its recheck
-- updated: 2026-09-13T14:25Z
+- workers: none (all four Flash children retired; the cap of four is reached — no further child under this assignment)
+- worktrees: none; branches deleted
+- waits armed: none
+- next safe action: portfolio's recheck of `481c56c` (shared dist rebuilt from it; archived probe passes both); daemon stays on the 12:41 build until portfolio approves
+- updated: 2026-09-13T14:38Z
 
 ## Registration (before dispatch)
 
@@ -281,6 +281,60 @@ acceptance recommendation; portfolio owns cross-program acceptance.
   `no_manager_entries`), RED-first tests including both portfolio
   fixtures verbatim and an RPC-surface case.
 
+- 14:25:22Z — `builder-ctx-r2` in `w31:p1C` (`(zai) glm-5.3-flash •
+  high`), profile `run-06-builder` re-bound (dead `builder-ctx-r1`
+  selector removed first), `matched` on the second poll, `shepy dispatch`
+  → `op_db50f450e943c05a5bd9b39d`, `working` in 4 s. **Fourth native
+  wait armed.**
+- 14:36:44Z — **QUALIFICATION SAMPLE 4:** the wait armed 14:25:49Z
+  returned `settled`, exit 0, durable `settled`. Four of four.
+- 14:36Z — correction settled, `BUILD-R2 DONE`, ≈ 11 min (self-report
+  `14:25:26Z → 14:35:57Z`, honest). Commit `3935fce`: 4 files,
+  +474/−34; `context-health.ts`: D11 `lastBranchSummaryPosition` over
+  the lineage replaces the leaf-only boolean, marker while the summary
+  position exceeds the reading's, cleared by a later reading, precedence
+  unchanged; D12 `manager = entries.filter(!isSidechain)` before any
+  observation — identity, branch (last manager entry's `gitBranch`),
+  model, boundaries, positions, `sourceUpdatedAt`; all-sidechain →
+  nulls + `no_manager_entries` (a truly empty file keeps F1's
+  `no_usage_recorded`). RED captured verbatim for P1 a/e, P2 a/b/c/d and
+  the RPC case (`6 failed | 35 passed`); P1 b/c/d passed immediately and
+  are kept as pins of the position rule. Both portfolio fixtures are in
+  the unit tests verbatim. Gate 60 / 670.
+- 14:37Z — **ops decisive check:** `pnpm build` in the worktree, the
+  archived portfolio probe re-pointed at the worktree dist → P1
+  `pass:true`, P2 `pass:true`, `sessionId: manager-claude`. Source diff
+  read in full: exactly D11/D12, no drift. `pnpm check` in the worktree
+  exit 0, 60 / 670. Rebased onto shepy `d212781` (one docs commit) →
+  `481c56c`; `git merge --ff-only` → tip `481c56c`; gate at the tip exit
+  0, 60 / 670; `pnpm build` in the shared tree; archived probe against
+  the shared dist → both `pass:true`
+  (`portfolio-review/lead-reproduction-after-correction.json`). Pane
+  `w31:p1C` closed, worktree removed, branch deleted, 14:37:52Z.
+  Envelope used ≈ 83 of 150 min. Daemon untouched (12:41 build).
+
+## Results (correction 2, 14:38Z — the candidate for portfolio's recheck)
+
+- **Candidate `481c56c`** = landed `36fe131` + correction `3935fce`
+  (rebased). Lead's recommendation: ACCEPT within scope. Portfolio owns
+  the decision and the deployment (restart) approval.
+- Portfolio findings P1 (Pi branch marker lost after a non-usage append)
+  and P2 (Claude sidechain identity leak) fixed with RED-first tests at
+  the projection boundary and one at the RPC surface; both portfolio
+  fixtures reproduced verbatim in the unit suite; the archived probe
+  passes against the rebuilt dist.
+- Verification trail for this candidate: attempt-1 verifier (11
+  mutations, 20 probes) → lead probes (O1–O3) → revision → lead
+  re-adjudication (5/5) → initial acceptance → portfolio probes (P1/P2)
+  → correction → lead decisive probe + gate. No fresh verifier child on
+  the correction (not authorized; child cap of four reached).
+- Everything in the initial Results below still holds, with these
+  additions: the Pi branch marker persists through user messages,
+  thinking-level changes and other non-reading appends until a genuinely
+  later assistant reading; Claude sidechains contribute nothing to
+  identity, branch or freshness; `no_manager_entries` names an
+  all-sidechain file.
+
 ## Results (lead's initial acceptance, 14:13Z — superseded by the portfolio review above)
 
 - **Accepted within scope and landed** `36fe131`. Gate 60 files / 660
@@ -367,3 +421,23 @@ acceptance recommendation; portfolio owns cross-program acceptance.
 - A new active data source (the harness's `getContextUsage()` for a
   `measured` kind and the window) is a design decision for portfolio,
   not a v1 gap to paper over.
+
+### Addendum after the portfolio review (14:38Z)
+
+- **Experience:** total ≈ 83 min of 150; four Flash children (builder,
+  verifier, revision builder, correction builder), all honest UTC;
+  four of four native Shepy waits settled; one portfolio return with two
+  findings; zero Ray interventions. The lead's initial acceptance was
+  wrong on two false-current cases that a different reviewer's probes
+  found within minutes of landing.
+- **Interpretation:** the false-current family has more members than
+  any one reviewer enumerated — builder, verifier and lead each covered
+  the cases their own fixtures suggested (leaf-only branch summary;
+  sidechain usage but not identity). A second independent reviewer with
+  its own fixtures against the BUILT artifact was worth the cost and
+  should be the norm for honesty-critical contracts: verify the
+  projection, then let someone who did not write the packet attack it.
+  Recorded for the playbook as a proposal, not a promoted default.
+  Also: "accepted within scope" must be written as the lead's
+  recommendation until the cross-program owner has rechecked; this
+  record now words it that way.

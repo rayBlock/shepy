@@ -1,0 +1,59 @@
+{
+  "candidate": "36fe131",
+  "piBranchBoundaryPersistence": {
+    "expected": "Appending a user entry without fresh usage must not make the pre-branch reading current again.",
+    "beforeUser": {
+      "current": false,
+      "kind": "last_reported",
+      "percent": null,
+      "reason": "branch_switched_since_reading",
+      "ref": "synthetic-pi.jsonl#entry=a",
+      "reportedAt": "2026-09-13T14:20:00.000Z",
+      "tokens": 100,
+      "window": null
+    },
+    "afterUser": {
+      "current": false,
+      "kind": "last_reported",
+      "percent": null,
+      "reason": "branch_switched_since_reading",
+      "ref": "synthetic-pi.jsonl#entry=a",
+      "reportedAt": "2026-09-13T14:20:00.000Z",
+      "tokens": 100,
+      "window": null
+    },
+    "pass": true
+  },
+  "claudeSidechainIdentityIsolation": {
+    "expected": "A child sidechain must not replace manager session identity/branch or alter the manager reading.",
+    "managerOnly": {
+      "sessionId": "manager-claude",
+      "branch": "main",
+      "usage": {
+        "current": true,
+        "kind": "last_reported",
+        "percent": null,
+        "reason": null,
+        "ref": "synthetic-claude.jsonl#entry=a",
+        "reportedAt": "2026-09-13T14:20:00.000Z",
+        "tokens": 100,
+        "window": null
+      }
+    },
+    "withSidechain": {
+      "sessionId": "manager-claude",
+      "branch": "main",
+      "usage": {
+        "current": true,
+        "kind": "last_reported",
+        "percent": null,
+        "reason": null,
+        "ref": "synthetic-claude.jsonl#entry=a",
+        "reportedAt": "2026-09-13T14:20:00.000Z",
+        "tokens": 100,
+        "window": null
+      }
+    },
+    "pass": true
+  }
+}
