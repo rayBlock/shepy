@@ -1,5 +1,5 @@
 {
-  "sealedAt": "2026-09-13T17:29:26.032Z",
+  "sealedAt": "2026-09-13T17:32:26.201Z",
   "status": "owned docs packaging authorized through normal hooks; no MC02 execution",
   "sourceCandidate": "481c56c",
   "checkerCandidateSha256": "5c4cf38984c072ed2a73e4577f82287c68ff997f88bd79358837f01faf01e285",
@@ -14,7 +14,7 @@
       "path": "RUN-20260913-07-continuity-prep.md",
       "raw": "RUN-20260913-07/raw/pre-hook/RUN-20260913-07-continuity-prep.md.txt",
       "originalSha256": "7ab6880b5d51a3305f20638fdddae430a6fafefd573171c75203654c3188a475",
-      "currentSha256": "7be63c537c561354b6fa633ee65713a8c53fbcbfc8b30521bdd13de87a720f96"
+      "currentSha256": "c8d57cd7e7810833ed7b19ccad8250dcabda6c4070e802fb669fb0375be7fb86"
     },
     {
       "path": "RUN-20260913-07/validation-receipt.json",
@@ -104,7 +104,7 @@
   "files": [
     {
       "path": "RUN-20260913-07-continuity-prep.md",
-      "sha256": "7be63c537c561354b6fa633ee65713a8c53fbcbfc8b30521bdd13de87a720f96"
+      "sha256": "c8d57cd7e7810833ed7b19ccad8250dcabda6c4070e802fb669fb0375be7fb86"
     },
     {
       "path": "RUN-20260913-07/validation-receipt.json",
@@ -133,6 +133,10 @@
     {
       "path": "RUN-20260913-07/mutation-receipt-03.json",
       "sha256": "ecdc129b86997e4cc6f96909768665030b4ee5bebf435edf1112fe078f05d715"
+    },
+    {
+      "path": "RUN-20260913-07/packaging-hooks-10ebf25.log.txt",
+      "sha256": "02724077f268d59a1d73e834cd907ede7a99ba909e317f1edccbb7377cbd4e35"
     },
     {
       "path": "RUN-20260913-07/mutation-receipt.json",
@@ -233,6 +237,10 @@
     {
       "path": "RUN-20260913-07/checker-mutant-results.json",
       "sha256": "cc2810b62f79d1db879113d94446812c06950f61e6ed239850ee7e7bc7ff4c2d"
+    },
+    {
+      "path": "RUN-20260913-07/packaging-receipt.json",
+      "sha256": "f08c915c4b652797f900bddc5077b6987c95c0816c3a43a95080868c97d7154d"
     },
     {
       "path": "RUN-20260913-07/checker-r1.ts.txt",

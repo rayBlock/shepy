@@ -1,0 +1,150 @@
+.husky/pre-commit: line 1: mise: command not found
+.husky/pre-commit: line 1: mise: command not found
+Already up to date
+Done in 181ms using pnpm v11.9.0
+Already up to date
+Done in 179ms using pnpm v11.9.0
+[STARTED] Backing up original state...
+[COMPLETED] Backed up original state in git stash (bc87c32)
+[STARTED] Running tasks for staged files...
+[STARTED] package.json — 38 files
+[STARTED] *.{js,jsx,ts,tsx,json,jsonc} — 15 files
+[STARTED] biome check --write --no-errors-on-unmatched
+[COMPLETED] biome check --write --no-errors-on-unmatched
+[COMPLETED] *.{js,jsx,ts,tsx,json,jsonc} — 15 files
+[COMPLETED] package.json — 38 files
+[COMPLETED] Running tasks for staged files...
+[STARTED] Applying modifications from tasks...
+[COMPLETED] Applying modifications from tasks...
+[STARTED] Cleaning up temporary files...
+[COMPLETED] Cleaning up temporary files...
+Already up to date
+Done in 180ms using pnpm v11.9.0
+$ tsc --noEmit -p tsconfig.json
+Already up to date
+Done in 183ms using pnpm v11.9.0
+$ vitest run
+
+ RUN  v4.1.9 /Users/ray/dev/shepy
+
+npm warn Unknown env config "manage-package-manager-versions". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+
+ Test Files  60 passed (60)
+      Tests  670 passed (670)
+   Start at  19:29:49
+   Duration  8.29s (transform 9.20s, setup 0ms, import 12.33s, tests 31.87s, environment 3ms)
+
+Already up to date
+Done in 179ms using pnpm v11.9.0
+$ biome check .
+src/observability/profile-selector-scope.ts:7:3 lint/correctness/noUnusedImports  FIXABLE  ━━━━━━━━━━
+
+  ! Several of these imports are unused.
+  
+    5 │   type AgentSelector,
+    6 │   resolveAgentSelector,
+  > 7 │   type SelectableAgent,
+      │   ^^^^^^^^^^^^^^^^^^^^
+    8 │   selectableFromRow,
+    9 │   type WorkspaceSelector,
+  
+  i Unused imports might be the result of an incomplete refactoring.
+  
+  i Unsafe fix: Remove the unused imports.
+  
+     5  5 │     type AgentSelector,
+     6  6 │     resolveAgentSelector,
+     7    │ - ··type·SelectableAgent,
+     8  7 │     selectableFromRow,
+     9  8 │     type WorkspaceSelector,
+  
+
+test/integration/operation-wait-rpc.test.ts:1:35 lint/correctness/noUnusedImports  FIXABLE  ━━━━━━━━━━
+
+  ! Several of these imports are unused.
+  
+  > 1 │ import { existsSync, mkdtempSync, rmSync, unlinkSync } from "node:fs";
+      │                                   ^^^^^^
+    2 │ import { tmpdir } from "node:os";
+    3 │ import { join } from "node:path";
+  
+  i Unused imports might be the result of an incomplete refactoring.
+  
+  i Unsafe fix: Remove the unused imports.
+  
+    1 │ import·{·existsSync,·mkdtempSync,·rmSync,·unlinkSync·}·from·"node:fs";
+      │                                   --------                            
+
+test/integration/operation-wait-rpc.test.ts:5:13 lint/correctness/noUnusedImports  FIXABLE  ━━━━━━━━━━
+
+  ! This import is unused.
+  
+    3 │ import { join } from "node:path";
+    4 │ import { afterEach, describe, expect, test, vi } from "vitest";
+  > 5 │ import type { AgentHistoryService } from "@/agent-history/service.js";
+      │             ^^^^^^^^^^^^^^^^^^^^^^^
+    6 │ import { createAgentHistoryService } from "@/agent-history/service.js";
+    7 │ import { ObservabilityRpcServer } from "@/daemon/observability-server.js";
+  
+  i Unused imports might be the result of an incomplete refactoring.
+  
+  i Unsafe fix: Remove the unused imports.
+  
+      3   3 │   import { join } from "node:path";
+      4   4 │   import { afterEach, describe, expect, test, vi } from "vitest";
+      5     │ - import·type·{·AgentHistoryService·}·from·"@/agent-history/service.js";
+      6   5 │   import { createAgentHistoryService } from "@/agent-history/service.js";
+      7   6 │   import { ObservabilityRpcServer } from "@/daemon/observability-server.js";
+  
+
+Checked 134 files in 48ms. No fixes applied.
+Found 3 warnings.
+Already up to date
+Done in 180ms using pnpm v11.9.0
+$ biome format .
+Checked 134 files in 24ms. No fixes applied.
+Already up to date
+Done in 180ms using pnpm v11.9.0
+$ drizzle-kit check --config drizzle.config.ts
+Reading config file '/Users/ray/dev/shepy/drizzle.config.ts'
+Everything's fine 🐶🔥
+[shepy 10ebf25] docs(runs): prepare MC02 continuity rehearsal and synthetic checker
+ 38 files changed, 11947 insertions(+)
+ create mode 100644 docs/runs/RUN-20260913-07-continuity-prep.md
+ create mode 100644 docs/runs/RUN-20260913-07/artifact-integrity.json
+ create mode 100644 docs/runs/RUN-20260913-07/assignment.md.txt
+ create mode 100644 docs/runs/RUN-20260913-07/checker-mutant-results-03.json
+ create mode 100644 docs/runs/RUN-20260913-07/checker-mutant-results.json
+ create mode 100644 docs/runs/RUN-20260913-07/checker-r1.ts.txt
+ create mode 100644 docs/runs/RUN-20260913-07/checker-r3.ts.txt
+ create mode 100644 docs/runs/RUN-20260913-07/checker-results-01.json
+ create mode 100644 docs/runs/RUN-20260913-07/checker-results-02.json
+ create mode 100644 docs/runs/RUN-20260913-07/checker-results-03.json
+ create mode 100644 docs/runs/RUN-20260913-07/checker-results-final.json
+ create mode 100644 docs/runs/RUN-20260913-07/checker.ts.txt
+ create mode 100644 docs/runs/RUN-20260913-07/mutation-receipt-03.json
+ create mode 100644 docs/runs/RUN-20260913-07/mutation-receipt.json
+ create mode 100644 docs/runs/RUN-20260913-07/pre-hook-archive.json
+ create mode 100644 docs/runs/RUN-20260913-07/prep-metrics.json
+ create mode 100644 docs/runs/RUN-20260913-07/raw/pre-hook/RUN-20260913-07-continuity-prep.md.txt
+ create mode 100644 docs/runs/RUN-20260913-07/raw/pre-hook/artifact-integrity.json.txt
+ create mode 100644 docs/runs/RUN-20260913-07/raw/pre-hook/checker-mutant-results-03.json.txt
+ create mode 100644 docs/runs/RUN-20260913-07/raw/pre-hook/checker-mutant-results.json.txt
+ create mode 100644 docs/runs/RUN-20260913-07/raw/pre-hook/checker-results-01.json.txt
+ create mode 100644 docs/runs/RUN-20260913-07/raw/pre-hook/checker-results-02.json.txt
+ create mode 100644 docs/runs/RUN-20260913-07/raw/pre-hook/checker-results-03.json.txt
+ create mode 100644 docs/runs/RUN-20260913-07/raw/pre-hook/checker-results-final.json.txt
+ create mode 100644 docs/runs/RUN-20260913-07/raw/pre-hook/mutation-receipt-03.json.txt
+ create mode 100644 docs/runs/RUN-20260913-07/raw/pre-hook/mutation-receipt.json.txt
+ create mode 100644 docs/runs/RUN-20260913-07/raw/pre-hook/prep-metrics.json.txt
+ create mode 100644 docs/runs/RUN-20260913-07/raw/pre-hook/rehearsal-packet.md.txt
+ create mode 100644 docs/runs/RUN-20260913-07/raw/pre-hook/source-manifest.json.txt
+ create mode 100644 docs/runs/RUN-20260913-07/raw/pre-hook/synthetic-example.json.txt
+ create mode 100644 docs/runs/RUN-20260913-07/raw/pre-hook/validation-receipt-03.json.txt
+ create mode 100644 docs/runs/RUN-20260913-07/raw/pre-hook/validation-receipt.json.txt
+ create mode 100644 docs/runs/RUN-20260913-07/rehearsal-packet.md
+ create mode 100644 docs/runs/RUN-20260913-07/source-manifest.json
+ create mode 100644 docs/runs/RUN-20260913-07/synthetic-example.json
+ create mode 100644 docs/runs/RUN-20260913-07/typecheck.txt
+ create mode 100644 docs/runs/RUN-20260913-07/validation-receipt-03.json
+ create mode 100644 docs/runs/RUN-20260913-07/validation-receipt.json

@@ -1,0 +1,30 @@
+{
+  "observedAt": "2026-09-13T17:30:49Z",
+  "commit": "10ebf25",
+  "scope": "Owned MC02 preparation docs/artifacts only; normal hooks explicitly authorized for packaging",
+  "hookBypassed": false,
+  "typecheck": "passed",
+  "repositoryTests": { "files": 60, "tests": 670, "passed": true },
+  "lint": { "passed": true, "existingWarnings": 3 },
+  "format": "passed",
+  "dbCheck": "local drizzle-kit snapshot check passed; not migration or live database authority",
+  "warnings": [
+    "Two mise command-not-found PATH lookups; all configured validation steps subsequently executed",
+    "npm warned about manage-package-manager-versions environment option"
+  ],
+  "availableRuntimeInspectedAfterCommit": { "node": "v24.19.0", "pnpm": "11.9.0" },
+  "rawHookLog": "packaging-hooks-10ebf25.log.txt",
+  "rawHookLogSha256": "02724077f268d59a1d73e834cd907ede7a99ba909e317f1edccbb7377cbd4e35",
+  "recordedRollout": {
+    "source": "portfolio report, not replayed by this lead",
+    "at": "2026-09-13T17:11:17.678Z",
+    "bootId": "c93e1c00-cf7d-4f03-a7ee-807af35d5c65",
+    "buildStamp": "2026-09-13T14:37:49.978Z",
+    "smoke": "two Pi and two Claude contextHealth sessions passed"
+  },
+  "noNewRehearsal": true,
+  "automaticNoticeQualified": false,
+  "parentWait": "portfolio reported socket closure; not re-armed",
+  "independentReviewSnapshot": "Untouched /tmp/portfolio-mc02-review-20260913",
+  "followUp": "This receipt and final current manifest are packaged in a follow-up docs-only commit through the same normal hooks; post-hook hashes are checked separately without rewriting original evidence."
+}
