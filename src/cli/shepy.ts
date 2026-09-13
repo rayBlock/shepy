@@ -1458,6 +1458,15 @@ function formatProfileList(result: {
   return profiles.map((profile) => `${profile.profileId}\t${profile.displayName}`).join("\n");
 }
 
+// Terminal safety for the human read-back: the daemon strips C0/C1 at
+// projection, but this formatter writes to the operator's terminal — the same
+// character class normalizeOutcomeExcerpt strips, applied at render. (--json
+// needs no guard: JSON.stringify escapes control characters by spec.)
+function stripControlChars(text: string): string {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional C0/C1 stripping — untrusted text must never carry control bytes to a terminal.
+  return text.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, "");
+}
+
 function formatInboxGet(result: { obligation?: unknown }): string {
   const obligation = result.obligation as
     | {
@@ -1477,12 +1486,12 @@ function formatInboxGet(result: { obligation?: unknown }): string {
     `state: ${obligation.state}`,
     `event: ${obligation.agentEventId}`,
     `attempts: ${obligation.attemptCount}`,
-    `last_error: ${obligation.lastErrorCode ?? "-"}`,
+    `last_error: ${obligation.lastErrorCode ? stripControlChars(obligation.lastErrorCode) : "-"}`,
     "excerpt:",
     // The whole point of the read-back: the FULL excerpt, never truncated —
     // the hook's stub deferred it precisely because the summary could not
     // carry it.
-    excerpt && excerpt.text.length > 0 ? excerpt.text : "(no assistant message)",
+    excerpt && excerpt.text.length > 0 ? stripControlChars(excerpt.text) : "(no assistant message)",
   ].join("\n");
 }
 

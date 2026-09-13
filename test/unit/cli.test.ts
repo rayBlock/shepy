@@ -411,6 +411,44 @@ describe("shepy CLI", () => {
     expect(missing.join("\n")).toContain("Obligation not found.");
   });
 
+  test("inbox get strips control bytes from the excerpt before the terminal sees it", async () => {
+    // The human formatter writes to the operator's terminal; a hostile or
+    // stale snapshot must not be able to put a raw escape there. (--json is
+    // untouched: JSON.stringify escapes control characters by spec.)
+    const client: FakeClient = {
+      calls: [],
+      close: () => {},
+      request: async () => ({
+        obligation: {
+          agentEventId: 82,
+          attemptCount: 1,
+          id: "abc-123",
+          lastErrorCode: null,
+          outcome: {
+            excerpt: { text: "before\u001b]0;pwned\u0007after", truncated: false },
+          },
+          state: "pending",
+        },
+      }),
+    };
+    const output: string[] = [];
+    await runCliCommand(
+      { command: "inbox-get", id: "abc-123", json: false },
+      {
+        connect: async () => client,
+        output: (line) => output.push(line),
+        socketPath: "/tmp/s.sock",
+      },
+    );
+    const text = output.join("\n");
+    expect(text).toContain("before");
+    expect(text).toContain("after");
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: the assertion is exactly that no C0/C1 byte survives.
+    expect(text).not.toMatch(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/);
+    // The guard strips bytes, not prose: the printable payload around them stays.
+    expect(text).toContain("]0;pwned");
+  });
+
   test("adds contextual help hints only to usage errors", () => {
     expect(formatCliError(captureError(() => parseCliArgs(["unknown"])))).toBe(
       "Unknown command: unknown\nRun `shepy --help` for usage.",

@@ -304,6 +304,7 @@ describe("inbox.lease event-correlated outcomes", () => {
   function appendOutcomeEvent(input: {
     compactHistory?: Record<string, unknown> | null;
     idempotency: string;
+    paneId?: string;
   }) {
     const built = fixture();
     const worker = built.agents.list().find((row) => row.name === "driffs-worker");
@@ -313,7 +314,7 @@ describe("inbox.lease event-correlated outcomes", () => {
       compactHistory: (input.compactHistory ?? null) as never,
       herdrSessionName: "default",
       idempotencyKey: input.idempotency,
-      paneId: "wA:p1",
+      paneId: input.paneId ?? "wA:p1",
       payload: { agent: "hermes", from: "working", name: "driffs-worker", to: "done" },
       type: "agent.done",
       workspaceId: "wA",
@@ -398,6 +399,50 @@ describe("inbox.lease event-correlated outcomes", () => {
     expect(outcome?.excerpt?.truncated).toBe(true);
     expect(outcome?.excerpt?.text.length).toBeLessThanOrEqual(2_000);
     expect(outcome?.excerpt?.text).toContain("shepy agent read");
+  });
+
+  test("the truncation hint allowlists the paneId — a hostile pane never reaches the served excerpt", () => {
+    // The paneId is stored raw (it comes off Herdr env), so a pane can carry
+    // terminal-escape syntax. The excerpt TEXT is stripped at projection, but
+    // the >2 000-char hint interpolated the paneId raw — putting the ESC and
+    // the spoofed token inside the very excerpt the hook renders and the CLI
+    // prints. The served snapshot must be clean end to end.
+    const buildTruncated = (idempotency: string, paneId: string) =>
+      appendOutcomeEvent({
+        compactHistory: {
+          historyRef: null,
+          lastAssistantMessage: {
+            ref: `r-${idempotency}`,
+            role: "assistant",
+            text: "z".repeat(3_000),
+            timestamp: null,
+          },
+          lastToolResult: null,
+          lastUserMessage: null,
+          messageCount: 1,
+          source: "hermes-sqlite",
+          updatedAt: null,
+        },
+        idempotency,
+        paneId,
+      });
+    const excerptOf = (built: ReturnType<typeof buildTruncated>) =>
+      (
+        built.delivery.inboxLease({ leaseToken: built.ownerToken, profileId: "driffs" })
+          .obligations[0] as { outcome?: { excerpt?: { text: string; truncated: boolean } } }
+      ).outcome?.excerpt;
+
+    const hostile = excerptOf(buildTruncated("outcome-hostile-pane", "\u001b]0;pwnedw2:p1"));
+    expect(hostile?.truncated).toBe(true);
+    expect(hostile?.text).toContain("run shepy agent read unknown]");
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: the assertion is exactly that no C0/C1 byte survives.
+    expect(hostile?.text).not.toMatch(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/);
+    expect(hostile?.text).not.toContain("pwned");
+
+    // A well-formed paneId still reads back verbatim in the hint.
+    const normal = excerptOf(buildTruncated("outcome-normal-pane", "w2:p1"));
+    expect(normal?.truncated).toBe(true);
+    expect(normal?.text).toContain("run shepy agent read w2:p1]");
   });
 
   test("a missing historical event leases with an honest null outcome", () => {

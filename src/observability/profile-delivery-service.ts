@@ -96,6 +96,12 @@ function outcomeString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
+// Same token rule the claude-hook uses for pane ids. The truncation hint
+// interpolates the paneId into excerpt text that wakes and terminals render,
+// so a hostile pane id (terminal-escape syntax, spoofed tokens) degrades to
+// "unknown" instead of riding the served snapshot.
+const PANE_ID_TOKEN = /^[a-z0-9][a-z0-9:_.-]{0,63}$/i;
+
 function normalizeOutcomeExcerpt(value: unknown, paneId: string | null) {
   const raw = outcomeString(value);
   if (raw === null) return null;
@@ -108,7 +114,8 @@ function normalizeOutcomeExcerpt(value: unknown, paneId: string | null) {
   if (normalized.length <= INBOX_OUTCOME_EXCERPT_CHARS) {
     return { text: normalized, truncated: false };
   }
-  const hint = ` … [truncated; run shepy agent read ${paneId ?? "unknown"}]`;
+  const safePaneId = paneId !== null && PANE_ID_TOKEN.test(paneId) ? paneId : "unknown";
+  const hint = ` … [truncated; run shepy agent read ${safePaneId}]`;
   const prefixLength = Math.max(0, INBOX_OUTCOME_EXCERPT_CHARS - hint.length);
   return {
     text: `${normalized.slice(0, prefixLength).trimEnd()}${hint}`,

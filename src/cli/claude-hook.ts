@@ -1068,6 +1068,15 @@ function safeToken(value: string | null | undefined, pattern: RegExp): string | 
   return pattern.test(value) ? value : null;
 }
 
+// Defense in depth: the daemon strips C0/C1 at projection time, but the hook
+// renders daemon data — the same character class normalizeOutcomeExcerpt
+// strips, applied at render, so no stale snapshot can put a control byte into
+// the wake payload.
+function stripControlChars(text: string): string {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional C0/C1 stripping — untrusted excerpts must never carry control bytes into a wake.
+  return text.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, "");
+}
+
 function outcomeLine(obligation: LeasedObligation): string {
   const outcome = obligation.outcome ?? null;
   const id = safeToken(obligation.id, OBLIGATION_ID_TOKEN) ?? "unavailable";
@@ -1086,7 +1095,7 @@ function outcomeLine(obligation: LeasedObligation): string {
   const paneId = safeToken(outcome.paneId, PANE_ID_TOKEN) ?? "unknown";
   const excerpt =
     outcome.excerpt && outcome.excerpt.text.length > 0
-      ? outcome.excerpt.text
+      ? stripControlChars(outcome.excerpt.text)
       : "(no assistant message)";
   const assistantRef = safeToken(outcome.lastAssistantRef, ASSISTANT_REF_TOKEN);
   const ref = assistantRef ? ` · assistantRef: ${assistantRef}` : "";
