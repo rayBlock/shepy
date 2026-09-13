@@ -236,7 +236,20 @@ wake mechanism is verified in the real Claude harness.
   the fence. Known, tracked with item 7: a Stop that re-claims and dies
   before the owner-file write leaves file(stale) vs row(fresh); self-heals
   within one lease, with a warning that names the pane's own id.
-- **Item 2 in flight as RUN-20260913-03** (design D1–D5 in its packet).
+- **Item 2 (represented set == acknowledged set) LANDED `be3540e`** as
+  RUN-20260913-03 (`docs/runs/`): `formatHookContext` returns
+  `{context, representedIds, deferredIds}` — full lines, then one-line
+  stubs pointing at `shepy inbox get <id>`, then a deferred tail; both
+  hook paths record, deliver and ack only the represented ids; new
+  `inbox.defer` returns the tail to pending with the lease attempt
+  refunded (`deferred_over_budget`); new `inbox.get` RPC + `shepy inbox
+  get`; `inbox list --before/--limit`. Also fixed (pre-existing, found by
+  the verifier): the truncation hint embedded the raw paneId, so control
+  bytes could reach a wake or a terminal; now allowlisted at the daemon and
+  stripped at both render points. Known, documented: a single outcome can
+  never be deferred (2 000-char cap always fits); a permanently overloaded
+  inbox re-renders ~a third of a batch per turn — drain with
+  `inbox list` / `retire`, not by waiting.
 - The lapsed-row sweep stays **held** on `ops/owner-sweep-held` — the review
   condition is to display lapsed state and preserve transition history, not to GC
   yet. `shepy profile owner` now covers the display half.
