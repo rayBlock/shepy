@@ -150,6 +150,18 @@ before behaviour is pinned buys nothing. Target shape — note the destination i
 
 - Reject a claim for a nonexistent profile in `ProfileDeliveryService.claim`
   (today it creates a ghost owner that can never receive anything).
+  **LANDED `6291a60` + `b19804c` as RUN-20260913-01** (`docs/runs/`), the
+  first pilot of the vault's orchestration program. Check lives in the
+  service; `ClaimResult` gained `{ kind: "rejected", reason:
+  "profile_not_found" }`; Pi extension and Claude hook render the reason.
+  ⚠ the live daemon needs a restart to serve it.
+- **Deleted-profile seam** (found by the RUN-20260913-01 verifier, probe 3):
+  after `deleteProfile`, the orphaned `profile_owners` row is still served by
+  `profile.owner`, a re-claim returns `profile_not_found` without cleaning it,
+  and `renew` / `release` with the held token still return `true`. Pre-existing
+  at base, not a regression; belongs with the FK decision (the owners table
+  has no reference to `orchestrator_profiles`, so any writer that bypasses the
+  service can still mint a ghost). Decide FK + one-off cleanup together.
 - Retain ownership-transition history so a post-expiry takeover is
   distinguishable from a reconnect. Changing the response word without
   retaining the transition does not create an audit trail.

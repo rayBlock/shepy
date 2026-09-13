@@ -1,0 +1,196 @@
+// VERIFIER SCRATCH TEST — not part of the candidate. Delete after running.
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { afterEach, describe, expect, test } from "vitest";
+import { applyMigrations } from "@/db/apply-migrations.js";
+import { openSqlite } from "@/db/client.js";
+import { DeliveryObligationStore } from "@/db/delivery-obligations.js";
+import { AgentEventStore } from "@/db/agent-events.js";
+import { AgentStore } from "@/db/agents.js";
+import { OrchestratorProfileStore } from "@/db/orchestrator-profiles.js";
+import { ProfileOwnerStore } from "@/db/profile-owners.js";
+import { createAgentHistoryService } from "@/agent-history/service.js";
+import { AgentContextSnapshotStore } from "@/db/agent-context-snapshots.js";
+import { AgentContextService } from "@/observability/agent-context-service.js";
+import { AgentOrchestratorScopeStore } from "@/db/agent-orchestrator-scopes.js";
+import { AgentOrchestratorService } from "@/observability/agent-orchestrator-service.js";
+import { AgentHistoryCacheStore } from "@/db/agent-history-cache.js";
+import { HerdrSessionStore } from "@/db/herdr-sessions.js";
+import { HerdrWorkspaceStore } from "@/db/herdr-workspaces.js";
+import { ObservabilityRpcServer } from "@/daemon/observability-server.js";
+import { ProfileDeliveryService } from "@/observability/profile-delivery-service.js";
+import { RpcTestClient } from "./rpc-test-client.js";
+
+const tempDirs: string[] = [];
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) rmSync(dir, { force: true, recursive: true });
+});
+
+function build() {
+  const dir = mkdtempSync(join(tmpdir(), "shepy-verify-"));
+  tempDirs.push(dir);
+  const { sqlite } = openSqlite(join(dir, "probe.sqlite"));
+  applyMigrations(sqlite, { migrationsFolder: "drizzle" });
+  const profiles = new OrchestratorProfileStore(sqlite);
+  const owners = new ProfileOwnerStore({ sqlite });
+  const delivery = new ProfileDeliveryService({
+    agentEvents: new AgentEventStore(sqlite),
+    agents: new AgentStore(sqlite),
+    obligations: new DeliveryObligationStore(sqlite),
+    owners,
+    profiles,
+  });
+  const claimInput = (profileId: string) => ({
+    harnessKind: "pi",
+    harnessSessionRefJson: "{}",
+    herdrSessionName: "default",
+    paneId: "wX:p1",
+    profileId,
+    subscriberId: "sub-1",
+    terminalId: "tX",
+  });
+  return { count: () =>
+      (sqlite.prepare("select count(*) as n from profile_owners").get() as { n: number }).n,
+    delivery,
+    owners,
+    profiles,
+    claimInput };
+}
+
+describe("verifier probes (step 4)", () => {
+  test("probe 5: profileId ' ' over the LIVE RPC socket → typed rejection, no row", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "shepy-verify-rpc-"));
+    tempDirs.push(dir);
+    const path = join(dir, "probe.sqlite");
+    const { sqlite } = openSqlite(path);
+    applyMigrations(sqlite, { migrationsFolder: "drizzle" });
+    const profiles = new OrchestratorProfileStore(sqlite);
+    profiles.createProfile({ displayName: "Real", profileId: "real", projectRoots: [] });
+    const owners = new ProfileOwnerStore({ sqlite });
+    const delivery = new ProfileDeliveryService({
+      agentEvents: new AgentEventStore(sqlite),
+      agents: new AgentStore(sqlite),
+      obligations: new DeliveryObligationStore(sqlite),
+      owners,
+      profiles,
+    });
+    const socketPath = join(dir, "rpc.sock");
+    const history = createAgentHistoryService({
+      cache: new AgentHistoryCacheStore(sqlite),
+      homeDir: dirname(path),
+    });
+    const server = new ObservabilityRpcServer({
+      context: new AgentContextService({
+        history,
+        stores: { agentContextSnapshots: new AgentContextSnapshotStore(sqlite), agents: new AgentStore(sqlite) },
+      }),
+      delivery,
+      history,
+      orchestrator: new AgentOrchestratorService({
+        agentEvents: new AgentEventStore(sqlite),
+        agents: new AgentStore(sqlite),
+        scopes: new AgentOrchestratorScopeStore(sqlite),
+      }),
+      socketPath,
+      stores: {
+        agentEvents: new AgentEventStore(sqlite),
+        agents: new AgentStore(sqlite),
+        herdrSessions: new HerdrSessionStore(sqlite),
+        herdrWorkspaces: new HerdrWorkspaceStore(sqlite),
+      },
+    });
+    await server.start();
+    const client = await RpcTestClient.connect(socketPath);
+    try {
+      const response = (await client.request("profile.claim", {
+        harnessKind: "pi",
+        harnessSessionRefJson: "{}",
+        herdrSessionName: "default",
+        paneId: "wX:p1",
+        profileId: " ",
+        subscriberId: "sub-1",
+        terminalId: "tX",
+      })) as { result: { kind: string; reason?: string } };
+      expect(response.result).toEqual({ kind: "rejected", reason: "profile_not_found" });
+      const count = (sqlite.prepare("select count(*) as n from profile_owners").get() as { n: number }).n;
+      expect(count).toBe(0);
+      // and "" → schema error, not a typed rejection
+      await expect(
+        client.request("profile.claim", {
+          harnessKind: "pi",
+          harnessSessionRefJson: "{}",
+          herdrSessionName: "default",
+          paneId: "wX:p1",
+          profileId: "",
+          subscriberId: "sub-1",
+          terminalId: "tX",
+        }),
+      ).rejects.toThrow(/Invalid RPC params/);
+    } finally {
+      client.close();
+      await server.stop();
+      sqlite.close();
+    }
+  });
+
+  test("probe 1: whitespace profile id ' ' is rejected profile_not_found, no row", () => {
+    const b = build();
+    const claim = b.delivery.claim(b.claimInput(" "));
+    expect(claim).toEqual({ kind: "rejected", reason: "profile_not_found" });
+    expect(b.count()).toBe(0);
+    expect(b.delivery.owner(" ")).toBeUndefined();
+  });
+
+  test("probe 2: profile with ZERO subscriptions still claims fine", () => {
+    const b = build();
+    b.profiles.createProfile({ displayName: "Bare", profileId: "bare", projectRoots: [] });
+    const claim = b.delivery.claim(b.claimInput("bare"));
+    expect(claim.kind).toBe("claimed");
+    if (claim.kind === "claimed") expect(claim.leaseToken).toBeTruthy();
+    expect(b.count()).toBe(1);
+  });
+
+  test("probe 3: profile deleted AFTER a successful claim — report behaviour", () => {
+    const b = build();
+    b.profiles.createProfile({ displayName: "Gone", profileId: "gone", projectRoots: [] });
+    const first = b.delivery.claim(b.claimInput("gone"));
+    if (first.kind !== "claimed" && first.kind !== "reclaimed") throw new Error("setup failed");
+    const deleted = b.profiles.deleteProfile("gone");
+    expect(deleted).toBe(true);
+    // a) stale owner row survives; owner(id) still serves it
+    expect(b.delivery.owner("gone")).toBeDefined();
+    expect(b.count()).toBe(1);
+    // b) re-claim (no token) → profile_not_found, owner row NOT cleaned up
+    expect(b.delivery.claim(b.claimInput("gone"))).toEqual({
+      kind: "rejected",
+      reason: "profile_not_found",
+    });
+    expect(b.count()).toBe(1);
+    // c) renew / release with the still-held token: do they work?
+    const renew = b.delivery.renew({ leaseToken: first.leaseToken, profileId: "gone" });
+    // eslint-disable-next-line no-console
+    console.log("PROBE3 renew on deleted profile →", JSON.stringify(renew));
+    const release = b.delivery.release({ leaseToken: first.leaseToken, profileId: "gone" });
+    // eslint-disable-next-line no-console
+    console.log("PROBE3 release on deleted profile →", JSON.stringify(release));
+  });
+
+  test("probe 4: re-claim with currentLeaseToken on a nonexistent profile", () => {
+    const b = build();
+    // never existed, fabricated token
+    expect(
+      b.delivery.claim({ ...b.claimInput("nope"), currentLeaseToken: "fake-token" }),
+    ).toEqual({ kind: "rejected", reason: "profile_not_found" });
+    expect(b.count()).toBe(0);
+    // existed, claimed, deleted, token still held → existence gate wins
+    b.profiles.createProfile({ displayName: "G2", profileId: "gone2", projectRoots: [] });
+    const first = b.delivery.claim(b.claimInput("gone2"));
+    if (first.kind !== "claimed" && first.kind !== "reclaimed") throw new Error("setup failed");
+    b.profiles.deleteProfile("gone2");
+    expect(
+      b.delivery.claim({ ...b.claimInput("gone2"), currentLeaseToken: first.leaseToken }),
+    ).toEqual({ kind: "rejected", reason: "profile_not_found" });
+    expect(b.count()).toBe(1); // the old row from the first claim
+  });
+});
