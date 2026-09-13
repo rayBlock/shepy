@@ -185,10 +185,23 @@ wake mechanism is verified in the real Claude harness.
 
 ## Progress
 
-- `ops/observability-surface` in flight: `f853bcc` `shepy profile owner` landed
-  in the worktree. Its third task (sweeping lapsed owner rows) is **held** — see
-  the table above; the review condition is to display lapsed state and preserve
-  transition history, not to GC yet.
+- **Observability surface LANDED** `dc96fef`: `shepy profile owner` (renders
+  valid / in-grace / `lapsed — claimable`, never prints a token), `retire` added
+  to `inbox --help` — it was the only parse-but-not-listed verb in the whole CLI
+  — and a derived help census (`COMMAND_GROUP_VERBS` / `TOP_LEVEL_COMMANDS` are
+  now the source of truth the parsers read, so help and parser cannot diverge).
+- **Item 1 (selector ambiguity) LANDED** `27d1158`: both paths now resolve through
+  `src/observability/profile-selector-scope.ts`. RED was real — an ambiguous
+  selector projected 2 obligations (`expected 2 to be +0`). Ops mutation-tested
+  the identity gate: removing it fails *"a unique match naming worker-a never
+  projects worker-b's event"*. Also established that two live agents CAN share a
+  `name` (the only unique indexes are `(session, pane)` and `(session, terminal)`),
+  so the duplicate-name case is real, and removed a duplicated `recordToRow` plus
+  a redundant second `agents.list()` in the inspection path.
+- Item 6 (owner-file CAS) in flight on `ops/owner-file-cas`.
+- The lapsed-row sweep stays **held** on `ops/owner-sweep-held` — the review
+  condition is to display lapsed state and preserve transition history, not to GC
+  yet. `shepy profile owner` now covers the display half.
 - Nothing else started.
 
 ## Next steps
