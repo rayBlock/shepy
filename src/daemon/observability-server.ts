@@ -1,7 +1,14 @@
 import { existsSync, unlinkSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Value } from "@sinclair/typebox/value";
 import type { AgentHistoryService } from "@/agent-history/service.js";
+import {
+  createDaemonInfo,
+  type DaemonInfo,
+  resolvePackageVersion,
+} from "@/daemon/daemon-identity.js";
 import type { AgentEventStore } from "@/db/agent-events.js";
 import type { AgentStore } from "@/db/agents.js";
 import type { HerdrSessionStore } from "@/db/herdr-sessions.js";
@@ -29,6 +36,7 @@ import type {
 import type { OperationDispatchService } from "@/observability/operation-dispatch-service.js";
 import type { OperationWaitService } from "@/observability/operation-wait-service.js";
 import type { ProfileDeliveryService } from "@/observability/profile-delivery-service.js";
+import type { ProfileDiagnoseService } from "@/observability/profile-diagnose-service.js";
 import type { ProfileService } from "@/observability/profile-service.js";
 import { RpcRefusedError } from "@/observability/rpc-refused-error.js";
 import {
@@ -52,6 +60,7 @@ import {
   operationGetInputSchema,
   operationWaitInputSchema,
   profileClaimInputSchema,
+  profileDiagnoseInputSchema,
   profileEnsureInputSchema,
   profileReleaseInputSchema,
   profileShowInputSchema,
@@ -95,6 +104,7 @@ export class ObservabilityRpcServer {
   readonly #clearTimeout: (handle: TimerHandle) => void;
   readonly #context: AgentContextService;
   readonly #connectionOrderBySocket = new Map<Socket, number>();
+  readonly #daemonInfo: DaemonInfo;
   readonly #disconnectGraceMs: number;
   readonly #disconnectTimers = new Map<string, GraceTimer>();
   readonly #history: AgentHistoryService;
@@ -102,6 +112,7 @@ export class ObservabilityRpcServer {
   readonly #orchestrator: AgentOrchestratorService;
   readonly #piPresenceBySocket = new Map<Socket, PiPresence>();
   readonly #profiles: ProfileService | undefined;
+  readonly #profileDiagnose: ProfileDiagnoseService | undefined;
   readonly #delivery: ProfileDeliveryService | undefined;
   readonly #operationDispatch: OperationDispatchService | undefined;
   readonly #operationStore: OperationStore | undefined;
@@ -129,11 +140,13 @@ export class ObservabilityRpcServer {
   constructor(options: {
     clearTimeout?: (handle: TimerHandle) => void;
     context: AgentContextService;
+    daemonInfo?: DaemonInfo;
     disconnectGraceMs?: number;
     history: AgentHistoryService;
     now?: () => number;
     orchestrator: AgentOrchestratorService;
     delivery?: ProfileDeliveryService;
+    profileDiagnose?: ProfileDiagnoseService;
     profiles?: ProfileService;
     operationDispatch?: OperationDispatchService;
     operationStore?: OperationStore;
@@ -155,11 +168,23 @@ export class ObservabilityRpcServer {
   }) {
     this.#clearTimeout = options.clearTimeout ?? clearTimeout;
     this.#context = options.context;
+    // RUN-20260913-04 D1: the served identity. An explicit one (the real
+    // daemon, resolved once at boot) wins; the default mints one from this
+    // module so every server instance — including test fixtures — answers
+    // daemon.info with a stable, per-boot identity instead of an error.
+    this.#daemonInfo =
+      options.daemonInfo ??
+      createDaemonInfo({
+        entryPath: fileURLToPath(import.meta.url),
+        pid: process.pid,
+        version: resolvePackageVersion(dirname(fileURLToPath(import.meta.url))),
+      });
     this.#disconnectGraceMs = options.disconnectGraceMs ?? DISCONNECT_GRACE_MS;
     this.#history = options.history;
     this.#now = options.now ?? Date.now;
     this.#orchestrator = options.orchestrator;
     this.#delivery = options.delivery;
+    this.#profileDiagnose = options.profileDiagnose;
     this.#profiles = options.profiles;
     this.#operationDispatch = options.operationDispatch;
     this.#operationStore = options.operationStore;
@@ -322,6 +347,11 @@ export class ObservabilityRpcServer {
 
   async #dispatch(socket: Socket, method: string, params: unknown): Promise<unknown> {
     switch (method) {
+      case "daemon.info": {
+        // No params by design: the identity is the daemon's own answer to
+        // "which build is answering this socket".
+        return this.#daemonInfo;
+      }
       case "agent.list": {
         assertSchema(agentListInputSchema, params);
         const scope = this.#resolveScope(params as AgentQueryScope);
@@ -461,6 +491,14 @@ export class ObservabilityRpcServer {
           }
           throw error;
         }
+      }
+      case "profile.diagnose": {
+        assertSchema(profileDiagnoseInputSchema, params);
+        const input = params as { cliBuildStamp?: string; profileId: string };
+        return this.#requireDiagnose().diagnose({
+          ...(input.cliBuildStamp !== undefined ? { cliBuildStamp: input.cliBuildStamp } : {}),
+          profileId: input.profileId,
+        });
       }
       case "profile.claim": {
         assertSchema(profileClaimInputSchema, params);
@@ -857,6 +895,11 @@ export class ObservabilityRpcServer {
   #requireDelivery(): ProfileDeliveryService {
     if (!this.#delivery) throw new Error("Delivery service not configured on this daemon");
     return this.#delivery;
+  }
+
+  #requireDiagnose(): ProfileDiagnoseService {
+    if (!this.#profileDiagnose) throw new Error("Diagnose service not configured on this daemon");
+    return this.#profileDiagnose;
   }
 
   #resolveScope(input: AgentQueryScope): AgentQueryScope {

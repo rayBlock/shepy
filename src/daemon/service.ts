@@ -4,6 +4,7 @@ import { env, exit } from "node:process";
 import { fileURLToPath } from "node:url";
 import { createAgentHistoryService } from "@/agent-history/service.js";
 import { resolveRuntime } from "@/config/runtime.js";
+import { createDaemonInfo, resolvePackageVersion } from "@/daemon/daemon-identity.js";
 import { AgentContextSnapshotStore } from "@/db/agent-context-snapshots.js";
 import { AgentEventStore } from "@/db/agent-events.js";
 import { AgentHistoryCacheStore } from "@/db/agent-history-cache.js";
@@ -26,6 +27,7 @@ import { OperationDispatchService } from "@/observability/operation-dispatch-ser
 import { resolveDispatchTarget } from "@/observability/operation-target-resolver.js";
 import { OperationWaitService } from "@/observability/operation-wait-service.js";
 import { ProfileDeliveryService } from "@/observability/profile-delivery-service.js";
+import { ProfileDiagnoseService } from "@/observability/profile-diagnose-service.js";
 import { ProfileService } from "@/observability/profile-service.js";
 import { HerdrSessionWatchManager } from "./herdr-session-watch-manager.js";
 import { ObservabilityRpcServer } from "./observability-server.js";
@@ -37,6 +39,16 @@ export async function runObservabilityDaemonService(
   applyEnvironment(runtime.environment);
   mkdirSync(dirname(runtime.paths.dbPath), { recursive: true });
   mkdirSync(dirname(runtime.paths.socketPath), { recursive: true });
+
+  // RUN-20260913-04 D1: resolved ONCE at boot and held — the identity the
+  // daemon serves over daemon.info for the rest of its life. process.argv[1]
+  // is the dist entry (shepy-daemon.js) whose mtime IS the build stamp; the
+  // module URL is the fallback when argv is not a file.
+  const daemonInfo = createDaemonInfo({
+    entryPath: process.argv[1] ? resolve(process.argv[1]) : fileURLToPath(import.meta.url),
+    pid: process.pid,
+    version: resolvePackageVersion(dirname(fileURLToPath(import.meta.url))),
+  });
 
   const { sqlite } = openSqlite(runtime.paths.dbPath);
   applyMigrations(sqlite, {
@@ -68,6 +80,7 @@ export async function runObservabilityDaemonService(
   });
   const operationWait = new OperationWaitService({ operations: operationStore });
   const obligations = new DeliveryObligationStore(sqlite);
+  const profileOwners = new ProfileOwnerStore({ sqlite });
   // Upgrade fence (review F3-2): any lease stamp made by the pre-fence,
   // unfenced inbox.lease dies here, once, before the RPC surface exists —
   // rows return to pending and are re-delivered, never dropped.
@@ -76,8 +89,14 @@ export async function runObservabilityDaemonService(
     agentEvents,
     agents,
     obligations,
-    owners: new ProfileOwnerStore({ sqlite }),
+    owners: profileOwners,
     profiles: orchestratorProfiles,
+  });
+  const diagnoseService = new ProfileDiagnoseService({
+    daemonInfo,
+    obligations,
+    owners: profileOwners,
+    profiles: profileService,
   });
   const context = new AgentContextService({
     history,
@@ -96,7 +115,9 @@ export async function runObservabilityDaemonService(
 
   const server = new ObservabilityRpcServer({
     context: daemonServices.context,
+    daemonInfo,
     delivery: deliveryService,
+    profileDiagnose: diagnoseService,
     profiles: profileService,
     operationDispatch,
     operationStore,

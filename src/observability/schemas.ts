@@ -69,6 +69,17 @@ export const profileShowInputSchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const profileDiagnoseInputSchema = Type.Object(
+  {
+    // The CLI's own build stamp, when the caller volunteers it: the daemon
+    // compares it against its own and reports daemon_version_skew in the
+    // findings. Absent (raw RPC callers) → no skew finding.
+    cliBuildStamp: Type.Optional(Type.String({ minLength: 1 })),
+    profileId: Type.String({ minLength: 1 }),
+  },
+  { additionalProperties: false },
+);
+
 export const profileSubscribeInputSchema = Type.Object(
   {
     agentSelector: agentSelectorSchema,

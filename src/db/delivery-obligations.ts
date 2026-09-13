@@ -51,6 +51,25 @@ export type Obligation = {
   subscriptionId: number;
 };
 
+/** The queue half of a `profile.diagnose` report (RUN-20260913-04 D2):
+ * counts, age/service extremes, stranded leases, and the newest row still
+ * awaiting an ack. Deliberately secret-free: no lease tokens ride. */
+export type QueueDiagnosis = {
+  counts: Record<ObligationState, number>;
+  lastAckedAt: number | null;
+  lastDeliveredAt: number | null;
+  maxPendingAttempts: number;
+  newestUnacked: {
+    attemptCount: number;
+    id: string;
+    lastErrorCode: string | null;
+    lastErrorSummary: string | null;
+    state: ObligationState;
+  } | null;
+  oldestPendingAgeMs: number | null;
+  strandedLeases: number;
+};
+
 export class DeliveryObligationStore {
   readonly #sqlite: DatabaseSync;
 
@@ -368,6 +387,83 @@ export class DeliveryObligationStore {
       )
       .all(...params) as ObligationRow[];
     return rows.map(toObligation);
+  }
+
+  /**
+   * READ-ONLY aggregate for `profile.diagnose` (RUN-20260913-04 D2) — the
+   * one store helper the diagnose path needed beyond the existing list/
+   * read methods: counts, pending extremes, delivery/ack recency, stranded
+   * leases, and the newest unacked row in three SELECTs. Writes nothing.
+   */
+  diagnoseQueue(input: { now?: number; profileId: string }): QueueDiagnosis {
+    const now = input.now ?? Date.now();
+    const totals = this.#sqlite
+      .prepare(
+        `select
+           sum(case when state = 'pending' then 1 else 0 end) as pending,
+           sum(case when state = 'leased' then 1 else 0 end) as leased,
+           sum(case when state = 'delivered' then 1 else 0 end) as delivered,
+           sum(case when state = 'acked' then 1 else 0 end) as acked,
+           sum(case when state = 'dead_letter' then 1 else 0 end) as dead_letter,
+           min(case when state = 'pending' then created_at end) as oldest_pending_at,
+           max(case when state = 'pending' then attempt_count end) as max_pending_attempts,
+           max(delivered_at) as last_delivered_at,
+           max(acked_at) as last_acked_at
+         from delivery_obligations where profile_id = ?`,
+      )
+      .get(input.profileId) as {
+      acked: number | null;
+      dead_letter: number | null;
+      delivered: number | null;
+      last_acked_at: number | null;
+      last_delivered_at: number | null;
+      leased: number | null;
+      max_pending_attempts: number | null;
+      oldest_pending_at: number | null;
+      pending: number | null;
+    };
+    const strandedLeases = Number(
+      (
+        this.#sqlite
+          .prepare(
+            `select count(*) as n from delivery_obligations
+           where profile_id = ? and state in ('leased', 'delivered')
+             and lease_expires_at is not null and lease_expires_at < ?`,
+          )
+          .get(input.profileId, now) as { n: number }
+      ).n,
+    );
+    const newestUnackedRow = this.#sqlite
+      .prepare(
+        `select * from delivery_obligations
+         where profile_id = ? and state != 'acked'
+         order by agent_event_id desc limit 1`,
+      )
+      .get(input.profileId) as ObligationRow | undefined;
+    return {
+      counts: {
+        acked: Number(totals.acked ?? 0),
+        dead_letter: Number(totals.dead_letter ?? 0),
+        delivered: Number(totals.delivered ?? 0),
+        leased: Number(totals.leased ?? 0),
+        pending: Number(totals.pending ?? 0),
+      },
+      lastAckedAt: totals.last_acked_at,
+      lastDeliveredAt: totals.last_delivered_at,
+      maxPendingAttempts: Number(totals.max_pending_attempts ?? 0),
+      newestUnacked: newestUnackedRow
+        ? {
+            attemptCount: newestUnackedRow.attempt_count,
+            id: newestUnackedRow.id,
+            lastErrorCode: newestUnackedRow.last_error_code,
+            lastErrorSummary: newestUnackedRow.last_error_summary,
+            state: newestUnackedRow.state,
+          }
+        : null,
+      oldestPendingAgeMs:
+        totals.oldest_pending_at === null ? null : Math.max(0, now - totals.oldest_pending_at),
+      strandedLeases,
+    };
   }
 
   #transaction<T>(body: () => T): T {
