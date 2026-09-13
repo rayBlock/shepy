@@ -73,7 +73,8 @@ export function toPublicProfileOwner(owner: ProfileOwner): PublicProfileOwner {
 export type ClaimResult =
   | { kind: "claimed"; leaseToken: string; owner: ProfileOwner }
   | { kind: "reclaimed"; leaseToken: string; owner: ProfileOwner }
-  | { kind: "rejected"; reason: "lease_active"; owner: PublicProfileOwner };
+  | { kind: "rejected"; reason: "lease_active"; owner: PublicProfileOwner }
+  | { kind: "rejected"; reason: "profile_not_found" };
 
 export class ProfileOwnerStore {
   readonly #sqlite: DatabaseSync;

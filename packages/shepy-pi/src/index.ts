@@ -161,6 +161,10 @@ export type ShepyProfileClaimResult =
       kind: "rejected";
       owner: { harnessKind: string; paneId: string } | undefined;
       profileId: string;
+      /** The daemon's rejection reason when it sent one — "lease_active"
+       * (a live owner holds it) or "profile_not_found" (no such profile;
+       * permanent misconfiguration, not a lease to wait out). */
+      reason?: string;
     }
   | { kind: "blocked"; profileId: string; reason: string };
 
@@ -937,6 +941,7 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
             kind?: string;
             leaseToken?: string;
             owner?: { harnessKind?: string; paneId?: string };
+            reason?: string;
           };
         };
         const result = claim.result ?? {};
@@ -945,11 +950,24 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
             result.owner?.paneId && result.owner.harnessKind
               ? { harnessKind: result.owner.harnessKind, paneId: result.owner.paneId }
               : undefined;
+          if (result.reason === "profile_not_found") {
+            // No such profile: there is no owner and no lease to wait out,
+            // so the lease_active wording would point the operator at a
+            // expiry that will never come. Name the actual problem.
+            const reason = `Shepy profile claim rejected (profile_not_found) — no profile ${profileId} exists on this daemon; check the profile id`;
+            ctx.ui.notify?.(reason, "error");
+            return { kind: "rejected", owner: undefined, profileId, reason: "profile_not_found" };
+          }
           ctx.ui.notify?.(
-            `Shepy profile claim rejected (${result.kind ?? "unknown"}) — the active owner's lease must expire first`,
+            `Shepy profile claim rejected (${result.reason ?? result.kind ?? "unknown"}) — the active owner's lease must expire first`,
             "error",
           );
-          return { kind: "rejected", owner, profileId };
+          return {
+            kind: "rejected",
+            owner,
+            profileId,
+            ...(result.reason !== undefined ? { reason: result.reason } : {}),
+          };
         }
         if (!result.leaseToken) {
           const reason = "Shepy profile claim returned no lease token";
@@ -1352,6 +1370,9 @@ export function formatShepyProfileToolText(
     case "reclaimed":
       return `Shepy profile ${result.profileId} reclaimed — this pane already owned it; ownership refreshed.`;
     case "rejected": {
+      if (result.reason === "profile_not_found") {
+        return `Shepy profile ${result.profileId} was not claimed — no such profile exists on this daemon. Check the profile id (your instructions name it) and try the corrected id once; do not retry the same id in a loop.`;
+      }
       const owner = result.owner
         ? `It is held by pane ${result.owner.paneId} (${result.owner.harnessKind}). `
         : "";

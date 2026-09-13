@@ -396,6 +396,7 @@ async function handlePromptSubmit(
         kind?: string;
         leaseToken?: string;
         owner?: { harnessKind?: string; paneId?: string };
+        reason?: string;
       };
     }>("profile.claim", {
       // Proof of possession: the exact token from this hook's previous
@@ -423,6 +424,15 @@ async function handlePromptSubmit(
     });
     const result = claim.result ?? {};
     if ((result.kind !== "claimed" && result.kind !== "reclaimed") || !result.leaseToken) {
+      if (result.kind === "rejected" && result.reason === "profile_not_found") {
+        // A claim on a profile the daemon has never heard of is a permanent
+        // misconfiguration: there is no owner and no lease to wait out, so
+        // the lease_active wording below would be a lie. Say what is wrong.
+        warnings.push(
+          `shepy: profile ${plainText(input.profileId)} does not exist on this daemon — nothing can be claimed or delivered; check the profile id`,
+        );
+        throw new ExpectedHookError("profile claim rejected (profile_not_found)");
+      }
       if (result.kind === "rejected") {
         // Another owner (typically a Pi lead) holds this profile. Without
         // this line the pane is deaf forever and nobody says so. A pane

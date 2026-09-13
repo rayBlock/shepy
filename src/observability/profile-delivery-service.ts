@@ -4,7 +4,11 @@ import type { AgentStore } from "@/db/agents.js";
 import type { DeliveryObligationStore, Obligation } from "@/db/delivery-obligations.js";
 import type { OrchestratorProfileStore } from "@/db/orchestrator-profiles.js";
 import type { ProfileOwnerStore } from "@/db/profile-owners.js";
-import { type PublicProfileOwner, toPublicProfileOwner } from "@/db/profile-owners.js";
+import {
+  type ClaimResult,
+  type PublicProfileOwner,
+  toPublicProfileOwner,
+} from "@/db/profile-owners.js";
 import type { AgentEventRecord, AgentEventType } from "./contracts.js";
 import { resolveSelectorInWorkspaceScope } from "./profile-selector-scope.js";
 import { parseAgentSelector, parseWorkspaceSelector } from "./profile-selectors.js";
@@ -210,7 +214,15 @@ export class ProfileDeliveryService {
 
   // ── Owner surface ─────────────────────────────────────────────────────
 
-  claim(input: Parameters<ProfileOwnerStore["claim"]>[0]) {
+  claim(input: Parameters<ProfileOwnerStore["claim"]>[0]): ClaimResult {
+    // A profile that does not exist can never receive anything, so a claim
+    // on it must not mint a ghost owner no delivery can ever reach. The
+    // check lives HERE, not in ProfileOwnerStore — the store is a plain
+    // owners table with no knowledge of profiles; this service holds both
+    // sides and answers the existence question before touching owners.
+    if (!this.#profiles.getProfile(input.profileId)) {
+      return { kind: "rejected", reason: "profile_not_found" };
+    }
     return this.#owners.claim(input);
   }
 

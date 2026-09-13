@@ -2158,3 +2158,41 @@ describe("selector ambiguity is fail-closed on BOTH paths (§7, §6.1.3)", () =>
     }
   });
 });
+
+describe("profile.claim on a nonexistent profile", () => {
+  const GHOST_CLAIM = { ...CLAIM_PANE_X, profileId: "ghost" } as const;
+
+  test("the service rejects the claim without creating a ghost owner", () => {
+    const { delivery, sqlite } = fixture();
+    const count = () =>
+      (sqlite.prepare("select count(*) as n from profile_owners").get() as { n: number }).n;
+    expect(count()).toBe(0);
+    const claim = delivery.claim(GHOST_CLAIM);
+    expect(claim).toEqual({ kind: "rejected", reason: "profile_not_found" });
+    // R2: no row persisted, and the public owner surface sees no owner.
+    expect(count()).toBe(0);
+    expect(delivery.owner("ghost")).toBeUndefined();
+  });
+
+  test("over RPC the rejection reaches the caller unchanged", async () => {
+    const { built, client, server } = await rpcFixture();
+    try {
+      const response = (await client.request("profile.claim", GHOST_CLAIM)) as {
+        result: { kind: string; leaseToken?: string; owner?: unknown; reason?: string };
+      };
+      expect(response.result).toEqual({ kind: "rejected", reason: "profile_not_found" });
+      expect(response.result.leaseToken).toBeUndefined();
+      const count = (
+        built.sqlite.prepare("select count(*) as n from profile_owners").get() as { n: number }
+      ).n;
+      expect(count).toBe(0);
+      await expect(client.request("profile.owner", { profileId: "ghost" })).resolves.toEqual({
+        owner: null,
+      });
+    } finally {
+      client.close();
+      await server.stop();
+      built.sqlite.close();
+    }
+  });
+});
