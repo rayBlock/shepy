@@ -17,6 +17,7 @@ type ClaimResult =
       kind: "rejected";
       owner: { harnessKind: string; paneId: string } | undefined;
       profileId: string;
+      reason?: string;
     }
   | { kind: "blocked"; profileId: string; reason: string };
 
@@ -278,6 +279,24 @@ describe("shepy_profile tool result text", () => {
     expect(text.toLowerCase()).toContain("do not retry");
   });
 
+  test("a profile_not_found rejection names the misconfiguration, never a live owner", async () => {
+    const { formatShepyProfileToolText } = await loadToolModule();
+    // The daemon's shape for a claim on a profile that does not exist: the
+    // rejection carries the reason and NO owner — there is none.
+    const text = formatShepyProfileToolText({
+      kind: "rejected",
+      owner: undefined,
+      profileId: "driffs",
+      reason: "profile_not_found",
+    });
+    expect(text).toContain("driffs");
+    expect(text).toContain("no such profile");
+    // The lease-expiry and live-owner wordings would both be lies here:
+    // nothing expires and nobody holds the profile.
+    expect(text).not.toMatch(/held by pane|active owner/);
+    expect(text).not.toContain("lease must expire");
+  });
+
   test("a blocked claim reports the reason and never invents ownership", async () => {
     const { formatShepyProfileToolText } = await loadToolModule();
     const text = formatShepyProfileToolText({
@@ -367,6 +386,44 @@ describe("shepy_profile tool execute() boundary", () => {
       expect(text).toContain("wB:p9");
       expect(text.toLowerCase()).toContain("do not retry");
       expect(client.calls.some(([method]) => method === "profile.claim")).toBe(true);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  test("a profile_not_found claim rejection reports the reason through notify and text", async () => {
+    vi.useFakeTimers();
+    const client = createFakeClient();
+    client.response = (method) => {
+      if (method === "profile.claim") {
+        // The daemon's shape for a claim on a profile that does not exist.
+        return { result: { kind: "rejected", reason: "profile_not_found" } };
+      }
+      if (method === "profile.renew") return { renewed: true };
+      if (method === "inbox.lease") return { obligations: [] };
+      return connectionResponse();
+    };
+    try {
+      const { ctx, execute } = await startToolSession(client);
+      const result = await execute({ action: "claim", profileId: "driffs" });
+      // The command path and the tool path share handleProfileOn, so its
+      // notify must name the actual problem — no such profile — and never
+      // point at a lease expiry that will never come.
+      expect(ctx.notifications).toContainEqual([
+        expect.stringContaining("profile_not_found"),
+        "error",
+      ]);
+      const notified = ctx.notifications
+        .filter(([message]) => message.includes("profile_not_found"))
+        .map(([message]) => message)
+        .join("\n");
+      expect(notified).toMatch(/no profile .* does not exist|no profile .* exists on this daemon/);
+      expect(notified).not.toContain("lease must expire");
+      // The model-facing text must not invent a live owner either.
+      const text = resultText(result);
+      expect(text).toContain("no such profile");
+      expect(text).not.toMatch(/held by pane|active owner/);
     } finally {
       vi.clearAllTimers();
       vi.useRealTimers();

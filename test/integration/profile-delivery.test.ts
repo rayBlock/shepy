@@ -2195,4 +2195,27 @@ describe("profile.claim on a nonexistent profile", () => {
       built.sqlite.close();
     }
   });
+
+  test("a whitespace-only profileId survives the RPC schema and is still a typed rejection", async () => {
+    // The wire schema only demands minLength 1, so " " reaches the service.
+    // No profile id is pure whitespace, so the answer must be the same
+    // profile_not_found rejection — never a ghost owner row.
+    const { built, client, server } = await rpcFixture();
+    try {
+      const response = (await client.request("profile.claim", {
+        ...CLAIM_PANE_X,
+        profileId: " ",
+      })) as { result: { kind: string; reason?: string; leaseToken?: string } };
+      expect(response.result).toEqual({ kind: "rejected", reason: "profile_not_found" });
+      expect(response.result.leaseToken).toBeUndefined();
+      const count = (
+        built.sqlite.prepare("select count(*) as n from profile_owners").get() as { n: number }
+      ).n;
+      expect(count).toBe(0);
+    } finally {
+      client.close();
+      await server.stop();
+      built.sqlite.close();
+    }
+  });
 });
