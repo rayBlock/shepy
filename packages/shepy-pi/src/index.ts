@@ -2,6 +2,7 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { createHash } from "node:crypto";
 import { Type } from "typebox";
 import { agentIdentityLabel } from "./agent-display.js";
+import { readPulseLine } from "./pulse.js";
 import {
   type AgentContextListItem,
   type AgentEventWireRecord,
@@ -289,8 +290,11 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
       state.wakeRequestedThroughEventId = 0;
     };
 
-    const wakeLabel = (count: number) =>
-      `Shepy received ${count} agent update${count === 1 ? "" : "s"}.`;
+    const wakeLabel = (count: number) => {
+      if (count > 0) return `Shepy received ${count} agent update${count === 1 ? "" : "s"}.`;
+      const pulse = readPulseLine();
+      return pulse ? `Shepy: no updates · factory pulse: ${pulse}` : "Shepy: no updates.";
+    };
 
     const clearAgentContext = () => {
       state.latestContext = undefined;
@@ -410,6 +414,7 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
               details: {
                 eventIds: current.map((outcome) => outcome.eventId),
                 outcomes: current,
+                ...(() => { const p = readPulseLine(); return p ? { pulse: p } : {}; })(),
               } satisfies AgentUpdateMessageDetails,
               display: true,
             },
@@ -688,7 +693,11 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
             {
               content: `Shepy · profile ${mode.profileId}: ${obligations.length} agent update(s) delivered — review the shepy context above and continue.`,
               customType: "shepy-wake",
-              details: { obligationIds: ids, profileId: mode.profileId },
+              details: {
+                obligationIds: ids,
+                profileId: mode.profileId,
+                ...(() => { const p = readPulseLine(); return p ? { pulse: p } : {}; })(),
+              },
               display: true,
             },
             { deliverAs: "followUp", triggerTurn: true },
@@ -1248,7 +1257,10 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
               leaseToken: mode.leaseToken,
               profileId: profileBatch.profileId,
             })) as { acked?: number };
-            ctx.ui.notify?.(`Shepy · ${ack.acked ?? 0} update(s) acknowledged`, "info");
+            const ackedCount = ack?.acked ?? 0;
+            if (ackedCount > 0) {
+              ctx.ui.notify?.(`Shepy · ${ackedCount} update${ackedCount === 1 ? "" : "s"} acknowledged`, "info");
+            }
           } catch {
             try {
               await state.client.request("inbox.nack", {

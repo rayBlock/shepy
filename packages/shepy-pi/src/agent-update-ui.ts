@@ -8,6 +8,8 @@ export const COLLAPSED_AGENT_UPDATE_LIMIT = 3;
 export type AgentUpdateMessageDetails = {
   eventIds: number[];
   outcomes: AgentOutcome[];
+  /** Factory pulse line (tools/seat/factory-pulse.zsh stamp), composed at send time; absent = stale/missing. */
+  pulse?: string;
 };
 
 export type ShepyFooterState =
@@ -58,6 +60,7 @@ function messageDetails(value: unknown): AgentUpdateMessageDetails {
       ? details.eventIds.filter((eventId): eventId is number => typeof eventId === "number")
       : [],
     outcomes: Array.isArray(details.outcomes) ? details.outcomes.filter(isAgentOutcome) : [],
+    ...(typeof details.pulse === "string" && details.pulse.length > 0 ? { pulse: details.pulse } : {}),
   };
 }
 
@@ -94,6 +97,16 @@ export function renderAgentUpdateMessage(
 ): Component {
   const details = messageDetails(message.details);
   const count = details.outcomes.length > 0 ? details.outcomes.length : details.eventIds.length;
+  if (count === 0) {
+    // Zero-count is never a nothing-burger: show the factory pulse when fresh, else nothing.
+    if (details.pulse) {
+      const line =
+        theme.fg("customMessageLabel", `◆ ${theme.bold("Shepy")}`) +
+        theme.fg("muted", ` quiet · ${cleanDisplayText(details.pulse)}`);
+      return new Text(line, 0, 0);
+    }
+    return new Text("", 0, 0);
+  }
   const heading =
     theme.fg("customMessageLabel", `◆ ${theme.bold("Shepy")}`) +
     theme.fg("muted", ` ${updateCountLabel(count)}`);
@@ -117,7 +130,9 @@ export function renderAgentUpdateMessage(
   });
   const hiddenCount = details.outcomes.length - visibleOutcomes.length;
   const omission = hiddenCount > 0 ? theme.fg("muted", `… ${hiddenCount} more`) : undefined;
-  const text = [heading, ...rows, omission].filter((line) => line !== undefined).join("\n");
+  // State of the world rides every message (lens wake-channel: the channel earns its interruption).
+  const pulseLine = details.pulse ? theme.fg("muted", `· ${cleanDisplayText(details.pulse)}`) : undefined;
+  const text = [heading, ...rows, omission, pulseLine].filter((line) => line !== undefined).join("\n");
   const box = new Box(1, 1, (value) => theme.bg("customMessageBg", value));
   box.addChild(new Text(text, 0, 0));
   return box;
