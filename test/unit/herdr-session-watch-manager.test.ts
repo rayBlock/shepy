@@ -56,6 +56,37 @@ describe("HerdrSessionWatchManager", () => {
     harness.sqlite.close();
   });
 
+  test("a failing tick is survivable: the scheduler keeps polling (2026-10-08 daemon crash)", async () => {
+    vi.useFakeTimers();
+    const harness = openObservabilityDbHarness();
+    seedAgent(harness, "working");
+    let refreshes = 0;
+    const manager = managerFor(harness, {
+      activeRevisionPollMs: 10,
+      fullRescanMs: 60,
+      index: {
+        async handleHerdrEvent() {
+          return { contextChangedScopes: [], events: [] };
+        },
+        async refreshHerdrSession() {
+          refreshes += 1;
+          // The exact incident shape: a transient SQLITE_BUSY rejection
+          // from a concurrent writer, surfacing inside the poll tick.
+          if (refreshes === 2) throw new Error("database is locked");
+          return result([agentRecord("wB:p2", "wB", "working")]);
+        },
+      },
+      sessionList: async () => [entry()],
+    });
+    await manager.start(); // refresh 1 (shared by the start rescan + watcher)
+    await vi.advanceTimersByTimeAsync(10); // refresh 2 rejects
+    await vi.advanceTimersByTimeAsync(10); // refresh 3 must still run
+    await vi.advanceTimersByTimeAsync(10); // refresh 4
+    expect(refreshes).toBe(4);
+    await manager.stop();
+    harness.sqlite.close();
+  });
+
   test("does not poll all-idle sessions before the full rescan", async () => {
     vi.useFakeTimers();
     const harness = openObservabilityDbHarness();

@@ -323,12 +323,20 @@ export class DeliveryObligationStore {
     });
   }
 
-  /** Operator retry: dead_letter → pending, attempts reset (§7.1 inbox retry). */
+  /**
+   * Operator retry: dead_letter → pending with attempts reset, and pending →
+   * pending with the error cleared (§7.1 inbox retry). The pending arm is the
+   * on-demand verb for a stalled-but-healthy queue: a pending obligation is
+   * already deliverable, so retry re-arms it (fresh attempt budget, no stale
+   * error) and the live owner pump leases it on its next tick. It must NOT
+   * touch leased/delivered/acked rows — those belong to an active lease or
+   * the audit record, not to the operator.
+   */
   retry(id: string): boolean {
     const result = this.#sqlite
       .prepare(
         `update delivery_obligations set state = 'pending', attempt_count = 0, last_error_code = null
-				 where id = ? and state = 'dead_letter'`,
+				 where id = ? and state in ('pending', 'dead_letter')`,
       )
       .run(id);
     return result.changes > 0;

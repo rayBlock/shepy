@@ -92,6 +92,14 @@ export const profileSubscribeInputSchema = Type.Object(
 
 export const profileUnsubscribeInputSchema = profileSubscribeInputSchema;
 
+export const profilePruneInputSchema = Type.Object(
+  {
+    ageMs: Type.Integer({ minimum: 0 }),
+    profileId: Type.String({ minLength: 1 }),
+  },
+  { additionalProperties: false },
+);
+
 export const operationDispatchInputSchema = Type.Object(
   {
     herdrSessionName: Type.Optional(Type.String({ minLength: 1 })),

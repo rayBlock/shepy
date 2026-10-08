@@ -500,6 +500,67 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
       return { kind: "released", profileId: mode.profileId };
     };
 
+    /**
+     * Lapse recovery for the pump heartbeat. `renew` fails closed once a
+     * lease lapses past grace (same predicate as claim), and the daemon's
+     * documented recovery for the returning holder is the
+     * proof-of-possession re-claim: `profile.claim` presenting the CURRENT
+     * lease token takes the fast path even past expiry, while a token
+     * superseded by a rival still rejects `lease_active`. Automating that
+     * re-claim adds no capability a rival could use — the token already is
+     * the capability — so the F3-1 fence stays intact. Outcomes:
+     * - claimed/reclaimed with a fresh token → install it, keep pumping
+     *   (delivery resumes; obligations were never lost, only unleased);
+     * - rejected (rival owns the profile now) → undefined, pump stops;
+     * - transport error → return the stale mode: fail-closed downstream,
+     *   next tick retries renew → recovery.
+     * Revalidates against the live mode before installing, so a concurrent
+     * explicit claim (/shepy on, env re-claim) is never clobbered.
+     */
+    const recoverLapsedLease = async (
+      mode: { leaseToken: string; pendingCount: number; profileId: string },
+      ctx: ProfileActionContext | undefined,
+    ): Promise<{ leaseToken: string; pendingCount: number; profileId: string } | undefined> => {
+      const client = state.client;
+      const launchIdentity = state.launchIdentity;
+      if (!client || !launchIdentity || !state.subscriberId || !state.sessionRef) return undefined;
+      try {
+        const claim = (await client.request("profile.claim", {
+          currentLeaseToken: mode.leaseToken,
+          harnessKind: "pi",
+          harnessSessionRefJson: JSON.stringify(state.sessionRef),
+          herdrSessionName: state.currentScope?.herdrSessionName ?? "default",
+          paneId: launchIdentity.paneId,
+          profileId: mode.profileId,
+          subscriberId: state.subscriberId,
+          terminalId: launchIdentity.paneId,
+          workspaceId: launchIdentity.workspaceId,
+        })) as { result?: { kind?: string; leaseToken?: string } };
+        const result = claim.result ?? {};
+        if (
+          (result.kind === "claimed" || result.kind === "reclaimed") &&
+          result.leaseToken &&
+          state.profileMode?.profileId === mode.profileId &&
+          state.profileMode.leaseToken === mode.leaseToken
+        ) {
+          state.profileMode = {
+            leaseToken: result.leaseToken,
+            pendingCount: mode.pendingCount,
+            profileId: mode.profileId,
+          };
+          ctx?.ui.notify?.(
+            `Shepy · profile ${mode.profileId} lease recovered after a lapse — delivery resumes`,
+            "info",
+          );
+          setShepyUi(ctx);
+          return state.profileMode;
+        }
+        return undefined;
+      } catch {
+        return mode;
+      }
+    };
+
     const startProfilePump = (ctx: ProfileActionContext | undefined) => {
       stopProfileTimer();
       state.profileTimer = setInterval(() => void pumpProfile(activeContext ?? ctx), 10_000);
@@ -507,37 +568,51 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
     };
 
     const pumpProfile = async (ctx: ProfileActionContext | undefined) => {
-      const mode = state.profileMode;
+      let mode = state.profileMode;
       if (!mode || !state.client || !state.connected) return;
       // Heartbeat FIRST, before every work gate: a busy owner (wake in
       // flight, user run active) must keep renewing, or any run longer than
       // the lease would let another subscriber claim a perfectly alive
-      // owner's profile. `renewed:false` is final — ownership was moved on
-      // or forfeited: stop the timer, clear profile mode, notify once. No
-      // retry, no automatic re-claim; reclaiming is an explicit act. The
-      // cleanup revalidates first: this tick's captured mode may already be
-      // STALE — a same-profile re-claim (env re-claim on reconnect, /shepy
-      // on, the tool) can install a new lease while our renew is in flight,
-      // and the FIFO daemon then answers the stale renew renewed:false AFTER
-      // the newer claim — and two overlapping stale ticks must not clean up
-      // (or notify) twice.
+      // owner's profile. `renewed:false` splits into two cases: a token that
+      // no longer matches the owner row means ownership genuinely moved on
+      // (stop, below); a token that still matches is a LAPSE — the lease
+      // died past grace (daemon outage, suspended pane) — and the daemon's
+      // documented recovery is the proof-of-possession re-claim, which the
+      // lapse-recovery helper below automates once per tick. Pre-fix, every
+      // lapse permanently killed the pump while projection kept minting
+      // pending-0 obligations — the 2026-10-08 delivery stall. The cleanup
+      // revalidates first: this tick's captured mode may already be STALE —
+      // a same-profile re-claim (env re-claim on reconnect, /shepy on, the
+      // tool) can install a new lease while our renew is in flight, and the
+      // FIFO daemon then answers the stale renew renewed:false AFTER the
+      // newer claim — and two overlapping stale ticks must not clean up (or
+      // notify) twice.
       try {
         const renew = (await state.client.request("profile.renew", {
           leaseToken: mode.leaseToken,
           profileId: mode.profileId,
         })) as { renewed?: boolean };
         if (renew.renewed === false) {
-          if (
+          const stillCurrent =
             state.profileMode?.profileId === mode.profileId &&
-            state.profileMode.leaseToken === mode.leaseToken
-          ) {
+            state.profileMode.leaseToken === mode.leaseToken;
+          if (!stillCurrent) return;
+          const recovered = await recoverLapsedLease(mode, ctx);
+          if (!recovered) {
             stopProfileTimer();
             state.profileMode = undefined;
             if (state.profileBatch) state.profileBatch.invalidated = true;
             ctx?.ui.notify?.(`Shepy · profile ${mode.profileId} ownership lost`, "warning");
             setShepyUi(ctx);
+            return;
           }
-          return;
+          if (recovered.leaseToken !== mode.leaseToken) {
+            mode = recovered;
+          } else {
+            // The re-claim transport failed this tick: keep the lapsed mode
+            // and fall through — the daemon refuses lapsed leases (fail
+            // closed), and the next tick retries renew → recovery.
+          }
         }
       } catch {
         // transient daemon error: the timer retries; the lease stays as-is

@@ -83,9 +83,18 @@ export class HerdrSessionWatchManager {
     if (this.#stopping || generation !== this.#lifecycleGeneration) return;
     this.#scheduler = setInterval(() => {
       if (!this.#tickInFlight) {
-        this.#tickInFlight = this.#tick().finally(() => {
-          this.#tickInFlight = undefined;
-        });
+        // A rejected tick must never escape the interval: unhandled, it is a
+        // fatal process crash (2026-10-08: `database is locked` from a
+        // concurrent writer killed the daemon and stalled every delivery
+        // pump whose lease then lapsed). Transient errors are logged and
+        // dropped — the next tick retries, watchers keep their own loops.
+        this.#tickInFlight = this.#tick()
+          .catch((error) => {
+            console.error("Shepy session tick failed (will retry):", error);
+          })
+          .finally(() => {
+            this.#tickInFlight = undefined;
+          });
       }
     }, this.#activeRevisionPollMs);
   }

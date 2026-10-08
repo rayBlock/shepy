@@ -123,6 +123,76 @@ export class ProfileService {
     return this.#profiles.listSubscriptions(profileId);
   }
 
+  /**
+   * Close-on-collect for subscriptions (the graveyard law): remove the
+   * ones whose agent selector provably matches NO live agent in their
+   * scoped workspace, older than `ageMs`. Liveness is judged by the SAME
+   * scope → candidates → resolve step as inspection and delivery (one
+   * helper, no drift), so a subscription this verb calls dead is a
+   * subscription that can never project another obligation.
+   *
+   * Age proxy: `subscription.updatedAt` — the row's last change. There is
+   * no first-unmatched-at stamp (the live agent index is transient by
+   * design and stamping one would put write traffic on the delivery read
+   * path), so "unmatched for longer than the age" reads as "unmatched
+   * now, untouched for longer than the age". Named consequence: an agent
+   * that died recently under an old untouched subscription prunes on the
+   * first prune past the age — the removed list is the receipt that makes
+   * that visible, and re-subscribing restores the binding.
+   *
+   * Refusals (never guesses): an AMBIGUOUS selector (multiple live agents
+   * matched) is alive-ish and is never removed; an INVALID selector or
+   * workspace selector cannot be proved dead — its intent is unreadable —
+   * so it is reported and left; an unmatched subscription younger than the
+   * age gate is reported as too young. Disabled subscriptions sit outside
+   * resolveSubscriptions entirely and are not this verb's business.
+   */
+  pruneSubscriptions(input: { ageMs: number; now?: number; profileId: string }): {
+    kept: number;
+    refused: Array<{ detail: string; id: number; label: string }>;
+    removed: Array<{ id: number; label: string; updatedAt: number }>;
+  } {
+    if (!this.#profiles.getProfile(input.profileId)) {
+      throw new Error(`No such profile: ${input.profileId}`);
+    }
+    const now = input.now ?? Date.now();
+    const removed: Array<{ id: number; label: string; updatedAt: number }> = [];
+    const refused: Array<{ detail: string; id: number; label: string }> = [];
+    let kept = 0;
+    for (const resolution of this.resolveSubscriptions(input.profileId)) {
+      const subscription = resolution.subscription;
+      const label = subscriptionLabel(subscription);
+      if (resolution.kind === "matched") {
+        kept += 1;
+        continue;
+      }
+      if (resolution.kind === "unmatched") {
+        if (now - subscription.updatedAt < input.ageMs) {
+          refused.push({
+            detail: `unmatched but younger than the age gate: ${resolution.detail}`,
+            id: subscription.id,
+            label,
+          });
+          continue;
+        }
+        const gone = this.#profiles.removeSubscription({
+          agentSelectorJson: subscription.agentSelectorJson,
+          herdrSessionName: subscription.herdrSessionName,
+          profileId: input.profileId,
+          workspaceSelectorJson: subscription.workspaceSelectorJson,
+        });
+        if (gone) removed.push({ id: subscription.id, label, updatedAt: subscription.updatedAt });
+        continue;
+      }
+      if (resolution.kind === "ambiguous") {
+        refused.push({ detail: `ambiguous: ${resolution.detail}`, id: subscription.id, label });
+        continue;
+      }
+      refused.push({ detail: `invalid: ${resolution.detail}`, id: subscription.id, label });
+    }
+    return { kept, refused, removed };
+  }
+
   /** Resolve every enabled subscription against the live index. */
   resolveSubscriptions(profileId: string): SubscriptionResolution[] {
     const subscriptions = this.#profiles
@@ -187,6 +257,42 @@ export class ProfileService {
     }
     return { agents, profile, resolutions };
   }
+}
+
+/** One human-readable line per subscription — the prune receipt's row
+ * identity. Falls back to the raw JSON when a part is unreadable, so the
+ * receipt can never hide what was removed behind a parse failure. */
+function subscriptionLabel(subscription: ProfileSubscriptionRecord): string {
+  let selector = subscription.agentSelectorJson;
+  try {
+    const parsed = JSON.parse(subscription.agentSelectorJson) as {
+      kind?: string;
+      value?: unknown;
+    };
+    if (parsed && typeof parsed.kind === "string") {
+      selector =
+        parsed.value === undefined ? parsed.kind : `${parsed.kind}:${String(parsed.value)}`;
+    }
+  } catch {
+    // raw JSON is the honest fallback
+  }
+  let workspace = subscription.workspaceSelectorJson;
+  try {
+    const parsed = JSON.parse(subscription.workspaceSelectorJson) as {
+      herdrSession?: string;
+      workspaceId?: string;
+    };
+    if (
+      parsed &&
+      typeof parsed.herdrSession === "string" &&
+      typeof parsed.workspaceId === "string"
+    ) {
+      workspace = `${parsed.herdrSession}/${parsed.workspaceId}`;
+    }
+  } catch {
+    // raw JSON is the honest fallback
+  }
+  return `${selector} @ ${workspace}`;
 }
 
 export { describeSelector };
