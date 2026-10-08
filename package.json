@@ -34,7 +34,7 @@
     "pnpm": ">=11.9.0"
   },
   "scripts": {
-    "build": "pnpm clean:dist && tsc -p tsconfig.build.json && tsc-alias -p tsconfig.build.json",
+    "build": "pnpm clean:dist && tsc -p tsconfig.build.json && tsc-alias -p tsconfig.build.json && node scripts/stamp-pi-build.mjs",
     "postbuild": "node scripts/ensure-bin-executable.mjs",
     "smoke:install": "node scripts/smoke-installed-cli.mjs",
     "check": "pnpm typecheck && pnpm test && pnpm lint && pnpm format:check && pnpm db:check && pnpm package:check && pnpm pi-package:check && pnpm herdr-plugin:check",

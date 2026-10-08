@@ -922,7 +922,6 @@ describe("shepy-pi orchestrator bridge", () => {
 
   test.each([
     ["agent.done", {}],
-    ["agent.blocked", {}],
     ["agent.idle", { from: "working", to: "idle" }],
   ])("wakes once at 500 ms for %s", async (type, payload) => {
     vi.useFakeTimers();
@@ -943,18 +942,19 @@ describe("shepy-pi orchestrator bridge", () => {
       await vi.advanceTimersByTimeAsync(499);
       expect(pi.customMessages).toEqual([]);
       await vi.advanceTimersByTimeAsync(1);
-      expect(pi.customMessages).toEqual([
+      expect(pi.customMessages).toMatchObject([
         [
           {
             content: "Shepy received 1 agent update.",
             customType: "shepy-wake",
             details: {
+              build: { pkgVersion: "0.5.0", gitSha: null },
               eventIds: [43],
               outcomes: [
                 {
                   agent: "claude",
                   eventId: 43,
-                  kind: type === "agent.blocked" ? "blocked" : "completed",
+                  kind: "completed",
                   name: "reviewer",
                   paneId: "wB:p-agent",
                   terminalId: "term_agent",
@@ -979,6 +979,62 @@ describe("shepy-pi orchestrator bridge", () => {
           { deliverAs: "followUp" },
         ],
       ]);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+      restoreEnv(previous);
+    }
+  });
+
+  test("blocked bypasses the routine 500 ms batch without bypassing the delivery/ack path", async () => {
+    vi.useFakeTimers();
+    const client = createWakeClient();
+    const pi = createFakePi();
+    const ctx = fakeCtx({ idle: true });
+    const previous = withHerdrEnv();
+    try {
+      await startExtension(client, pi, ctx);
+      client.emitStream({ method: "agent.event", params: { event: event(41, "term_agent") } });
+      client.emitStream({
+        method: "agent.event",
+        params: { event: event(42, "term_other", { type: "agent.blocked" }) },
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(pi.customMessages).toMatchObject([
+        [
+          {
+            customType: "shepy-wake",
+            details: {
+              build: { pkgVersion: "0.5.0", gitSha: null },
+              eventIds: [41, 42],
+              outcomes: [{ eventId: 41 }, { eventId: 42, kind: "blocked" }],
+            },
+          },
+          { deliverAs: "followUp", triggerTurn: true },
+        ],
+      ]);
+      expect(pi.hiddenMessages).toHaveLength(1);
+      expect(client.calls.filter(([method]) => method === "agent.orchestrator.ack")).toEqual([]);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+      restoreEnv(previous);
+    }
+  });
+
+  test("routine turn-end remains batched, not an immediate wake", async () => {
+    vi.useFakeTimers();
+    const client = createWakeClient();
+    const pi = createFakePi();
+    const ctx = fakeCtx({ idle: true });
+    const previous = withHerdrEnv();
+    try {
+      await startExtension(client, pi, ctx);
+      client.emitStream({ method: "agent.event", params: { event: event(43, "term_agent") } });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(pi.customMessages).toEqual([]);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(pi.customMessages).toHaveLength(1);
     } finally {
       vi.clearAllTimers();
       vi.useRealTimers();
@@ -2045,7 +2101,11 @@ describe("shepy-pi profile-owner bridge (Phase 4)", () => {
         {
           content: hidden?.[0].content ?? "",
           customType: "shepy-wake-context",
-          details: { obligationIds: ["ob-1", "ob-2"], profileId: "driffs" },
+          details: {
+            build: { pkgVersion: "0.5.0", gitSha: null },
+            obligationIds: ["ob-1", "ob-2"],
+            profileId: "driffs",
+          },
           display: false,
           role: "custom",
           timestamp: Date.now(),
@@ -2248,7 +2308,11 @@ describe("shepy-pi profile-owner bridge (Phase 4)", () => {
         {
           content: hiddenDelivered?.[0].content ?? "",
           customType: "shepy-wake-context",
-          details: { obligationIds: ["ob-3"], profileId: "driffs" },
+          details: {
+            build: { pkgVersion: "0.5.0", gitSha: null },
+            obligationIds: ["ob-3"],
+            profileId: "driffs",
+          },
           display: false,
           role: "custom",
           timestamp: Date.now(),

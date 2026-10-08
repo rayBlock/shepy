@@ -17,14 +17,17 @@ const EXPECTED_VERSION = "0.5.0";
 
 // `files: ["src"]` ships everything under src/, so a stray file there is the
 // one stray that actually reaches the tarball. The allowlist is exact and
-// includes the src/ tree: any file beyond these seven is a failure.
+// includes the src/ tree: any file beyond this exact list is a failure.
 const EXPECTED_FILES = new Set([
   "README.md",
   "package.json",
   "src/agent-display.ts",
   "src/agent-update-ui.ts",
+  "src/build-info.generated.json",
+  "src/build-info.ts",
   "src/daemon-client.ts",
   "src/index.ts",
+  "src/pulse.ts",
   "src/wake.ts",
 ]);
 

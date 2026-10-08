@@ -1,5 +1,6 @@
 node_modules/
 dist/
+packages/shepy-pi/src/build-info.generated.json
 *.sqlite
 *.sqlite-*
 .DS_Store
