@@ -937,6 +937,76 @@ describe("Phase 3 gate — durable delivery obligations", () => {
     expect(delivery.inboxList({ profileId: "driffs", state: "pending" })).toHaveLength(1);
   });
 
+  test("operator retry also covers pending rows and refuses lease/audit states", () => {
+    let clock = 1_000_000;
+    const { agents, delivery } = fixture({ now: () => clock });
+    const worker = agents.list().find((row) => row.name === "driffs-worker");
+    if (!worker) throw new Error("fixture: driffs-worker missing");
+    // A pending obligation that already burned attempts on expired leases —
+    // the live incident shape: stalled with attempts > 0 and an error stamped.
+    delivery.projectAgentEvent({
+      ...eventFor({ eventId: 41, worker: "driffs" }),
+      agentId: worker.id,
+    });
+    const claim = delivery.claim({
+      harnessKind: "pi",
+      harnessSessionRefJson: "{}",
+      herdrSessionName: "default",
+      paneId: "wX:p1",
+      profileId: "driffs",
+      subscriberId: "sub-1",
+      terminalId: "tX",
+    });
+    if (claim.kind !== "claimed" && claim.kind !== "reclaimed") throw new Error("claim failed");
+    delivery.inboxLease({ leaseToken: claim.leaseToken, now: clock, profileId: "driffs" });
+    clock += 10 * 60_000; // the lease expires; the owner row lapses with it
+    const claim2 = delivery.claim({
+      harnessKind: "pi",
+      harnessSessionRefJson: "{}",
+      herdrSessionName: "default",
+      paneId: "wX:p2",
+      profileId: "driffs",
+      subscriberId: "sub-2",
+      terminalId: "tX",
+    });
+    if (claim2.kind !== "claimed" && claim2.kind !== "reclaimed") throw new Error("claim 2 failed");
+    // The lease call sweeps the expired lease back to pending, re-leases it
+    // (attempts now 2), and the nack returns it to pending with the error.
+    const batch = delivery.inboxLease({
+      leaseToken: claim2.leaseToken,
+      now: clock,
+      profileId: "driffs",
+    });
+    expect(batch.obligations.length).toBe(1);
+    const ids = batch.obligations.map((obligation) => obligation.id);
+    delivery.inboxNack({ errorCode: "wake_failed", ids, leaseToken: claim2.leaseToken });
+    const pending = delivery.inboxList({ profileId: "driffs", state: "pending" });
+    expect(pending).toHaveLength(1);
+    const stalled = pending[0];
+    if (!stalled) throw new Error("pending row missing");
+    expect(stalled.attemptCount).toBeGreaterThan(0);
+    expect(stalled.lastErrorCode).toBe("wake_failed");
+    // Operator retry on the pending row: re-armed, attempts reset, no error.
+    expect(delivery.retry(stalled.id)).toBe(true);
+    const rearmed = delivery.inboxList({ profileId: "driffs", state: "pending" })[0];
+    if (!rearmed) throw new Error("re-armed row missing");
+    expect(rearmed.attemptCount).toBe(0);
+    expect(rearmed.lastErrorCode).toBeNull();
+    // A leased row belongs to its active lease: retry must refuse it.
+    const batch2 = delivery.inboxLease({
+      leaseToken: claim2.leaseToken,
+      now: clock,
+      profileId: "driffs",
+    });
+    expect(batch2.obligations.length).toBe(1);
+    const leasedId = batch2.obligations[0]?.id;
+    if (!leasedId) throw new Error("leased id missing");
+    expect(delivery.retry(leasedId)).toBe(false);
+    // Acked rows are the audit record: retry must refuse them too.
+    delivery.inboxAck({ ids: [leasedId], leaseToken: claim2.leaseToken, profileId: "driffs" });
+    expect(delivery.retry(leasedId)).toBe(false);
+  });
+
   test("owner replacement: active lease rejects a different subscriber, expired allows it", () => {
     let clock = 1_000_000;
     const { delivery } = fixture({ now: () => clock });

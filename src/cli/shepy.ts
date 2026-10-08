@@ -758,7 +758,7 @@ Commands:
   get <obligationId>        Show one obligation with its full excerpt
   list <profileId>          List obligations for a profile
   retire <profileId>        Retire a stale pending backlog
-  retry <obligationId>      Retry a dead-lettered obligation
+  retry <obligationId>      Retry a dead-lettered or stalled pending obligation
 
 Options:
   -h, --help                Show help
@@ -807,7 +807,9 @@ Options:
   -h, --help             Show help
 `;
     case "inbox-retry":
-      return `Retry a dead-lettered delivery obligation.
+      return `Retry a delivery obligation on demand: dead-lettered rows come back
+with a fresh attempt budget; already-pending rows are re-armed (error cleared,
+attempts reset) and the live owner pump leases them on its next tick.
 
 Usage:
   shepy inbox retry <obligationId>

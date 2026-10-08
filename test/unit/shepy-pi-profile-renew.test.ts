@@ -226,9 +226,73 @@ describe("shepy-pi profile pump heartbeat", () => {
     }
   });
 
-  test("renewed:false ends ownership once: timer stops, mode clears, no re-claim", async () => {
+  test("renewed:false with the token still current recovers via proof-of-possession re-claim", async () => {
     vi.useFakeTimers();
-    const client = renewingClient(() => ({ renewed: false }));
+    const client = createFakeClient();
+    let claims = 0;
+    client.response = (method, params) => {
+      if (method === "profile.claim") {
+        claims += 1;
+        return {
+          result: {
+            kind: claims === 1 ? "claimed" : "reclaimed",
+            leaseToken: `lease-${claims}`,
+          },
+        };
+      }
+      if (method === "profile.renew") {
+        // The lapsed lease-1 cannot renew; the recovered lease-2 can.
+        return { renewed: (params as { leaseToken: string }).leaseToken === "lease-2" };
+      }
+      if (method === "inbox.lease") return { obligations: [] };
+      return connectionResponse();
+    };
+    const { ctx, pi } = await renewHarness(client);
+    try {
+      await pi.command("on driffs", ctx); // claim → lease-1; the pump's renew is refused
+      await vi.advanceTimersByTimeAsync(20);
+      // The lapse was recovered, not mourned: exactly one recovery notify,
+      // never an ownership-lost notify.
+      const recovered = ctx.notifications.filter(([message]) =>
+        message.includes("lease recovered"),
+      );
+      expect(recovered).toHaveLength(1);
+      expect(
+        ctx.notifications.filter(([message]) => message.includes("ownership lost")),
+      ).toHaveLength(0);
+      // The recovery claim presented proof of possession of the lapsed token.
+      const claimCalls = client.calls.filter(([method]) => method === "profile.claim");
+      expect(claimCalls.at(-1)?.[1]).toMatchObject({
+        currentLeaseToken: "lease-1",
+        profileId: "driffs",
+      });
+      client.calls.length = 0;
+      // The pump survives under the fresh token: the next tick renews
+      // lease-2 successfully and leases the inbox.
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(client.calls.map(([method]) => method)).toEqual(["profile.renew", "inbox.lease"]);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  test("a recovery re-claim rejected by a rival owner stops the pump for good", async () => {
+    vi.useFakeTimers();
+    const client = createFakeClient();
+    let claims = 0;
+    client.response = (method) => {
+      if (method === "profile.claim") {
+        claims += 1;
+        if (claims === 1) return { result: { kind: "claimed", leaseToken: "lease-1" } };
+        // A rival claimed while our lease lapsed: the proof of possession
+        // no longer matches — recovery is impossible and must not retry.
+        return { result: { kind: "rejected", reason: "lease_active" } };
+      }
+      if (method === "profile.renew") return { renewed: false };
+      if (method === "inbox.lease") return { obligations: [] };
+      return connectionResponse();
+    };
     const { ctx, pi } = await renewHarness(client);
     try {
       await pi.command("on driffs", ctx);
@@ -236,12 +300,52 @@ describe("shepy-pi profile pump heartbeat", () => {
       const losses = ctx.notifications.filter(([message]) => message.includes("ownership lost"));
       expect(losses).toHaveLength(1);
       expect(losses[0]).toEqual(["Shepy · profile driffs ownership lost", "warning"]);
-      // Profile mode cleared: the footer falls back to plain orchestrator state.
       expect(ctx.statuses.get("shepy")).toBe("◆ Shepy");
       client.calls.length = 0;
-      // Two more ticks: the timer is stopped — no renew retry, no auto re-claim.
+      // Two more ticks: the timer is stopped — no renew retry, no re-claim loop.
       await vi.advanceTimersByTimeAsync(21_000);
       expect(client.calls).toEqual([]);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  test("a recovery re-claim transport failure is fail-closed: no stop, retried next tick", async () => {
+    vi.useFakeTimers();
+    const client = createFakeClient();
+    client.response = (method) => {
+      if (method === "profile.claim") {
+        if (!client.calls.some(([called]) => called === "profile.renew")) {
+          return { result: { kind: "claimed", leaseToken: "lease-1" } };
+        }
+        // The recovery claim hits transport trouble.
+        throw new Error("socket hiccup");
+      }
+      if (method === "profile.renew") return { renewed: false };
+      if (method === "inbox.lease") return { obligations: [] };
+      return connectionResponse();
+    };
+    const { ctx, pi } = await renewHarness(client);
+    try {
+      await pi.command("on driffs", ctx);
+      await vi.advanceTimersByTimeAsync(20);
+      // Neither lost nor recovered: the lapse stands, the pump survives.
+      expect(
+        ctx.notifications.filter(([message]) => message.includes("ownership lost")),
+      ).toHaveLength(0);
+      expect(
+        ctx.notifications.filter(([message]) => message.includes("lease recovered")),
+      ).toHaveLength(0);
+      client.calls.length = 0;
+      // Every later tick retries the heartbeat and the recovery once —
+      // never a hot loop inside one tick, never a permanent stop.
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(client.calls.map(([method]) => method)).toEqual([
+        "profile.renew",
+        "profile.claim",
+        "inbox.lease",
+      ]);
     } finally {
       vi.clearAllTimers();
       vi.useRealTimers();
@@ -317,7 +421,7 @@ describe("shepy-pi profile pump heartbeat", () => {
     }
   });
 
-  test("two overlapping renewed:false continuations notify exactly once", async () => {
+  test("two overlapping renewed:false continuations recover exactly once", async () => {
     vi.useFakeTimers();
     const { client, pendingRenews, resolveRenew } = interleavedRenewClient();
     const { ctx, pi } = await renewHarness(client);
@@ -330,14 +434,23 @@ describe("shepy-pi profile pump heartbeat", () => {
       await vi.advanceTimersByTimeAsync(1);
       resolveRenew("lease-1", { renewed: false });
       await vi.advanceTimersByTimeAsync(1);
-      const losses = ctx.notifications.filter(([message]) => message.includes("ownership lost"));
-      expect(losses).toHaveLength(1);
-      expect(losses[0]).toEqual(["Shepy · profile driffs ownership lost", "warning"]);
-      // The second (stale) continuation must not resurrect anything: timer
-      // stopped, mode cleared, no further traffic.
+      // The first continuation recovered the lapse with a fresh token;
+      // the second (now stale) continuation must be a silent no-op.
+      const recovered = ctx.notifications.filter(([message]) =>
+        message.includes("lease recovered"),
+      );
+      expect(recovered).toHaveLength(1);
+      expect(
+        ctx.notifications.filter(([message]) => message.includes("ownership lost")),
+      ).toHaveLength(0);
       client.calls.length = 0;
-      await vi.advanceTimersByTimeAsync(21_000);
-      expect(client.calls).toEqual([]);
+      // The pump runs on under the recovered token: the next tick's
+      // heartbeat rides lease-2, and resolving it true unblocks the lease.
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(pendingRenews()).toEqual(["lease-2"]);
+      resolveRenew("lease-2", { renewed: true });
+      await vi.advanceTimersByTimeAsync(1);
+      expect(client.calls.map(([method]) => method)).toContain("inbox.lease");
     } finally {
       vi.clearAllTimers();
       vi.useRealTimers();
