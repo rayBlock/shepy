@@ -1007,6 +1007,105 @@ describe("Phase 3 gate — durable delivery obligations", () => {
     expect(delivery.retry(leasedId)).toBe(false);
   });
 
+  test("profile prune removes dead-old lanes, refuses ambiguous and young ones", () => {
+    const { agents, profiles, sqlite } = fixture();
+    // Re-seed the session with the ambiguity fixture: the live worker, and
+    // two same-named twins in one workspace (an ambiguous selector).
+    agents.replaceForSession({
+      agents: [
+        {
+          agent: "hermes",
+          agent_status: "idle",
+          focused: false,
+          name: "driffs-worker",
+          pane_id: "wA:p1",
+          terminal_id: "tA",
+          workspace_id: "wA",
+        },
+        {
+          agent: "pi",
+          agent_status: "idle",
+          focused: false,
+          name: "twin",
+          pane_id: "wA:p2",
+          terminal_id: "tA2",
+          workspace_id: "wA",
+        },
+        {
+          agent: "pi",
+          agent_status: "idle",
+          focused: false,
+          name: "twin",
+          pane_id: "wA:p3",
+          terminal_id: "tA3",
+          workspace_id: "wA",
+        },
+      ],
+      herdrSessionName: "default",
+    });
+    const service = new ProfileService({
+      agents,
+      history: createAgentHistoryService({}),
+      profiles,
+    });
+    const deadLane = JSON.stringify({ kind: "name", value: "ghost-lane" });
+    const youngLane = JSON.stringify({ kind: "name", value: "fresh-lane" });
+    const ambiguousLane = JSON.stringify({ kind: "name", value: "twin" });
+    const workspaceJson = JSON.stringify({ herdrSession: "default", workspaceId: "wA" });
+    profiles.addSubscription({
+      agentSelectorJson: deadLane,
+      herdrSessionName: "default",
+      profileId: "driffs",
+      workspaceSelectorJson: workspaceJson,
+    });
+    profiles.addSubscription({
+      agentSelectorJson: youngLane,
+      herdrSessionName: "default",
+      profileId: "driffs",
+      workspaceSelectorJson: workspaceJson,
+    });
+    profiles.addSubscription({
+      agentSelectorJson: ambiguousLane,
+      herdrSessionName: "default",
+      profileId: "driffs",
+      workspaceSelectorJson: workspaceJson,
+    });
+    // Age the dead lane three days back (updatedAt is the age proxy).
+    sqlite
+      .prepare("update profile_subscriptions set updated_at = ? where agent_selector_json = ?")
+      .run(Date.now() - 3 * 86_400_000, deadLane);
+
+    const receipt = service.pruneSubscriptions({
+      ageMs: 86_400_000,
+      now: Date.now(),
+      profileId: "driffs",
+    });
+    // The removed list is the receipt: exactly the provably-dead old lane.
+    expect(receipt.removed).toHaveLength(1);
+    expect(receipt.removed[0]?.label).toContain("name:ghost-lane");
+    expect(receipt.removed[0]?.label).toContain("default/wA");
+    // Refused, never guessed: the ambiguous twin lane and the young lane.
+    expect(receipt.refused).toHaveLength(2);
+    const refusedDetails = receipt.refused
+      .map((row) => row.detail)
+      .sort()
+      .join(";");
+    expect(refusedDetails).toContain("ambiguous");
+    expect(refusedDetails).toContain("younger than the age gate");
+    // The live lane survives.
+    expect(receipt.kept).toBe(1);
+    const remaining = profiles
+      .listSubscriptions("driffs")
+      .map((subscription) => subscription.agentSelectorJson);
+    expect(remaining).not.toContain(deadLane);
+    expect(remaining).toContain(youngLane);
+    expect(remaining).toContain(ambiguousLane);
+    // Unknown profile is an error, not an empty receipt.
+    expect(() => service.pruneSubscriptions({ ageMs: 1, profileId: "nope" })).toThrow(
+      "No such profile: nope",
+    );
+  });
+
   test("owner replacement: active lease rejects a different subscriber, expired allows it", () => {
     let clock = 1_000_000;
     const { delivery } = fixture({ now: () => clock });

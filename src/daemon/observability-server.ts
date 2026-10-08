@@ -62,6 +62,7 @@ import {
   profileClaimInputSchema,
   profileDiagnoseInputSchema,
   profileEnsureInputSchema,
+  profilePruneInputSchema,
   profileReleaseInputSchema,
   profileShowInputSchema,
   profileSubscribeInputSchema,
@@ -423,6 +424,11 @@ export class ObservabilityRpcServer {
         };
         const { removed } = this.#requireProfiles().removeSubscription(input);
         return { removed };
+      }
+      case "profile.prune": {
+        assertSchema(profilePruneInputSchema, params);
+        const input = params as { ageMs: number; profileId: string };
+        return this.#requireProfiles().pruneSubscriptions(input);
       }
       case "operation.dispatch": {
         assertSchema(operationDispatchInputSchema, params);

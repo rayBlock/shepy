@@ -41,7 +41,17 @@ export const COMMAND_GROUP_VERBS = {
   daemon: ["restart", "start", "status", "stop"],
   inbox: ["get", "list", "retire", "retry"],
   operation: ["get", "list"],
-  profile: ["context", "diagnose", "ensure", "list", "owner", "show", "subscribe", "unsubscribe"],
+  profile: [
+    "context",
+    "diagnose",
+    "ensure",
+    "list",
+    "owner",
+    "prune",
+    "show",
+    "subscribe",
+    "unsubscribe",
+  ],
 } as const;
 
 export type CommandGroup = keyof typeof COMMAND_GROUP_VERBS;
@@ -84,6 +94,7 @@ type HelpTopic =
   | "profile-ensure"
   | "profile-list"
   | "profile-owner"
+  | "profile-prune"
   | "profile-show"
   | "profile-subscribe"
   | "root"
@@ -121,6 +132,7 @@ export type CliCommand =
     }
   | { command: "profile-list"; json: boolean }
   | { command: "profile-owner"; json: boolean; profileId: string }
+  | { ageMs: number; command: "profile-prune"; json: boolean; profileId: string }
   | {
       command: "profile-show";
       json: boolean;
@@ -458,6 +470,18 @@ function parseProfileCommand(args: string[]): CliCommand {
     rejectExtra(extra, helpTopic);
     return { command: "profile-owner", json, profileId };
   }
+  if (subcommand === "prune") {
+    const age = takeOption(rest, "--age", helpTopic) ?? "24h";
+    const ageMs = parseAgeDuration(age, helpTopic);
+    // Re-destructure AFTER takeOption: the shared `extra` above was
+    // snapshotted before --age was consumed from `rest`.
+    const [pruneProfileId, ...pruneExtra] = rest;
+    if (!pruneProfileId) {
+      throw new CliUsageError("profile prune requires <profileId>", helpTopic);
+    }
+    rejectExtra(pruneExtra, helpTopic);
+    return { ageMs, command: "profile-prune", json, profileId: pruneProfileId };
+  }
   if (subcommand === "diagnose") {
     rejectExtra(extra, helpTopic);
     return { command: "profile-diagnose", json, profileId };
@@ -656,6 +680,7 @@ Commands:
   owner <profileId>        Show the profile's current owner
   subscribe <profileId>    Bind a profile to one Herdr agent
   unsubscribe <profileId>  Remove a profile subscription
+  prune <profileId>        Remove dead subscriptions (selectors matching no live agent)
 
 Options:
   -h, --help               Show help
@@ -730,6 +755,20 @@ claimable — a claim decides ownership, not the presence of a stale row.
 Options:
   --json         Print JSON
   -h, --help     Show help
+`;
+    case "profile-prune":
+      return `Remove dead subscriptions: selectors matching NO live agent in their
+scoped workspace, untouched for longer than the age. Close-on-collect for
+lanes whose agents are provably gone — the removed list is the receipt.
+Ambiguous selectors (multiple live agents matched) are refused, never guessed.
+
+Usage:
+  shepy profile prune <profileId> [--age 24h]
+
+Options:
+  --age <duration>  Unmatched-and-untouched gate: <n><s|m|h|d> (default 24h)
+  --json            Print JSON
+  -h, --help        Show help
 `;
     case "profile-subscribe":
       return `Bind a profile to exactly one Herdr agent.
@@ -1039,6 +1078,9 @@ async function dispatchRpcCommand(
   if (command.command === "profile-owner") {
     return client.request("profile.owner", { profileId: command.profileId });
   }
+  if (command.command === "profile-prune") {
+    return client.request("profile.prune", { ageMs: command.ageMs, profileId: command.profileId });
+  }
   if (command.command === "inbox-get") {
     return client.request("inbox.get", { obligationId: command.id });
   }
@@ -1123,6 +1165,7 @@ function formatHumanResult(command: CliCommand, result: unknown): string {
     return formatProfileOwner(command, result as { owner?: PublicProfileOwner | null });
   if (command.command === "profile-diagnose")
     return formatProfileDiagnose(result as ProfileDiagnoseReport);
+  if (command.command === "profile-prune") return formatProfilePrune(result as PruneResult);
   if (command.command === "inbox-get") return formatInboxGet(result as { obligation?: unknown });
   if (command.command === "inbox-list")
     return formatInboxList(
@@ -1417,6 +1460,23 @@ function rejectExtra(args: string[], helpTopic: HelpTopic): void {
   if (args.length > 0) throw new CliUsageError(`Invalid argument: ${args[0]}`, helpTopic);
 }
 
+/** `--age` durations: `<n><s|m|h|d>` (e.g. 30m, 24h, 7d). No unit, no parse —
+ * a bare number is hours-by-silence, and silence is how graves get dug. */
+function parseAgeDuration(value: string, helpTopic: HelpTopic): number {
+  const match = /^(\d+)([smhd])$/.exec(value.trim());
+  if (!match?.[1] || !match[2]) {
+    throw new CliUsageError(
+      "--age must be <number><s|m|h|d>, e.g. 30m, 24h, 7d (default 24h)",
+      helpTopic,
+    );
+  }
+  const amount = Number(match[1]);
+  const unitMs = { d: 86_400_000, h: 3_600_000, m: 60_000, s: 1_000 }[
+    match[2] as "d" | "h" | "m" | "s"
+  ];
+  return amount * unitMs;
+}
+
 function isDaemonAction(value: string): value is DaemonAction {
   return isCommandGroupVerb("daemon", value);
 }
@@ -1533,6 +1593,38 @@ if (
     console.error(formatCliError(error));
     exit(1);
   });
+}
+
+type PruneResult = {
+  kept: number;
+  refused?: Array<{ detail: string; id: number; label: string }>;
+  removed?: Array<{ id: number; label: string; updatedAt: number }>;
+};
+
+/** The prune receipt: the removed list is the record of what died, the
+ * refusals are the record of what was never guessed at. */
+function formatProfilePrune(result: PruneResult): string {
+  const removed = result.removed ?? [];
+  const refused = result.refused ?? [];
+  const lines: string[] = [];
+  if (removed.length === 0) {
+    lines.push("No dead subscriptions removed.");
+  } else {
+    lines.push(`Removed ${removed.length} dead subscription(s):`);
+    for (const row of removed) {
+      lines.push(
+        `  - ${row.label} (id ${row.id}, last touched ${formatLocalTimestamp(row.updatedAt)})`,
+      );
+    }
+  }
+  lines.push(`${result.kept} live subscription(s) kept.`);
+  if (refused.length > 0) {
+    lines.push(`${refused.length} refused (never guessed):`);
+    for (const row of refused) {
+      lines.push(`  ! ${row.label} (id ${row.id}): ${row.detail}`);
+    }
+  }
+  return lines.join("\n");
 }
 
 function formatProfileOwner(
