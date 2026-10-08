@@ -110,15 +110,19 @@ export function validateDemandRequest(
   value: unknown,
   options: { allowlistPath?: string; now?: number } = {},
 ): DemandRequest {
-  if (Buffer.byteLength(JSON.stringify(value), "utf8") > 16 * 1024)
-    throw new Error("demand:oversized");
+  // JSON.stringify(undefined) is undefined; reject instead of throwing a TypeError.
+  const encoded = JSON.stringify(value);
+  if (encoded === undefined) throw new Error("demand:invalid-schema");
+  if (Buffer.byteLength(encoded, "utf8") > 16 * 1024) throw new Error("demand:oversized");
   if (!Value.Check(demandRequestSchema, value)) throw new Error("demand:invalid-schema");
   const request = value as DemandRequest;
   const allowlistPath =
     options.allowlistPath ?? resolve(homedir(), ".shepy/ingress-allowlist.json");
   const config: unknown = JSON.parse(readFileSync(allowlistPath, "utf8"));
   if (!Value.Check(allowlistSchema, config)) throw new Error("demand:invalid-allowlist");
-  const source = config.sources[request.sourceId];
+  const source = Object.hasOwn(config.sources, request.sourceId)
+    ? config.sources[request.sourceId]
+    : undefined;
   if (
     !source ||
     !source.profiles.includes(request.profileId) ||

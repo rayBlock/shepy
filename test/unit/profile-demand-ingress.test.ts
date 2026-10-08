@@ -68,10 +68,30 @@ describe("demand publish admission", () => {
   });
   it("rejects requests over 16KiB", () =>
     expect(() => validate({ ...request(), extra: "x".repeat(16384) })).toThrow("demand:oversized"));
-  it("rejects unallowlisted source", () =>
+  it("rejects unallowlisted and inherited source names", () => {
     expect(() => validate({ ...request(), sourceId: "other" })).toThrow(
       "demand:source-not-allowed",
-    ));
+    );
+    expect(() => validate({ ...request(), sourceId: "toString" })).toThrow(
+      "demand:source-not-allowed",
+    );
+  });
+  it("refuses missing or unreadable operator allowlist", () => {
+    expect(() =>
+      validateDemandRequest(request(), { allowlistPath: join(root, "missing.json") }),
+    ).toThrow();
+    expect(() => validate(undefined)).toThrow("demand:invalid-schema");
+  });
+  it("enforces the episode generation key, including activation revision", () => {
+    expect(() => validate({ ...request(), activationRevision: 2 })).toThrow("demand:invalid-key");
+    expect(
+      validate({
+        ...request(),
+        activationRevision: 2,
+        idempotencyKey: `${episodeId}/queue-claimable/2`,
+      }).activationRevision,
+    ).toBe(2);
+  });
   it("rejects wrong citation sha", () =>
     expect(() => validate({ ...request(), markerRef: { ...ref, sha256: "0".repeat(64) } })).toThrow(
       "demand:ref-sha-mismatch",
