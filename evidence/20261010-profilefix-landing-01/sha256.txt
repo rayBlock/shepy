@@ -1,0 +1,3 @@
+03027612859293449119366b81946447d57293c8c47fa8a933f52d78a625c080  /Users/ray/dev/shepy/evidence/20261010-profilefix-landing-01/extension-profile-ambient.log
+44a7b6b8962d503fd20168b97e5d66604c6df0d5caa4bffd13fc09f72bc4603e  /Users/ray/dev/shepy/evidence/20261010-profilefix-landing-01/extension-profile-unset.log
+c934c6a9d41524b1169d35be764f044ab71af556f16db2513484bde1fec0deb2  /Users/ray/dev/shepy/evidence/20261010-profilefix-landing-01/hostile-1.md
