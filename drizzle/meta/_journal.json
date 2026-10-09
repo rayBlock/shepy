@@ -64,6 +64,13 @@
       "when": 1791554400000,
       "tag": "0008_prompt_receipt_identity",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1791562425121,
+      "tag": "0009_neat_namor",
+      "breakpoints": true
     }
   ]
 }

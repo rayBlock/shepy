@@ -1,4 +1,12 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readMigrationFiles } from "drizzle-orm/migrator";
@@ -63,6 +71,82 @@ describe("SQLite migrations", () => {
         delivery_seq: 2,
       },
     ]);
+  });
+
+  test("recovers a nullable partial owner column and rejects a legacy schema mismatch", () => {
+    const dir = mkdtempSync(join(tmpdir(), "shepy-r1-recovery-"));
+    tempDirs.push(dir);
+    const prior = join(dir, "prior");
+    mkdirSync(join(prior, "meta"), { recursive: true });
+    const journal = JSON.parse(readFileSync("drizzle/meta/_journal.json", "utf8"));
+    journal.entries = journal.entries.slice(0, -1);
+    writeFileSync(join(prior, "meta/_journal.json"), JSON.stringify(journal));
+    for (const name of readdirSync("drizzle").filter((n) => /^000[0-8]_.*\.sql$/.test(n))) {
+      if (name === "0008_left_omega_red.sql") continue;
+      copyFileSync(join("drizzle", name), join(prior, name));
+    }
+    const { sqlite } = openSqlite(join(dir, "partial.sqlite"));
+    applyMigrations(sqlite, { migrationsFolder: prior });
+    sqlite.exec("alter table profile_owners add accepted_source_kinds_json text");
+    sqlite.exec(
+      `insert into orchestrator_profiles(profile_id, display_name, project_roots_json, created_at, updated_at) values ('engine', 'Engine', '[]', 1, 1)`,
+    );
+    sqlite.exec(`insert into profile_owners
+      (claimed_at,harness_kind,harness_session_ref_json,herdr_session_name,last_seen_at,
+       lease_expires_at,lease_token,pane_id,profile_id,subscriber_id,terminal_id,accepted_source_kinds_json)
+      values (1,'pi','{}','s',1,1,'t','p','engine','sub','term','["agent","profile-demand"]')`);
+    sqlite.exec(
+      `insert into orchestrator_profiles(profile_id, display_name, project_roots_json, created_at, updated_at) values ('r1-null-fixture', 'Empty', '[]', 1, 1)`,
+    );
+    sqlite.exec(`insert into profile_owners
+      (claimed_at,harness_kind,harness_session_ref_json,herdr_session_name,last_seen_at,
+       lease_expires_at,lease_token,pane_id,profile_id,subscriber_id,terminal_id)
+      select claimed_at,harness_kind,harness_session_ref_json,herdr_session_name,last_seen_at,
+       lease_expires_at,lease_token,pane_id,'r1-null-fixture',subscriber_id,terminal_id
+      from profile_owners where profile_id='engine'`);
+    applyMigrations(sqlite, { migrationsFolder: "drizzle" });
+    expect(
+      sqlite
+        .prepare(
+          "select accepted_source_kinds_json as kinds from profile_owners where profile_id='engine'",
+        )
+        .get(),
+    ).toEqual({ kinds: '["agent","profile-demand"]' });
+    expect(
+      sqlite
+        .prepare(
+          "select accepted_source_kinds_json as kinds from profile_owners where profile_id='r1-null-fixture'",
+        )
+        .get(),
+    ).toEqual({ kinds: '["agent"]' });
+    expect(
+      sqlite
+        .prepare("pragma table_info(profile_owners)")
+        .all()
+        .find((c) => (c as { name: string }).name === "accepted_source_kinds_json"),
+    ).toMatchObject({ notnull: 1, dflt_value: "'[\"agent\"]'" });
+    expect(sqlite.prepare("select count(*) as n from profile_demand_events").get()).toEqual({
+      n: 0,
+    });
+    expect(sqlite.prepare("select count(*) as n from __drizzle_migrations").get()).toEqual({
+      n: 10,
+    });
+    applyMigrations(sqlite, { migrationsFolder: "drizzle" });
+    expect(sqlite.prepare("select count(*) as n from __drizzle_migrations").get()).toEqual({
+      n: 10,
+    });
+    sqlite.close();
+
+    const { sqlite: invalid } = openSqlite(join(dir, "invalid.sqlite"));
+    applyMigrations(invalid, { migrationsFolder: prior });
+    invalid.exec("alter table orchestration_operations drop column receipt_agent");
+    expect(() => applyMigrations(invalid, { migrationsFolder: "drizzle" })).toThrow(
+      /receipt-era legacy schema/,
+    );
+    expect(invalid.prepare("select count(*) as n from __drizzle_migrations").get()).toEqual({
+      n: 9,
+    });
+    invalid.close();
   });
 
   test("create the agent index schema", () => {

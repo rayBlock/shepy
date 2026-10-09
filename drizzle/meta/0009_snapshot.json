@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "888748a0-13e6-458f-b5ce-8e6c7a2b957e",
-  "prevId": "837a4cae-06bc-4eb4-9171-a48bd9107988",
+  "id": "95e97d68-f49e-4d08-9368-052775c465a2",
+  "prevId": "888748a0-13e6-458f-b5ce-8e6c7a2b957e",
   "tables": {
     "agent_context_snapshots": {
       "name": "agent_context_snapshots",
@@ -537,6 +537,20 @@
           "name": "agent_event_id",
           "type": "integer",
           "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "profile_demand_event_id": {
+          "name": "profile_demand_event_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "delivery_seq": {
+          "name": "delivery_seq",
+          "type": "integer",
+          "primaryKey": false,
           "notNull": true,
           "autoincrement": false
         },
@@ -582,6 +596,14 @@
           "primaryKey": true,
           "notNull": true,
           "autoincrement": false
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'agent'"
         },
         "last_error_code": {
           "name": "last_error_code",
@@ -629,7 +651,7 @@
           "name": "subscription_id",
           "type": "integer",
           "primaryKey": false,
-          "notNull": true,
+          "notNull": false,
           "autoincrement": false
         }
       },
@@ -639,6 +661,21 @@
           "columns": [
             "profile_id",
             "agent_event_id"
+          ],
+          "isUnique": true
+        },
+        "delivery_obligations_profile_demand_idx": {
+          "name": "delivery_obligations_profile_demand_idx",
+          "columns": [
+            "profile_id",
+            "profile_demand_event_id"
+          ],
+          "isUnique": true
+        },
+        "delivery_obligations_seq_idx": {
+          "name": "delivery_obligations_seq_idx",
+          "columns": [
+            "delivery_seq"
           ],
           "isUnique": true
         },
@@ -652,6 +689,19 @@
         }
       },
       "foreignKeys": {
+        "delivery_obligations_profile_demand_event_id_profile_demand_events_id_fk": {
+          "name": "delivery_obligations_profile_demand_event_id_profile_demand_events_id_fk",
+          "tableFrom": "delivery_obligations",
+          "tableTo": "profile_demand_events",
+          "columnsFrom": [
+            "profile_demand_event_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
         "delivery_obligations_profile_id_orchestrator_profiles_profile_id_fk": {
           "name": "delivery_obligations_profile_id_orchestrator_profiles_profile_id_fk",
           "tableFrom": "delivery_obligations",
@@ -668,7 +718,12 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
-      "checkConstraints": {}
+      "checkConstraints": {
+        "delivery_obligations_exact_source": {
+          "name": "delivery_obligations_exact_source",
+          "value": "(\"delivery_obligations\".\"kind\" = 'agent' and \"delivery_obligations\".\"agent_event_id\" is not null and \"delivery_obligations\".\"subscription_id\" is not null and \"delivery_obligations\".\"profile_demand_event_id\" is null) or (\"delivery_obligations\".\"kind\" = 'demand' and \"delivery_obligations\".\"agent_event_id\" is null and \"delivery_obligations\".\"subscription_id\" is null and \"delivery_obligations\".\"profile_demand_event_id\" is not null)"
+        }
+      }
     },
     "herdr_sessions": {
       "name": "herdr_sessions",
@@ -884,20 +939,6 @@
           "notNull": false,
           "autoincrement": false
         },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "workspace_id": {
-          "name": "workspace_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
         "receipt_agent": {
           "name": "receipt_agent",
           "type": "text",
@@ -931,6 +972,20 @@
           "type": "integer",
           "primaryKey": false,
           "notNull": false,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
           "autoincrement": false
         }
       },
@@ -1015,9 +1070,124 @@
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
+    "profile_demand_events": {
+      "name": "profile_demand_events",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "profile_id": {
+          "name": "profile_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "source_id": {
+          "name": "source_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "idempotency_key": {
+          "name": "idempotency_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "episode_id": {
+          "name": "episode_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "activation_revision": {
+          "name": "activation_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "payload_json": {
+          "name": "payload_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "payload_sha256": {
+          "name": "payload_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "profile_demand_events_key_idx": {
+          "name": "profile_demand_events_key_idx",
+          "columns": [
+            "profile_id",
+            "source_id",
+            "idempotency_key"
+          ],
+          "isUnique": true
+        },
+        "profile_demand_events_episode_revision_idx": {
+          "name": "profile_demand_events_episode_revision_idx",
+          "columns": [
+            "profile_id",
+            "episode_id",
+            "activation_revision",
+            "source_id"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {
+        "profile_demand_events_profile_id_orchestrator_profiles_profile_id_fk": {
+          "name": "profile_demand_events_profile_id_orchestrator_profiles_profile_id_fk",
+          "tableFrom": "profile_demand_events",
+          "tableTo": "orchestrator_profiles",
+          "columnsFrom": [
+            "profile_id"
+          ],
+          "columnsTo": [
+            "profile_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
     "profile_owners": {
       "name": "profile_owners",
       "columns": {
+        "accepted_source_kinds_json": {
+          "name": "accepted_source_kinds_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'[\"agent\"]'"
+        },
         "claimed_at": {
           "name": "claimed_at",
           "type": "integer",
