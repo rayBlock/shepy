@@ -1022,6 +1022,36 @@ describe("shepy-pi orchestrator bridge", () => {
     }
   });
 
+  test("a valid blocked wake is consumed and positively acknowledged after successful settle", async () => {
+    vi.useFakeTimers();
+    const client = createWakeClient();
+    const pi = createFakePi();
+    const ctx = fakeCtx({ idle: true });
+    const previous = withHerdrEnv();
+    try {
+      await startExtension(client, pi, ctx);
+      client.emitStream({
+        method: "agent.event",
+        params: { event: event(142, "term_other", { type: "agent.blocked" }) },
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(pi.customMessages).toHaveLength(1);
+      expect(client.calls).not.toContainEqual(["agent.notifications.ack", { eventId: 142 }]);
+
+      await pi.emit("agent_start", {}, ctx);
+      expect(
+        await pi.emitContext([{ customType: "shepy-wake-context", role: "custom" }], ctx),
+      ).toEqual([{ customType: "shepy-wake-context", role: "custom" }]);
+      await pi.emit("message_end", assistantMessage("stop"), ctx);
+      await pi.emit("agent_settled", {}, ctx);
+      expect(client.calls).toContainEqual(["agent.notifications.ack", { eventId: 142 }]);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+      restoreEnv(previous);
+    }
+  });
+
   test("routine turn-end remains batched, not an immediate wake", async () => {
     vi.useFakeTimers();
     const client = createWakeClient();
