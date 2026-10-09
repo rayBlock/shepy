@@ -8,17 +8,15 @@ function builtCommit(): string | null {
     const stamp: unknown = JSON.parse(
       readFileSync(new URL("./build-info.generated.json", import.meta.url), "utf8"),
     );
-    if (stamp !== null && typeof stamp === "object" && "gitSha" in stamp) {
-      if (stamp.gitSha === null) return null;
+    if (stamp !== null && typeof stamp === "object" && !Array.isArray(stamp) && "gitSha" in stamp) {
       if (typeof stamp.gitSha === "string" && /^[0-9a-f]{40}$/.test(stamp.gitSha)) {
         return stamp.gitSha;
       }
     }
-    throw new Error("Invalid Shepy Pi build identity stamp");
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") return null;
-    throw error;
+  } catch {
+    // An unreadable, partial or malformed stamp cannot assert a build SHA.
   }
+  return null;
 }
 
 export const extensionBuild: { pkgVersion: string; gitSha: string | null } = {
