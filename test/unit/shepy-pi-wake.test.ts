@@ -3,6 +3,8 @@ import type { AgentEventWireRecord } from "../../packages/shepy-pi/src/daemon-cl
 import {
   AGENT_UPDATE_EXCERPT_CHARS,
   formatAgentOutcomeUpdates,
+  formatDemandObligationUpdates,
+  isDemandSnapshot,
   projectAgentOutcomes,
   WAKE_SETTLE_MS,
 } from "../../packages/shepy-pi/src/wake.js";
@@ -153,4 +155,30 @@ describe("Pi agent wake projection", () => {
     if (!outcome) throw new Error("expected one agent outcome");
     expect(formatAgentOutcomeUpdates([outcome])).not.toContain("\u001b");
   });
+});
+
+test("demand wake renders episode and cited pointers without an invented agent excerpt", () => {
+  const ref = { path: "/private/tmp/snapshot\nspoof", sha256: "a".repeat(64), selector: "row-1" };
+  const rendered = formatDemandObligationUpdates([
+    {
+      obligationId: "obligation-1",
+      demandEventId: "demand-1",
+      demand: {
+        schema: "factory.demand.v1",
+        episodeId: "b".repeat(64),
+        activationRevision: 1,
+        kind: "queue-claimable",
+        reasonCode: "owned-ready-capacity",
+        snapshotRef: ref,
+        markerRef: ref,
+        dutyRef: ref,
+        grantRef: ref,
+      },
+    },
+  ]);
+  expect(rendered).toContain("[SHEPY DUTY DEMANDS]");
+  expect(rendered).toContain("obligation-1");
+  expect(rendered).not.toContain("shepy agent read unknown");
+  expect(rendered).not.toContain("snapshot\nspoof");
+  expect(isDemandSnapshot({ schema: "factory.demand.v1", episodeId: "b".repeat(64) })).toBe(false);
 });

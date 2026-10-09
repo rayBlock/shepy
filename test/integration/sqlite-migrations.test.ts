@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { readMigrationFiles } from "drizzle-orm/migrator";
 import { afterEach, describe, expect, test } from "vitest";
 import { applyMigrations } from "@/db/apply-migrations.js";
 import { openSqlite } from "@/db/client.js";
@@ -12,6 +13,58 @@ afterEach(() => {
 });
 
 describe("SQLite migrations", () => {
+  test("backfills delivery_seq and agent source while preserving existing obligations", () => {
+    const dir = mkdtempSync(join(tmpdir(), "shepy-db-upgrade-"));
+    tempDirs.push(dir);
+    const { sqlite } = openSqlite(join(dir, "old.sqlite"));
+    const migrations = readMigrationFiles({ migrationsFolder: "drizzle" });
+    for (const migration of migrations.slice(0, -1)) {
+      for (const statement of migration.sql) sqlite.exec(statement);
+    }
+    sqlite
+      .prepare(
+        "insert into orchestrator_profiles(profile_id, display_name, project_roots_json, created_at, updated_at) values ('engine', 'Engine', '[]', 1, 1)",
+      )
+      .run();
+    sqlite
+      .prepare(
+        "insert into delivery_obligations(id, profile_id, subscription_id, agent_event_id, state, attempt_count, created_at) values ('ob-2', 'engine', 1, 2, 'pending', 0, 2), ('ob-1', 'engine', 1, 1, 'acked', 1, 1)",
+      )
+      .run();
+    const upgrade = migrations.at(-1);
+    if (!upgrade) throw new Error("demand migration missing");
+    sqlite.exec("begin");
+    try {
+      for (const statement of upgrade.sql) sqlite.exec(statement);
+      sqlite.exec("commit");
+    } catch (error) {
+      sqlite.exec("rollback");
+      throw error;
+    }
+    expect(
+      sqlite
+        .prepare(
+          "select id, kind, agent_event_id, profile_demand_event_id, delivery_seq from delivery_obligations order by delivery_seq",
+        )
+        .all(),
+    ).toEqual([
+      {
+        id: "ob-1",
+        kind: "agent",
+        agent_event_id: 1,
+        profile_demand_event_id: null,
+        delivery_seq: 1,
+      },
+      {
+        id: "ob-2",
+        kind: "agent",
+        agent_event_id: 2,
+        profile_demand_event_id: null,
+        delivery_seq: 2,
+      },
+    ]);
+  });
+
   test("create the agent index schema", () => {
     const dir = mkdtempSync(join(tmpdir(), "shepy-db-"));
     tempDirs.push(dir);
@@ -33,6 +86,7 @@ describe("SQLite migrations", () => {
       "herdr_workspaces",
       "orchestration_operations",
       "orchestrator_profiles",
+      "profile_demand_events",
       "profile_owners",
       "profile_subscriptions",
     ]);

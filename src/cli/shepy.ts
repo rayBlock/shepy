@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { readFileSync, realpathSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { argv, exit } from "node:process";
 import { fileURLToPath } from "node:url";
 import { CLAUDE_HOOK_STDIN_MAX_CHARS, runClaudeHook } from "@/cli/claude-hook.js";
@@ -39,7 +39,7 @@ const CURRENT_HERDR_WORKSPACE_ERROR =
 export const COMMAND_GROUP_VERBS = {
   agent: ["get", "list", "read"],
   daemon: ["restart", "start", "status", "stop"],
-  inbox: ["get", "list", "retire", "retry"],
+  inbox: ["get", "list", "lookup-demand", "publish-demand", "retire", "retry"],
   operation: ["get", "list"],
   profile: [
     "context",
@@ -83,6 +83,8 @@ type HelpTopic =
   | "inbox"
   | "inbox-get"
   | "inbox-list"
+  | "inbox-lookup-demand"
+  | "inbox-publish-demand"
   | "inbox-retire"
   | "inbox-retry"
   | "operation"
@@ -148,6 +150,14 @@ export type CliCommand =
       workspaceId: string;
     }
   | { command: "inbox-get"; id: string; json: boolean }
+  | { command: "inbox-publish-demand"; file: string; json: boolean }
+  | {
+      command: "inbox-lookup-demand";
+      profileId: string;
+      sourceId: string;
+      key: string;
+      json: boolean;
+    }
   | {
       command: "inbox-list";
       before?: number;
@@ -498,6 +508,25 @@ function parseInboxCommand(args: string[]): CliCommand {
   }
   if (rest.some(isHelpFlag)) return { command: "help", topic: helpTopic };
   const json = takeFlag(rest, "--json");
+  if (subcommand === "publish-demand") {
+    const file = takeOption(rest, "--file", helpTopic);
+    if (!file || !isAbsolute(file))
+      throw new CliUsageError("publish-demand requires --file <absolute-path>", helpTopic);
+    rejectExtra(rest, helpTopic);
+    return { command: "inbox-publish-demand", file, json };
+  }
+  if (subcommand === "lookup-demand") {
+    const sourceId = takeOption(rest, "--source", helpTopic);
+    const key = takeOption(rest, "--key", helpTopic);
+    const [profileId, ...extra] = rest;
+    if (!profileId || !sourceId || !key)
+      throw new CliUsageError(
+        "lookup-demand requires <profileId> --source <id> --key <key>",
+        helpTopic,
+      );
+    rejectExtra(extra, helpTopic);
+    return { command: "inbox-lookup-demand", profileId, sourceId, key, json };
+  }
   if (subcommand === "get") {
     const [id, ...extra] = rest;
     if (!id) throw new CliUsageError("inbox get requires <obligationId>", helpTopic);
@@ -798,12 +827,18 @@ Commands:
   list <profileId>          List obligations for a profile
   retire <profileId>        Retire a stale pending backlog
   retry <obligationId>      Retry a dead-lettered or stalled pending obligation
+  publish-demand --file <absolute-request.json>   Publish a validated demand
+  lookup-demand <profileId> --source <id> --key <key> --json   Read back publication
 
 Options:
   -h, --help                Show help
 
 Run \`shepy inbox <command> --help\` for command-specific help.
 `;
+    case "inbox-publish-demand":
+      return `Publish a pinned factory.demand.v1 request to the daemon.\n\nUsage:\n  shepy inbox publish-demand --file <absolute-request.json> [--json]\n`;
+    case "inbox-lookup-demand":
+      return `Read back a published demand.\n\nUsage:\n  shepy inbox lookup-demand <profileId> --source <id> --key <key> --json\n`;
     case "inbox-get":
       return `Show one delivery obligation with its full excerpt.
 
@@ -1080,6 +1115,19 @@ async function dispatchRpcCommand(
   }
   if (command.command === "profile-prune") {
     return client.request("profile.prune", { ageMs: command.ageMs, profileId: command.profileId });
+  }
+  if (command.command === "inbox-publish-demand") {
+    const bytes = readFileSync(command.file);
+    if (bytes.byteLength > 16 * 1024) throw new Error("demand:oversized");
+    return client.request("inbox.publishDemand", JSON.parse(bytes.toString("utf8")));
+  }
+  if (command.command === "inbox-lookup-demand") {
+    return client.request("inbox.lookupDemand", {
+      schema: "factory.demand.lookup.v1",
+      profileId: command.profileId,
+      sourceId: command.sourceId,
+      idempotencyKey: command.key,
+    });
   }
   if (command.command === "inbox-get") {
     return client.request("inbox.get", { obligationId: command.id });

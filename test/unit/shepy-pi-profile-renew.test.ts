@@ -363,6 +363,7 @@ describe("shepy-pi profile pump heartbeat", () => {
       await vi.advanceTimersByTimeAsync(20);
       // claim, then the immediate pump: renew fails transiently, lease proceeds.
       expect(client.calls.map(([method]) => method)).toEqual([
+        "daemon.info",
         "profile.claim",
         "profile.renew",
         "inbox.lease",
@@ -468,7 +469,11 @@ describe("shepy-pi profile pump heartbeat", () => {
       // The heartbeat sits BEFORE the busy gate: the tick renewed, then
       // returned without leasing (a busy owner must not lease a wake it
       // cannot witness).
-      expect(client.calls.map(([method]) => method)).toEqual(["profile.claim", "profile.renew"]);
+      expect(client.calls.map(([method]) => method)).toEqual([
+        "daemon.info",
+        "profile.claim",
+        "profile.renew",
+      ]);
       client.calls.length = 0;
       await vi.advanceTimersByTimeAsync(10_000);
       await vi.advanceTimersByTimeAsync(10_000);
@@ -498,6 +503,7 @@ describe("shepy-pi profile pump heartbeat", () => {
       // The first tick leased a batch: the wake follow-ups were queued and
       // marked delivered, and the batch stays unacked (no settle runs here).
       expect(client.calls.map(([method]) => method)).toEqual([
+        "daemon.info",
         "profile.claim",
         "profile.renew",
         "inbox.lease",
@@ -509,6 +515,63 @@ describe("shepy-pi profile pump heartbeat", () => {
       await vi.advanceTimersByTimeAsync(10_000);
       await vi.advanceTimersByTimeAsync(10_000);
       expect(client.calls.map(([method]) => method)).toEqual(["profile.renew", "profile.renew"]);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  test("negotiated demand capability claims and renders a cited non-agent obligation", async () => {
+    vi.useFakeTimers();
+    const client = createFakeClient();
+    const ref = { path: "/private/tmp/snapshot", sha256: "a".repeat(64), selector: "row-1" };
+    client.response = (method) => {
+      if (method === "daemon.info") return { capabilities: ["profile-demand-v1"] };
+      if (method === "profile.claim") return { result: { kind: "claimed", leaseToken: "lease-1" } };
+      if (method === "profile.renew") return { renewed: true };
+      if (method === "inbox.lease")
+        return {
+          obligations: [
+            {
+              id: "demand-ob-1",
+              agentEventId: null,
+              sourceKind: "profile-demand",
+              profileDemandEventId: "demand-1",
+              demand: {
+                schema: "factory.demand.v1",
+                episodeId: "b".repeat(64),
+                activationRevision: 1,
+                kind: "queue-claimable",
+                reasonCode: "owned-ready-capacity",
+                snapshotRef: ref,
+                markerRef: ref,
+                dutyRef: ref,
+                grantRef: ref,
+              },
+            },
+          ],
+        };
+      if (method === "inbox.delivered") return { delivered: 1 };
+      return connectionResponse();
+    };
+    const { ctx, pi } = await renewHarness(client);
+    try {
+      await pi.command("on driffs", ctx);
+      await vi.advanceTimersByTimeAsync(20);
+      const claim = client.calls.find(([method]) => method === "profile.claim")?.[1] as {
+        acceptedSourceKinds?: string[];
+      };
+      const lease = client.calls.find(([method]) => method === "inbox.lease")?.[1] as {
+        sourceKinds?: string[];
+      };
+      expect(claim.acceptedSourceKinds).toEqual(["agent", "profile-demand"]);
+      expect(lease.sourceKinds).toEqual(["agent", "profile-demand"]);
+      expect((pi.hiddenMessages[0] as { content: string }).content).toContain(
+        "[SHEPY DUTY DEMANDS]",
+      );
+      expect((pi.hiddenMessages[0] as { content: string }).content).not.toContain(
+        "shepy agent read unknown",
+      );
     } finally {
       vi.clearAllTimers();
       vi.useRealTimers();
