@@ -1693,10 +1693,10 @@ function formatProfileOwner(
         : `lease lapsed ${formatDuration(expiredAgoMs)} ago (expired ${expiry}) — claimable`;
   return [
     `profile: ${owner.profileId}`,
-    `owner: ${owner.paneId} (${owner.harnessKind})`,
+    `owner: ${owner.paneId ?? "(no host location)"} (${owner.harnessKind})`,
     `workspace: ${owner.workspaceId ?? "unknown"}`,
-    `session: ${owner.herdrSessionName}`,
-    `terminal: ${owner.terminalId}`,
+    `session: ${owner.herdrSessionName ?? "none"}`,
+    `terminal: ${owner.terminalId ?? "none"}`,
     lease,
   ].join("\n");
 }
@@ -1756,7 +1756,7 @@ function formatProfileDiagnose(report: ProfileDiagnoseReport): string {
   if (!owner) {
     lines.push("  none — the profile is claimable");
   } else {
-    lines.push(`  ${owner.paneId} (${owner.harnessKind})`);
+    lines.push(`  ${owner.paneId ?? "(no host location)"} (${owner.harnessKind})`);
     lines.push(`  lease ${owner.state}, expires ${formatLocalTimestamp(owner.leaseExpiresAt)}`);
     if (owner.workspaceId) lines.push(`  workspace: ${owner.workspaceId}`);
   }

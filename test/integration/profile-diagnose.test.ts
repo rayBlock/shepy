@@ -439,3 +439,16 @@ describe("profile.diagnose is read-only (RUN-20260913-04 D3)", () => {
     expect(snapshot()).toEqual(before);
   });
 });
+
+test("(j) a neutral Codex owner renders null host fields honestly", async () => {
+  const built = await rpcFixture();
+  const claim = built.delivery.claim({
+    harnessKind: "codex",
+    harnessSessionRefJson: JSON.stringify({ kind: "thread", value: "01a11ff6-9f7f-71a1-9741-366612d6390f" }),
+    profileId: "driffs",
+    subscriberId: "codex-neutral",
+  });
+  if (claim.kind !== "claimed" && claim.kind !== "reclaimed") throw new Error("neutral claim failed");
+  const report = await diagnose(built, "driffs");
+  expect(report.owner).toMatchObject({ harnessKind: "codex", paneId: null, workspaceId: null });
+});

@@ -140,13 +140,17 @@ describe("SQLite migrations", () => {
     expect(sqlite.prepare("select count(*) as n from profile_demand_events").get()).toEqual({
       n: 0,
     });
-    // 0000-0010: the full folder incl. the R1 recovery and the dedup stamp.
+    // The full folder: R1 recovery + dedup stamp + the neutral-owner
+    // migration; the count is the journal length, never hard-coded.
+    const journalCount = JSON.parse(
+      readFileSync("drizzle/meta/_journal.json", "utf8"),
+    ).entries.length;
     expect(sqlite.prepare("select count(*) as n from __drizzle_migrations").get()).toEqual({
-      n: 11,
+      n: journalCount,
     });
     applyMigrations(sqlite, { migrationsFolder: "drizzle" });
     expect(sqlite.prepare("select count(*) as n from __drizzle_migrations").get()).toEqual({
-      n: 11,
+      n: journalCount,
     });
     sqlite.close();
 
@@ -160,6 +164,113 @@ describe("SQLite migrations", () => {
       n: 9,
     });
     invalid.close();
+  });
+
+  test("the neutral-owner forward migration preserves owners/tokens, obligations, indexes and journal; safe reapply", () => {
+    const dir = mkdtempSync(join(tmpdir(), "shepy-neutral-owner-migration-"));
+    tempDirs.push(dir);
+    const prior = join(dir, "prior");
+    mkdirSync(join(prior, "meta"), { recursive: true });
+    const journal = JSON.parse(readFileSync("drizzle/meta/_journal.json", "utf8"));
+    const newest = journal.entries.at(-1) as { idx: number; tag: string };
+    journal.entries = journal.entries.filter((entry: { idx: number }) => entry.idx < newest.idx);
+    writeFileSync(join(prior, "meta/_journal.json"), JSON.stringify(journal));
+    const pad = String(newest.idx).padStart(4, "0");
+    for (const name of readdirSync("drizzle").filter((n) => /^\d{4}_.*\.sql$/.test(n))) {
+      if (name.startsWith(`${pad}_`)) continue;
+      copyFileSync(join("drizzle", name), join(prior, name));
+    }
+    const { sqlite } = openSqlite(join(dir, "forward.sqlite"));
+    applyMigrations(sqlite, { migrationsFolder: prior });
+    sqlite
+      .prepare(
+        "insert into orchestrator_profiles(profile_id, display_name, project_roots_json, created_at, updated_at) values ('engine','Engine','[]',1,1)",
+      )
+      .run();
+    sqlite
+      .prepare(
+        `insert into profile_owners (claimed_at,harness_kind,harness_session_ref_json,herdr_session_name,last_seen_at,lease_expires_at,lease_token,pane_id,profile_id,subscriber_id,terminal_id) values (1,'pi','{"kind":"path","value":"/tmp/owner.jsonl"}','s',1,999999999,'tok-preserve','p','engine','sub','term')`,
+      )
+      .run();
+    sqlite
+      .prepare(
+        "insert into delivery_obligations(id, profile_id, subscription_id, agent_event_id, state, attempt_count, created_at, delivery_seq) values ('ob-keep','engine',1,1,'pending',0,1,1)",
+      )
+      .run();
+    sqlite
+      .prepare(
+        `insert into profile_owners (claimed_at,harness_kind,harness_session_ref_json,last_seen_at,lease_expires_at,lease_token,profile_id,subscriber_id) values (1,'codex','{"kind":"thread","value":"01a11ff6-9f7f-71a1-9741-366612d6390f"}',1,999999999,'tok-neutral','standalone','codex-neutral')`,
+      )
+      .run();
+    const ownerIndexes = sqlite.prepare("pragma index_list(profile_owners)").all();
+    const ownerFks = sqlite.prepare("pragma foreign_key_list(profile_owners)").all();
+    const obligationIndexes = sqlite.prepare("pragma index_list(delivery_obligations)").all();
+    applyMigrations(sqlite, { migrationsFolder: "drizzle" });
+    expect(
+      sqlite
+        .prepare(
+          "select profile_id, lease_token, subscriber_id, herdr_session_name, pane_id, terminal_id from profile_owners where profile_id='engine'",
+        )
+        .get(),
+    ).toEqual({
+      profile_id: "engine",
+      lease_token: "tok-preserve",
+      subscriber_id: "sub",
+      herdr_session_name: "s",
+      pane_id: "p",
+      terminal_id: "term",
+    });
+    expect(
+      sqlite.prepare("select count(*) as n from delivery_obligations where id='ob-keep'").get(),
+    ).toEqual({ n: 1 });
+    // The neutral (host-free) shape survives the rebuild with NULLs intact.
+    expect(
+      sqlite
+        .prepare(
+          "select profile_id, lease_token, herdr_session_name, pane_id, terminal_id from profile_owners where profile_id='standalone'",
+        )
+        .get(),
+    ).toEqual({
+      profile_id: "standalone",
+      lease_token: "tok-neutral",
+      herdr_session_name: null,
+      pane_id: null,
+      terminal_id: null,
+    });
+    // Nothing pre-existing may be lost by the rebuild; the resulting index set
+    // must then be stable across a safe reapply.
+    const afterOwnerIndexes = sqlite.prepare("pragma index_list(profile_owners)").all() as Array<{
+      name: string;
+    }>;
+    const afterObligationIndexes = sqlite
+      .prepare("pragma index_list(delivery_obligations)")
+      .all() as Array<{ name: string }>;
+    for (const index of ownerIndexes as Array<{ name: string }>) {
+      expect(afterOwnerIndexes.map((i) => i.name)).toContain(index.name);
+    }
+    for (const index of obligationIndexes as Array<{ name: string }>) {
+      expect(afterObligationIndexes.map((i) => i.name)).toContain(index.name);
+    }
+    expect(sqlite.prepare("pragma foreign_key_list(profile_owners)").all()).toEqual(ownerFks);
+    const forwardCount = JSON.parse(
+      readFileSync("drizzle/meta/_journal.json", "utf8"),
+    ).entries.length;
+    expect(sqlite.prepare("select count(*) as n from __drizzle_migrations").get()).toEqual({
+      n: forwardCount,
+    });
+    applyMigrations(sqlite, { migrationsFolder: "drizzle" });
+    expect(sqlite.prepare("select count(*) as n from __drizzle_migrations").get()).toEqual({
+      n: forwardCount,
+    });
+    expect(sqlite.prepare("pragma index_list(profile_owners)").all()).toEqual(afterOwnerIndexes);
+    for (const column of ["herdr_session_name", "pane_id", "terminal_id"]) {
+      expect(
+        (sqlite.prepare("pragma table_info(profile_owners)").all() as Array<{ name: string; notnull: number }>).find(
+          (c) => c.name === column,
+        ),
+      ).toMatchObject({ notnull: 0 });
+    }
+    sqlite.close();
   });
 
   test("create the agent index schema", () => {

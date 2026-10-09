@@ -208,11 +208,14 @@ export const profileClaimInputSchema = Type.Object(
     acceptedSourceKinds: Type.Optional(acceptedSourceKindsSchema),
     harnessKind: Type.String({ minLength: 1 }),
     harnessSessionRefJson: Type.String({ minLength: 1 }),
-    herdrSessionName: Type.String({ minLength: 1 }),
-    paneId: Type.String({ minLength: 1 }),
+    // Host location is optional ALL-OR-NONE: a standalone owner carries none
+    // of these; a hosted owner carries all three. Partial tuples are refused
+    // by the owner store before any mutation. Never fabricate Herdr fields.
+    herdrSessionName: Type.Optional(Type.String({ minLength: 1 })),
+    paneId: Type.Optional(Type.String({ minLength: 1 })),
     profileId: Type.String({ minLength: 1 }),
     subscriberId: Type.String({ minLength: 1 }),
-    terminalId: Type.String({ minLength: 1 }),
+    terminalId: Type.Optional(Type.String({ minLength: 1 })),
     workspaceId: Type.Optional(Type.String({ minLength: 1 })),
   },
   { additionalProperties: false },

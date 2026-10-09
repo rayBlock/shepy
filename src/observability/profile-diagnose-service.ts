@@ -66,7 +66,7 @@ export type DiagnosedOwner = {
   harnessKind: string;
   lastSeenAt: number;
   leaseExpiresAt: number;
-  paneId: string;
+  paneId: string | null;
   state: "valid" | "in_grace" | "lapsed";
   workspaceId: string | null;
 };
