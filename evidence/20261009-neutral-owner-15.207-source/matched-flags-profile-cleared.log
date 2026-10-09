@@ -1,0 +1,10 @@
+
+ RUN  v4.1.9 /Users/ray/dev/shepy-wt/neutral-owner
+
+
+ Test Files  1 passed (1)
+      Tests  66 passed (66)
+   Start at  21:53:48
+   Duration  822ms (transform 88ms, setup 0ms, import 56ms, tests 698ms, environment 0ms)
+
+EXIT=0

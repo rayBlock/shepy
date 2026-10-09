@@ -1,0 +1,6 @@
+$ pnpm clean:dist && tsc -p tsconfig.build.json && tsc-alias -p tsconfig.build.json && node scripts/stamp-pi-build.mjs
+$ node scripts/clean-dist.mjs
+Shepy Pi build: gitSha unknown (dirty tree)
+$ node scripts/ensure-bin-executable.mjs
+chmod +x dist/src/cli/shepy.js
+EXIT=0
