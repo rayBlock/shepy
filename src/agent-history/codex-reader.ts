@@ -1,4 +1,5 @@
 import type { AgentHistoryMessage, AgentHistoryRef } from "@/observability/contracts.js";
+import { projectCodexContextHealth } from "./codex-context.js";
 import {
   type AgentHistoryReader,
   compactFromMessages,
@@ -21,16 +22,23 @@ export class CodexHistoryReader implements AgentHistoryReader {
     const messages: AgentHistoryMessage[] = [];
     const toolNamesByCallId = new Map<string, string>();
 
-    for (const entry of await readJsonl(path)) {
+    const entries = await readJsonl(path);
+    if (!matchesSession(ref, entries)) return [];
+    for (const entry of entries) {
       const type = stringValue(entry.value.type);
       const payload = record(entry.value.payload);
       const payloadType = stringValue(payload.type);
       const id =
         stringValue(payload.id) ?? stringValue(payload.call_id) ?? stringValue(entry.value.id);
+      // task_complete.started_at marks the turn's START, never the freshness
+      // of its completed answer. Without an outer completion timestamp its
+      // completion time is unknown, even when a start time is available.
       const timestamp =
-        timestampFrom(payload.timestamp) ??
-        timestampFrom(payload.started_at) ??
-        timestampFrom(entry.value.timestamp);
+        payloadType === "task_complete"
+          ? timestampFrom(entry.value.timestamp)
+          : (timestampFrom(entry.value.timestamp) ??
+            codexTimestamp(payload.timestamp) ??
+            codexTimestamp(payload.started_at));
       const refValue = messageRef(path, id ?? undefined, entry.line);
 
       if (type === "event_msg") {
@@ -101,8 +109,31 @@ export class CodexHistoryReader implements AgentHistoryReader {
   }
 
   async readCompact(ref: AgentHistoryRef) {
-    return compactFromMessages(ref, await this.read(ref));
+    const path = ref.path ?? ref.value;
+    const entries = await readJsonl(path);
+    if (!matchesSession(ref, entries)) return compactFromMessages(ref, []);
+    return compactFromMessages(ref, await this.read(ref), projectCodexContextHealth(path, entries));
   }
+}
+
+// Native Codex turn fields use Unix seconds; other readers keep timestampFrom's
+// millisecond semantics. Outer event timestamps denote completion, not start.
+function codexTimestamp(value: unknown): string | null {
+  if (typeof value !== "number") return timestampFrom(value);
+  if (!Number.isFinite(value)) return null;
+  const date = new Date(Math.abs(value) < 1e11 ? value * 1000 : value);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : null;
+}
+
+function matchesSession(
+  ref: AgentHistoryRef,
+  entries: Awaited<ReturnType<typeof readJsonl>>,
+): boolean {
+  if (ref.kind !== "agent_session" || ref.value === (ref.path ?? ref.value)) return true;
+  const ids = entries
+    .filter((entry) => entry.value.type === "session_meta")
+    .map((entry) => stringValue(record(entry.value.payload).id));
+  return ids.length > 0 && ids.every((id) => id === ref.value);
 }
 
 function textFromCodexContent(content: unknown, blockType: string): string | null {

@@ -340,7 +340,7 @@ describe("agent history service", () => {
     sqlite.close();
   });
 
-  test("readers without a context projection keep contextHealth null", async () => {
+  test("Codex projects unavailable context; readers without projections keep contextHealth null", async () => {
     const dir = await mkdtemp(join(tmpdir(), "shepy-history-null-projection-"));
     tempDirs.push(dir);
 
@@ -356,7 +356,14 @@ describe("agent history service", () => {
         source: "codex-jsonl",
         value: codexPath,
       }),
-    ).resolves.toMatchObject({ contextHealth: null, messageCount: 1 });
+    ).resolves.toMatchObject({
+      contextHealth: {
+        source: "codex-jsonl",
+        sessionId: null,
+        usage: { current: false, kind: "unavailable", tokens: null, window: null, percent: null },
+      },
+      messageCount: 1,
+    });
 
     const geminiPath = join(dir, "gemini.json");
     await writeFile(geminiPath, JSON.stringify([{ type: "gemini", content: "gemini done" }]));

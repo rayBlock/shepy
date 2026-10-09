@@ -21,6 +21,244 @@ async function tempHome(name: string) {
 }
 
 describe("CodexHistoryReader", () => {
+  test("normalizes native seconds and milliseconds and preserves ISO timestamps", async () => {
+    const home = await tempHome("shepy-codex-time-");
+    const path = join(home, "rollout.jsonl");
+    await writeFile(
+      path,
+      [
+        {
+          type: "event_msg",
+          timestamp: "2026-10-09T12:30:00Z",
+          payload: {
+            type: "task_complete",
+            started_at: 1791548209,
+            last_agent_message: "synthetic",
+          },
+        },
+        {
+          type: "event_msg",
+          payload: {
+            type: "task_complete",
+            started_at: 1791548209000,
+            last_agent_message: "synthetic",
+          },
+        },
+        {
+          type: "event_msg",
+          payload: { type: "agent_message", timestamp: 1791548209, message: "synthetic" },
+        },
+        {
+          type: "event_msg",
+          payload: { type: "agent_message", timestamp: 1791548209000, message: "synthetic" },
+        },
+        {
+          type: "event_msg",
+          timestamp: "2026-10-09T12:00:00.000Z",
+          payload: { type: "agent_message", message: "synthetic" },
+        },
+        {
+          type: "event_msg",
+          payload: { type: "task_complete", started_at: 1e30, last_agent_message: "invalid" },
+        },
+      ]
+        .map((entry) => JSON.stringify(entry))
+        .join("\n"),
+    );
+    const messages = await new CodexHistoryReader().read({
+      kind: "discovered_file",
+      path,
+      value: path,
+      source: "codex-jsonl",
+    });
+    expect(messages.map((message) => message.timestamp)).toEqual([
+      "2026-10-09T12:30:00Z",
+      null,
+      new Date(1791548209000).toISOString(),
+      new Date(1791548209000).toISOString(),
+      "2026-10-09T12:00:00.000Z",
+      null,
+    ]);
+  });
+
+  test("binds two same-cwd sessions by id and never uses cumulative or cached tokens as extra fill", async () => {
+    const homeDir = await tempHome("shepy-codex-exact-");
+    const dir = join(homeDir, ".codex", "sessions", "2026", "10", "09");
+    await mkdir(dir, { recursive: true });
+    for (const [id, tokens] of [
+      ["thread-a", 50424],
+      ["thread-b", 4000],
+    ] as const) {
+      await writeFile(
+        join(dir, `${id}.jsonl`),
+        [
+          {
+            type: "session_meta",
+            timestamp: "2026-10-09T12:00:00Z",
+            payload: { id, cwd: "/same" },
+          },
+          { type: "turn_context", timestamp: "2026-10-09T12:00:01Z", payload: { model: "gpt-6" } },
+          {
+            type: "event_msg",
+            timestamp: "2026-10-09T12:00:02Z",
+            payload: {
+              type: "token_count",
+              info: {
+                last_token_usage: {
+                  input_tokens: tokens,
+                  cached_input_tokens: id === "thread-a" ? 46848 : 500,
+                  output_tokens: 20,
+                },
+                total_token_usage: { input_tokens: 390981 },
+                model_context_window: 258400,
+              },
+            },
+          },
+        ]
+          .map((entry) => JSON.stringify(entry))
+          .join("\n"),
+      );
+    }
+    const service = createAgentHistoryService({ homeDir });
+    for (const [id, tokens] of [
+      ["thread-a", 50424],
+      ["thread-b", 4000],
+    ] as const) {
+      const result = await service.getCompactHistory({
+        agent: "codex",
+        agentSession: { agent: "codex", kind: "id", value: id, source: "codex" },
+        cwd: "/same",
+        foregroundCwd: null,
+      });
+      expect(result.historyRef?.path).toContain(`${id}.jsonl`);
+      expect(result.contextHealth).toMatchObject({
+        sessionId: id,
+        source: "codex-jsonl",
+        sourceUpdatedAt: "2026-10-09T12:00:02Z",
+        model: { id: "gpt-6" },
+        usage: {
+          current: true,
+          kind: "last_reported",
+          tokens,
+          window: 258400,
+          reportedAt: "2026-10-09T12:00:02Z",
+          percent: (tokens / 258400) * 100,
+        },
+      });
+    }
+    const wrongPath = join(dir, "thread-b.jsonl");
+    expect(
+      await new CodexHistoryReader().read({
+        kind: "agent_session",
+        source: "codex-jsonl",
+        value: "thread-a",
+        path: wrongPath,
+      }),
+    ).toEqual([]);
+    const missing = await service.getCompactHistory({
+      agent: "codex",
+      agentSession: { agent: "codex", kind: "id", value: "absent", source: "codex" },
+      cwd: "/same",
+      foregroundCwd: null,
+    });
+    expect(missing.contextHealth).toBeNull();
+  });
+
+  test("absent, malformed and cumulative-only token_count never report fill", async () => {
+    const home = await tempHome("shepy-codex-unknown-");
+    const path = join(home, "rollout.jsonl");
+    const ref = {
+      kind: "discovered_file" as const,
+      path,
+      value: path,
+      source: "codex-jsonl" as const,
+    };
+    const header = [
+      { type: "session_meta", timestamp: "2026-10-09T12:00:00Z", payload: { id: "t" } },
+      { type: "turn_context", timestamp: "2026-10-09T12:00:01Z", payload: { model: "gpt-6" } },
+    ];
+    await writeFile(path, header.map((entry) => JSON.stringify(entry)).join("\n"));
+    expect((await new CodexHistoryReader().readCompact(ref)).contextHealth?.usage).toMatchObject({
+      current: false,
+      tokens: null,
+      window: null,
+    });
+    for (const info of [
+      undefined,
+      { total_token_usage: { input_tokens: 4000 }, model_context_window: 258400 },
+      { last_token_usage: { input_tokens: "4000" }, model_context_window: 258400 },
+      {
+        last_token_usage: { input_tokens: 4000, cached_input_tokens: 5000 },
+        model_context_window: 258400,
+      },
+    ]) {
+      await writeFile(
+        path,
+        [
+          ...header,
+          {
+            type: "event_msg",
+            timestamp: "2026-10-09T12:00:02Z",
+            payload: { type: "token_count", info },
+          },
+        ]
+          .map((entry) => JSON.stringify(entry))
+          .join("\n"),
+      );
+      expect((await new CodexHistoryReader().readCompact(ref)).contextHealth?.usage).toMatchObject({
+        current: false,
+        kind: "unavailable",
+        tokens: null,
+        window: null,
+        percent: null,
+      });
+    }
+    await writeFile(
+      path,
+      [
+        header[0],
+        {
+          type: "event_msg",
+          timestamp: "2026-10-09T12:00:02Z",
+          payload: {
+            type: "token_count",
+            info: {
+              last_token_usage: { input_tokens: 50424 },
+              model_context_window: 258400,
+            },
+          },
+        },
+      ]
+        .map((entry) => JSON.stringify(entry))
+        .join("\n"),
+    );
+    expect((await new CodexHistoryReader().readCompact(ref)).contextHealth?.usage.current).toBe(
+      false,
+    );
+    await writeFile(
+      path,
+      [
+        header[0],
+        header[1],
+        {
+          type: "event_msg",
+          timestamp: "invalid",
+          payload: {
+            type: "token_count",
+            info: {
+              last_token_usage: { input_tokens: 50424 },
+              model_context_window: 258400,
+            },
+          },
+        },
+      ]
+        .map((entry) => JSON.stringify(entry))
+        .join("\n"),
+    );
+    expect((await new CodexHistoryReader().readCompact(ref)).contextHealth?.usage.current).toBe(
+      false,
+    );
+  });
   test("reads user, assistant, and tool output messages", async () => {
     const homeDir = await tempHome("shepy-codex-reader-");
     const dir = join(homeDir, ".codex", "sessions", "2026", "07", "09");
