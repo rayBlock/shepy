@@ -1,0 +1,17 @@
+{
+  "schema": "shepy.migration-recovery.evidence.v1",
+  "dispatch_id": "5c98111286b66411",
+  "candidate_pins": "pins.sha256",
+  "candidate_pins_sha256": "c740919e029adf9f750f989a9f2995b8fb5f6cffaeba11e57d20afe6b34de827",
+  "source_backup_sha256_before_after": "3a722b00058be633f594eb343695d14b5bb634421e7d32631a32458d3ef08c90",
+  "scratch": {
+    "/private/tmp/migrec-01/tmp/prove.mts": "3b100822606bab03e62b5fbcd3b97ca984c246096443187905534d65a8448050",
+    "/private/tmp/migrec-01/tmp/proof.log": "7426ed5c89c48068e090746729d69329d6390a1ce2ca8b9cbb762a5b0e009116",
+    "/private/tmp/migrec-01/tmp/tests.log": "e00294a4074bdeb3682f135808da5dd46b6e88c79899fa5bdcdbf5ee68bed126",
+    "/private/tmp/migrec-01/tmp/typecheck.log": "8b17335d8177bf1ba13bde43fff192e19aa9239e3274dac08c286e8610ae6278",
+    "/private/tmp/migrec-01/tmp/lint.log": "d74f8b312dbddf7ae37a4ef775ce5fb40454423b266c4ec52e8a995d7f392ba9",
+    "/private/tmp/migrec-01/tmp/format.log": "87acda9d7988ec1b2b4ebe96e56d71c61c04ea19db599f5a1145d88043737037",
+    "/private/tmp/migrec-01/tmp/drizzle.log": "d86a772ab2c8df2e852f812fb894dbf1e0b66c9e10867f7656e38a3e731f5f90"
+  },
+  "note": "Proof uses exclusively cloned backup copies; candidate frozen pending independent review. Typecheck blocked by untouched profile-delivery.test.ts nullability diagnostics. No live database operation."
+}
