@@ -11,6 +11,24 @@ import type { AgentEventRecord, AgentIndexRecord, AgentScope } from "@/observabi
 export const ACTIVE_REVISION_POLL_MS = 10_000;
 export const FULL_RESCAN_MS = 60_000;
 
+/** A tick that fails this many times IN A ROW flips the observable health
+ * to "degraded". Three tolerates the 2026-10-08 shape — one transient
+ * SQLITE_BUSY blip — while still surfacing a permanently failing tick loop
+ * (dead herdr socket, locked database) within half a minute. */
+export const DEGRADED_AFTER_TICK_FAILURES = 3;
+
+/** The observable answer to "is the session watcher actually working?".
+ * Served live over the `daemon.health` RPC and printed by
+ * `shepy daemon status`: permanent tick failures used to only log, so a
+ * silently dying daemon was indistinguishable from a healthy one. */
+export type SessionWatchHealth = {
+  consecutiveTickFailures: number;
+  degradedAfterTickFailures: number;
+  lastTickError: string | undefined;
+  lastTickSucceededAt: string | undefined;
+  status: "degraded" | "healthy";
+};
+
 type Watcher = {
   abort: AbortController;
   client: Pick<HerdrSocketClient, "close" | "subscribeEvents">;
@@ -46,6 +64,9 @@ export class HerdrSessionWatchManager {
   #scheduler: NodeJS.Timeout | undefined;
   #stopping = false;
   #tickInFlight: Promise<void> | undefined;
+  #consecutiveTickFailures = 0;
+  #lastTickError: string | undefined;
+  #lastTickSucceededAt: string | undefined;
 
   constructor(options: {
     activeRevisionPollMs?: number;
@@ -88,8 +109,19 @@ export class HerdrSessionWatchManager {
         // concurrent writer killed the daemon and stalled every delivery
         // pump whose lease then lapsed). Transient errors are logged and
         // dropped — the next tick retries, watchers keep their own loops.
+        // Every outcome is also COUNTED: permanent failure no longer hides
+        // behind the log line, it degrades the observable health instead
+        // (queried via daemon.health / `shepy daemon status`) — no alert
+        // spam, one queryable state.
         this.#tickInFlight = this.#tick()
+          .then(() => {
+            this.#consecutiveTickFailures = 0;
+            this.#lastTickError = undefined;
+            this.#lastTickSucceededAt = new Date().toISOString();
+          })
           .catch((error) => {
+            this.#consecutiveTickFailures += 1;
+            this.#lastTickError = error instanceof Error ? error.message : String(error);
             console.error("Shepy session tick failed (will retry):", error);
           })
           .finally(() => {
@@ -97,6 +129,19 @@ export class HerdrSessionWatchManager {
           });
       }
     }, this.#activeRevisionPollMs);
+  }
+
+  /** Live scheduler health — the backstop for permanently failing ticks.
+   * Cheap, synchronous, no params: safe to serve on every status read. */
+  health(): SessionWatchHealth {
+    return {
+      consecutiveTickFailures: this.#consecutiveTickFailures,
+      degradedAfterTickFailures: DEGRADED_AFTER_TICK_FAILURES,
+      lastTickError: this.#lastTickError,
+      lastTickSucceededAt: this.#lastTickSucceededAt,
+      status:
+        this.#consecutiveTickFailures >= DEGRADED_AFTER_TICK_FAILURES ? "degraded" : "healthy",
+    };
   }
 
   async stop(): Promise<void> {

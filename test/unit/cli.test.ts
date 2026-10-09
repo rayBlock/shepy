@@ -1142,12 +1142,20 @@ describe("shepy CLI", () => {
           pid: 123,
           version: "0.5.0",
         },
+        {
+          consecutiveTickFailures: 4,
+          degradedAfterTickFailures: 3,
+          lastTickError: "database is locked",
+          lastTickSucceededAt: undefined,
+          status: "degraded",
+        },
         { buildStamp: "2026-09-12T00:00:00.000Z", version: "0.5.0" },
       ),
     ) as Record<string, unknown>;
     expect(payload).toMatchObject({
       cli: { buildStamp: "2026-09-12T00:00:00.000Z", version: "0.5.0" },
       daemon: { bootId: "boot-1", pid: 123, version: "0.5.0" },
+      health: { consecutiveTickFailures: 4, status: "degraded" },
       pid: 123,
       socketPath: "/tmp/s.sock",
       state: "running",
@@ -1159,10 +1167,12 @@ describe("shepy CLI", () => {
       daemonStatusPayload(
         { pidPath: "/tmp/pid", socketPath: "/tmp/s.sock", state: "stopped" },
         null,
+        null,
         { buildStamp: "2026-09-12T00:00:00.000Z", version: "0.5.0" },
       ),
     ) as Record<string, unknown>;
     expect(payload.daemon).toBeNull();
+    expect(payload.health).toBeNull();
     expect(payload.state).toBe("stopped");
     expect(payload.cli).toEqual({
       buildStamp: "2026-09-12T00:00:00.000Z",

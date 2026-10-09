@@ -122,6 +122,7 @@ export async function runObservabilityDaemonService(
     stores: { agentEvents, agentHistoryCache, agents, herdrSessions, herdrWorkspaces },
   });
 
+  let watchManager: HerdrSessionWatchManager | undefined;
   const server = new ObservabilityRpcServer({
     context: daemonServices.context,
     daemonInfo,
@@ -138,8 +139,12 @@ export async function runObservabilityDaemonService(
     registerPiSessionRef: (registration) => index.registerPiSessionRef(registration),
     socketPath: runtime.paths.socketPath,
     stores: { agentEvents, agents, herdrSessions, herdrWorkspaces },
+    // Read at request time, not boot: daemon.health must answer the
+    // scheduler's CURRENT state. The late assignment is safe — the socket
+    // only listens after watchManager exists (server.start comes last).
+    watchHealth: () => watchManager?.health(),
   });
-  const watchManager = new HerdrSessionWatchManager({
+  watchManager = new HerdrSessionWatchManager({
     agents,
     herdrSessions,
     index,

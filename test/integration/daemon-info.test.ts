@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { createAgentHistoryService } from "@/agent-history/service.js";
 import { createDaemonInfo, resolveBuildStamp } from "@/daemon/daemon-identity.js";
+import type { SessionWatchHealth } from "@/daemon/herdr-session-watch-manager.js";
 import { ObservabilityRpcServer } from "@/daemon/observability-server.js";
 import { AgentContextSnapshotStore } from "@/db/agent-context-snapshots.js";
 import { AgentEventStore } from "@/db/agent-events.js";
@@ -33,7 +34,10 @@ afterEach(async () => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { force: true, recursive: true });
 });
 
-async function openServer(daemonInfo?: ReturnType<typeof createDaemonInfo>) {
+async function openServer(
+  daemonInfo?: ReturnType<typeof createDaemonInfo>,
+  watchHealth?: () => SessionWatchHealth,
+) {
   const dir = mkdtempSync(join(tmpdir(), "shepy-daemon-info-"));
   tempDirs.push(dir);
   const { sqlite } = openSqlite(join(dir, "test.sqlite"));
@@ -58,6 +62,7 @@ async function openServer(daemonInfo?: ReturnType<typeof createDaemonInfo>) {
   const server = new ObservabilityRpcServer({
     context,
     ...(daemonInfo ? { daemonInfo } : {}),
+    ...(watchHealth ? { watchHealth } : {}),
     history,
     orchestrator,
     socketPath,
@@ -124,6 +129,31 @@ describe("daemon.info RPC (RUN-20260913-04 D1)", () => {
     });
     const { client } = await openServer(expected);
     expect(await client.request("daemon.info", {})).toEqual(expected);
+  });
+});
+
+describe("daemon.health RPC (session-watch health backstop)", () => {
+  test("serves the watch manager's live health snapshot over the real RPC", async () => {
+    const snapshot = {
+      consecutiveTickFailures: 4,
+      degradedAfterTickFailures: 3,
+      lastTickError: "database is locked",
+      lastTickSucceededAt: undefined,
+      status: "degraded" as const,
+    };
+    const { client } = await openServer(undefined, () => snapshot);
+    expect(await client.request("daemon.health", {})).toEqual(snapshot);
+  });
+
+  test("a server without a watch manager answers unknown, never a guessed healthy", async () => {
+    const { client } = await openServer();
+    expect(await client.request("daemon.health", {})).toEqual({
+      consecutiveTickFailures: 0,
+      degradedAfterTickFailures: 3,
+      lastTickError: undefined,
+      lastTickSucceededAt: undefined,
+      status: "unknown",
+    });
   });
 });
 

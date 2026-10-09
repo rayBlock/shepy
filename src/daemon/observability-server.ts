@@ -9,6 +9,10 @@ import {
   type DaemonInfo,
   resolvePackageVersion,
 } from "@/daemon/daemon-identity.js";
+import {
+  DEGRADED_AFTER_TICK_FAILURES,
+  type SessionWatchHealth,
+} from "@/daemon/herdr-session-watch-manager.js";
 import type { AgentEventStore } from "@/db/agent-events.js";
 import type { AgentStore } from "@/db/agents.js";
 import type { HerdrSessionStore } from "@/db/herdr-sessions.js";
@@ -104,6 +108,19 @@ type GraceTimer = {
   handle: TimerHandle;
 };
 
+/** The `daemon.health` answer: the watch manager's live snapshot, or
+ * `status: "unknown"` when this server was built without one (embedded
+ * test fixtures) — never a guessed "healthy". */
+export type DaemonHealthReport =
+  | SessionWatchHealth
+  | {
+      consecutiveTickFailures: 0;
+      degradedAfterTickFailures: number;
+      lastTickError: undefined;
+      lastTickSucceededAt: undefined;
+      status: "unknown";
+    };
+
 export class ObservabilityRpcServer {
   readonly #clearTimeout: (handle: TimerHandle) => void;
   readonly #context: AgentContextService;
@@ -139,6 +156,7 @@ export class ObservabilityRpcServer {
   readonly #startupReconnectGraceMs: number;
   readonly #startupTimers = new Map<string, GraceTimer>();
   readonly #stores: AgentStores;
+  readonly #watchHealth: (() => SessionWatchHealth | undefined) | undefined;
   #connectionSequence = 0;
   #stopping = false;
 
@@ -171,6 +189,7 @@ export class ObservabilityRpcServer {
     socketPath: string;
     startupReconnectGraceMs?: number;
     stores: AgentStores;
+    watchHealth?: () => SessionWatchHealth | undefined;
   }) {
     this.#clearTimeout = options.clearTimeout ?? clearTimeout;
     this.#context = options.context;
@@ -204,6 +223,7 @@ export class ObservabilityRpcServer {
     this.#socketPath = options.socketPath;
     this.#startupReconnectGraceMs = options.startupReconnectGraceMs ?? STARTUP_RECONNECT_GRACE_MS;
     this.#stores = options.stores;
+    this.#watchHealth = options.watchHealth;
     this.#server = createServer((socket) => this.#handleConnection(socket));
   }
 
@@ -368,6 +388,22 @@ export class ObservabilityRpcServer {
         return this.#demands
           ? { ...this.#daemonInfo, capabilities: ["profile-demand-v1"] }
           : this.#daemonInfo;
+      }
+      case "daemon.health": {
+        // No params by design: LIVE scheduler health, read at request time —
+        // the observable backstop for permanently failing session ticks
+        // (they used to only log). Served next to daemon.info in
+        // `shepy daemon status`. No provider (or no manager yet) answers
+        // unknown — never a guessed healthy.
+        return (
+          this.#watchHealth?.() ?? {
+            consecutiveTickFailures: 0,
+            degradedAfterTickFailures: DEGRADED_AFTER_TICK_FAILURES,
+            lastTickError: undefined,
+            lastTickSucceededAt: undefined,
+            status: "unknown" as const,
+          }
+        );
       }
       case "agent.list": {
         assertSchema(agentListInputSchema, params);

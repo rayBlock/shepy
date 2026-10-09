@@ -8,6 +8,7 @@ import { resolveRuntime, runtimePathsFromRecordOrDefault } from "@/config/runtim
 import { ObservabilityRpcClient } from "@/daemon/client.js";
 import type { DaemonInfo } from "@/daemon/daemon-identity.js";
 import { resolveBuildStamp } from "@/daemon/daemon-identity.js";
+import type { DaemonHealthReport } from "@/daemon/observability-server.js";
 import {
   type DaemonStatus,
   getDaemonStatus,
@@ -993,17 +994,33 @@ function cliIdentity(): { buildStamp: string; version: string } {
 }
 
 /** The full `shepy daemon status` payload: the pid/socket probe result,
- * plus the daemon's own daemon.info when the socket answered, plus the
- * CLI's own stamps. `daemon: null` means the socket did not answer (or an
- * older daemon that predates daemon.info) — the CLI stamps still print. */
+ * plus the daemon's own daemon.info AND daemon.health when the socket
+ * answered, plus the CLI's own stamps. `daemon: null` / `health: null`
+ * mean the socket did not answer (or an older daemon that predates the
+ * method) — the CLI stamps still print. */
 export function daemonStatusPayload(
   status: DaemonStatus,
   daemon: DaemonInfo | null,
+  health: DaemonHealthReport | null,
   cli: { buildStamp: string; version: string },
 ): string {
-  return JSON.stringify({ ...status, daemon, cli });
+  return JSON.stringify({ ...status, daemon, health, cli });
 }
 
+/** One bounded daemon.health read for the status command. A refusal
+ * (unknown method from a pre-backstop daemon, or a socket that died
+ * between the probe and this call) degrades to null — status never fails
+ * on health. */
+async function fetchDaemonHealth(socketPath: string): Promise<DaemonHealthReport | null> {
+  const client = new ObservabilityRpcClient({ socketPath });
+  try {
+    return (await client.request("daemon.health", {})) as DaemonHealthReport;
+  } catch {
+    return null;
+  } finally {
+    client.close();
+  }
+}
 /** One bounded daemon.info read for the status command. A refusal (unknown
  * method from a pre-D1 daemon, or a socket that died between the probe and
  * this call) degrades to null — status never fails on identity. */
@@ -1411,11 +1428,10 @@ async function runDaemonCommand(
       pidPath: runtime.paths.pidPath,
       socketPath: runtime.paths.socketPath,
     });
-    const daemon =
-      "socketReachable" in status && status.socketReachable
-        ? await fetchDaemonInfo(runtime.paths.socketPath)
-        : null;
-    console.log(daemonStatusPayload(status, daemon, cliIdentity()));
+    const reachable = "socketReachable" in status && status.socketReachable;
+    const daemon = reachable ? await fetchDaemonInfo(runtime.paths.socketPath) : null;
+    const health = reachable ? await fetchDaemonHealth(runtime.paths.socketPath) : null;
+    console.log(daemonStatusPayload(status, daemon, health, cliIdentity()));
     return;
   }
   if (command.action === "stop") {

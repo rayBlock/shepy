@@ -87,6 +87,65 @@ describe("HerdrSessionWatchManager", () => {
     harness.sqlite.close();
   });
 
+  test("tick failures surface an observable degraded health state, then recover", async () => {
+    vi.useFakeTimers();
+    const harness = openObservabilityDbHarness();
+    seedAgent(harness, "working");
+    let listCalls = 0;
+    let failuresQueued = 0;
+    const manager = managerFor(harness, {
+      activeRevisionPollMs: 10,
+      fullRescanMs: 5, // every scheduled tick is a full rescan → the session list decides
+      index: {
+        async handleHerdrEvent() {
+          return { contextChangedScopes: [], events: [] };
+        },
+        async refreshHerdrSession() {
+          return result([agentRecord("wB:p2", "wB", "working")]);
+        },
+      },
+      sessionList: async () => {
+        listCalls += 1;
+        if (listCalls > 1 && failuresQueued > 0) {
+          failuresQueued -= 1;
+          throw new Error("herdr socket gone");
+        }
+        return [entry()];
+      },
+    });
+    // Before any scheduled tick: healthy, never having succeeded or failed.
+    expect(manager.health()).toEqual({
+      consecutiveTickFailures: 0,
+      degradedAfterTickFailures: 3,
+      lastTickError: undefined,
+      lastTickSucceededAt: undefined,
+      status: "healthy",
+    });
+    await manager.start();
+    failuresQueued = 1;
+    await vi.advanceTimersByTimeAsync(10); // one failed tick
+    // A single blip is survivable history, not degradation — the
+    // 2026-10-08 SQLITE_BUSY shape must not flag the daemon degraded.
+    expect(manager.health()).toMatchObject({ consecutiveTickFailures: 1, status: "healthy" });
+    expect(manager.health().lastTickError).toContain("herdr socket gone");
+    failuresQueued = 5;
+    await vi.advanceTimersByTimeAsync(30); // three more consecutive failures
+    const degraded = manager.health();
+    expect(degraded.status).toBe("degraded");
+    expect(degraded.consecutiveTickFailures).toBe(4);
+    expect(degraded.lastTickError).toContain("herdr socket gone");
+    expect(degraded.lastTickSucceededAt).toBeUndefined(); // never a success yet
+    failuresQueued = 0;
+    await vi.advanceTimersByTimeAsync(10); // a tick finally succeeds
+    const recovered = manager.health();
+    expect(recovered.status).toBe("healthy");
+    expect(recovered.consecutiveTickFailures).toBe(0);
+    expect(recovered.lastTickError).toBeUndefined();
+    expect(typeof recovered.lastTickSucceededAt).toBe("string");
+    await manager.stop();
+    harness.sqlite.close();
+  });
+
   test("does not poll all-idle sessions before the full rescan", async () => {
     vi.useFakeTimers();
     const harness = openObservabilityDbHarness();
