@@ -538,3 +538,145 @@ test("different activation revisions of the same episode create separate obligat
   expect(second.obligationId).not.toBe(first.obligationId);
   expect(second.demandEventId).not.toBe(first.demandEventId);
 });
+
+test("a neutral owner fails the host-tuple demand fence", () => {
+  const { dir, sqlite, request, store, ref } = fixture();
+  const now = Date.parse("2026-10-09T13:15:00.000Z");
+  const allowlistPath = join(dir, "allowlist.json");
+  const seatStatePath = join(dir, "state.json");
+  const stopPath = join(dir, "STOP");
+  const generation = request.ownerGeneration;
+  const grantRef = request.grantRef;
+  const observation = (availableSlots: number) =>
+    ref(
+      "capacity.json",
+      JSON.stringify({
+        observedAt: "2026-10-09T13:14:59.000Z",
+        seatGeneration: generation,
+        activeInvocationIds: availableSlots ? [] : ["busy"],
+        occupiedSlots: availableSlots ? 0 : 1,
+        availableSlots,
+        scopeRef: grantRef,
+      }),
+    );
+  const duty = (mode: string, availableSlots: number) => ({
+    schema: "factory.duty.v1",
+    seatId: request.seatId,
+    profileId: request.profileId,
+    ownerGeneration: generation,
+    grantRef,
+    mode,
+    window: {
+      startsAt: "2026-10-09T13:00:00.000Z",
+      endsAt: "2026-10-09T14:00:00.000Z",
+      timezone: "UTC",
+    },
+    queues: [
+      {
+        root: dir,
+        queuePath: join(dir, "queue.json"),
+        ownership: [
+          {
+            rowId: "15.233",
+            packetId: "R1-PHASE2",
+            actionClass: "execute",
+            packetRef: request.snapshotRef,
+            grantRef,
+          },
+        ],
+      },
+    ],
+    capacity: { maxInFlight: 1, observationRef: observation(availableSlots), maxAgeSeconds: 30 },
+    stopPaths: [stopPath],
+    nextDecision: { reasonRef: grantRef, eventRef: null, revisitAt: "2026-10-09T13:30:00.000Z" },
+    successor: { profileId: "successor", routeRef: grantRef, ownerGeneration: null },
+    policy: {
+      idleGraceSeconds: 60,
+      cooldownSeconds: 1200,
+      maxWakesPerHour: 3,
+      maxReminderCount: 1,
+      defaultRevisitSeconds: 1200,
+    },
+  });
+  writeFileSync(
+    seatStatePath,
+    JSON.stringify({
+      schema: "factory.seat-state.v1",
+      seat: request.seatId,
+      ts: "2026-10-09T13:14:59.000Z",
+      ctxPct: 40,
+      zone: "amber",
+      unknown: [],
+    }),
+  );
+  writeFileSync(
+    allowlistPath,
+    JSON.stringify({
+      schema: "shepy.ingress-allowlist.v1",
+      sources: {
+        "factory-router": {
+          profiles: [request.profileId],
+          kinds: [request.kind, "continuation-missing"],
+          duty_paths: [request.dutyRef.path],
+          grant_hashes: [request.grantRef.sha256],
+          evidence_roots: [dir],
+          max_expiry_minutes: 60,
+          seat_state_path: seatStatePath,
+        },
+      },
+    }),
+  );
+  const provider = new DemandEligibilityProvider({
+    allowlistPath,
+    now: () => now,
+    requiredStopPath: stopPath,
+  });
+  const owners = new ProfileOwnerStore({ sqlite, now: () => now });
+  const service = new ProfileDemandService(store, owners, provider, {
+    allowlistPath,
+    now: () => now,
+  });
+  const hosted = owners.claim({
+    profileId: request.profileId,
+    subscriberId: "owner-1",
+    harnessKind: "pi",
+    harnessSessionRefJson: JSON.stringify({ kind: "path", value: generation.nativeSessionRef }),
+    herdrSessionName: generation.herdrSession,
+    workspaceId: generation.workspaceId,
+    paneId: generation.paneId,
+    terminalId: generation.terminalId,
+  });
+  if (hosted.kind === "rejected") throw new Error("hosted claim refused");
+  // Positive control: the same duty publish is eligible while the owner is
+  // fully host-qualified.
+  const hostedDuty = {
+    ...request,
+    dutyRef: ref("duty.json", JSON.stringify(duty("on-duty", 1))),
+    idempotencyKey: `${request.episodeId}/queue-claimable/${request.activationRevision}`,
+  };
+  expect(service.publishDemand(hostedDuty).obligationId).toBeTruthy();
+  // Replace the owner with a NEUTRAL one through the token fast path.
+  const neutral = owners.claim({
+    profileId: request.profileId,
+    currentLeaseToken: hosted.leaseToken,
+    subscriberId: "codex-neutral",
+    harnessKind: "codex",
+    harnessSessionRefJson: JSON.stringify({
+      kind: "thread",
+      value: "01a11ff6-9f7f-71a1-9741-366612d6390f",
+    }),
+  });
+  if (neutral.kind === "rejected") throw new Error("neutral re-claim refused");
+  let refusal = "";
+  try {
+    service.publishDemand({
+      ...hostedDuty,
+      episodeId: "b".repeat(64),
+      dutyRef: ref("duty.json", JSON.stringify(duty("on-duty", 1))),
+      idempotencyKey: `${"b".repeat(64)}/queue-claimable/${request.activationRevision}`,
+    });
+  } catch (error) {
+    refusal = (error as Error).message;
+  }
+  expect(refusal).toBe("demand:owner-generation-mismatch");
+});

@@ -175,14 +175,14 @@ export const profileOwners = sqliteTable("profile_owners", {
   claimedAt: integer("claimed_at", { mode: "timestamp_ms" }).notNull(),
   harnessKind: text("harness_kind").notNull(),
   harnessSessionRefJson: text("harness_session_ref_json").notNull(),
-  herdrSessionName: text("herdr_session_name").notNull(),
+  herdrSessionName: text("herdr_session_name"),
   lastSeenAt: integer("last_seen_at", { mode: "timestamp_ms" }).notNull(),
   leaseExpiresAt: integer("lease_expires_at", { mode: "timestamp_ms" }).notNull(),
   leaseToken: text("lease_token").notNull(),
-  paneId: text("pane_id").notNull(),
+  paneId: text("pane_id"),
   profileId: text("profile_id").primaryKey(),
   subscriberId: text("subscriber_id").notNull(),
-  terminalId: text("terminal_id").notNull(),
+  terminalId: text("terminal_id"),
   workspaceId: text("workspace_id"),
 });
 

@@ -241,6 +241,9 @@ export class ObservabilityRpcServer {
   publishAgentContext(scope: AgentScope): void {
     const owner = this.#orchestrator.status(scope)?.owner;
     if (!owner) return;
+    // Explicit all-or-none host guard: a host-free owner never reaches the
+    // terminal socket key/lookup.
+    if (!owner.terminalId) return;
     const socket = this.#newestSocketForTerminal({ ...scope, terminalId: owner.terminalId });
     if (!socket) return;
     const context = this.#context.workspaceSnapshot({
@@ -258,6 +261,8 @@ export class ObservabilityRpcServer {
     const scope = { herdrSessionName: event.herdrSessionName, workspaceId: event.workspaceId };
     const owner = this.#orchestrator.status(scope)?.owner;
     if (!owner || event.terminalId === owner.terminalId) return;
+    // Explicit all-or-none host guard before the terminal socket lookup.
+    if (!owner.terminalId) return;
     const socket = this.#newestSocketForTerminal({ ...scope, terminalId: owner.terminalId });
     if (socket) this.#write(socket, { method: "agent.event", params: { event } });
   }
@@ -286,6 +291,9 @@ export class ObservabilityRpcServer {
     for (const ownerState of owners) {
       const owner = ownerState.owner;
       if (!owner) continue;
+      // Explicit all-or-none host guard: reconciliation never consults a
+      // terminal for a host-free owner.
+      if (!owner.terminalId || !owner.paneId || !ownerState.workspaceId) continue;
       const current = this.#orchestrator.status(ownerState);
       if (current?.owner?.terminalId !== owner.terminalId) continue;
       const agent = byTerminal.get(owner.terminalId);
@@ -523,11 +531,11 @@ export class ObservabilityRpcServer {
           acceptedSourceKinds?: ("agent" | "profile-demand")[];
           harnessKind: string;
           harnessSessionRefJson: string;
-          herdrSessionName: string;
-          paneId: string;
+          herdrSessionName?: string;
+          paneId?: string;
           profileId: string;
           subscriberId: string;
-          terminalId: string;
+          terminalId?: string;
           workspaceId?: string;
         };
         return { result: this.#requireDelivery().claim(input) };
@@ -821,20 +829,23 @@ export class ObservabilityRpcServer {
 
   #armStartupGrace(): void {
     for (const state of this.#orchestrator.persistedOwners()) {
-      if (!state.owner) continue;
-      const key = terminalPresenceKey({ ...state, terminalId: state.owner.terminalId });
+      const owner = state.owner;
+      // Explicit all-or-none host guard: only a fully host-qualified owner
+      // state may reach terminal keys, presence checks or host releases.
+      if (!owner?.terminalId || !owner.paneId || !state.workspaceId) continue;
+      const key = terminalPresenceKey({ ...state, terminalId: owner.terminalId });
       const handle = this.#setTimeout(() => {
         this.#startupTimers.delete(key);
         if (
           this.#stopping ||
-          this.#hasTerminalPresence({ ...state, terminalId: state.owner?.terminalId ?? "" })
+          this.#hasTerminalPresence({ ...state, terminalId: owner.terminalId })
         ) {
           return;
         }
         this.#releaseCurrentOwnersForTerminal({
           herdrSessionName: state.herdrSessionName,
           reason: "startup_timeout",
-          terminalId: state.owner?.terminalId ?? "",
+          terminalId: owner.terminalId,
         });
       }, this.#startupReconnectGraceMs);
       this.#startupTimers.set(key, { handle });
@@ -850,8 +861,11 @@ export class ObservabilityRpcServer {
       .persistedOwners()
       .filter(
         (state) =>
+          state.owner !== null &&
+          state.owner.paneId !== null &&
+          state.owner.terminalId !== null &&
           state.herdrSessionName === input.herdrSessionName &&
-          state.owner?.terminalId === input.terminalId,
+          state.owner.terminalId === input.terminalId,
       );
     for (const owner of owners) {
       const change = this.#orchestrator.release({

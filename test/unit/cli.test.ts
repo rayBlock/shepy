@@ -252,6 +252,35 @@ describe("shepy CLI", () => {
     expect(text).not.toContain("secret-lease-token");
   });
 
+  test("renders a neutral owner without inventing host identifiers", async () => {
+    const owner = {
+      claimedAt: 1,
+      harnessKind: "codex",
+      harnessSessionRefJson: "{}",
+      herdrSessionName: null,
+      lastSeenAt: 2,
+      leaseExpiresAt: Date.now() + 60_000,
+      leaseToken: "secret-lease-token",
+      paneId: null,
+      profileId: "battle",
+      subscriberId: "secret-subscriber",
+      terminalId: null,
+      workspaceId: null,
+    };
+    const output: string[] = [];
+    await runCliCommand(
+      { command: "profile-owner", json: false, profileId: "battle" },
+      {
+        connect: async () => ({ close: () => {}, request: async () => ({ owner }) }),
+        output: (line) => output.push(line),
+        socketPath: "/tmp/s.sock",
+      },
+    );
+    const text = output.join("\n");
+    expect(text).toContain("(no host location)");
+    expect(text).not.toContain("secret-lease-token");
+  });
+
   test("says an unowned profile is claimable", async () => {
     const output: string[] = [];
     await runCliCommand(

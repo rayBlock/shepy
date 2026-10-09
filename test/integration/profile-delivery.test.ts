@@ -3157,3 +3157,135 @@ describe("profile.claim on a nonexistent profile", () => {
     }
   });
 });
+
+describe("neutral owner — host-free owner representation (CODEX-NEUTRAL-OWNER)", () => {
+  const NEUTRAL_CLAIM = {
+    harnessKind: "codex",
+    harnessSessionRefJson: JSON.stringify({
+      kind: "thread",
+      value: "01a11ff6-9f7f-71a1-9741-366612d6390f",
+    }),
+    profileId: "driffs",
+    subscriberId: "codex-neutral",
+  } as const;
+
+  test("claims with every host field absent; profile.owner exposes nulls and no private metadata", async () => {
+    const { client } = await rpcFixture();
+    const claim = (await client.request("profile.claim", NEUTRAL_CLAIM)) as {
+      result: { kind: string; leaseToken: string };
+    };
+    expect(claim.result.kind).toBe("claimed");
+    expect(typeof claim.result.leaseToken).toBe("string");
+    const owner = (await client.request("profile.owner", { profileId: "driffs" })) as {
+      owner: Record<string, unknown>;
+    };
+    expect(owner.owner).toMatchObject({
+      harnessKind: "codex",
+      herdrSessionName: null,
+      paneId: null,
+      terminalId: null,
+      workspaceId: null,
+    });
+    expect(owner.owner).not.toHaveProperty("leaseToken");
+    expect(owner.owner).not.toHaveProperty("harnessSessionRefJson");
+    expect(owner.owner).not.toHaveProperty("subscriberId");
+  });
+
+  test("a partial host tuple is refused before any mutation", async () => {
+    const { client } = await rpcFixture();
+    await expect(
+      client.request("profile.claim", { ...NEUTRAL_CLAIM, paneId: "wA:p1" }),
+    ).rejects.toThrow(/owner:partial-host-location/);
+    const owner = (await client.request("profile.owner", { profileId: "driffs" })) as {
+      owner: unknown;
+    };
+    expect(owner.owner).toBeNull();
+  });
+
+  test("lease-token authority is unchanged for a neutral owner", async () => {
+    const { client } = await rpcFixture();
+    const first = (await client.request("profile.claim", NEUTRAL_CLAIM)) as {
+      result: { leaseToken: string };
+    };
+    const rival = (await client.request("profile.claim", {
+      ...NEUTRAL_CLAIM,
+      subscriberId: "rival",
+    })) as { result: { kind: string; leaseToken?: string } };
+    expect(rival.result.kind).toBe("rejected");
+    expect(rival.result).not.toHaveProperty("leaseToken");
+    expect(
+      (
+        (await client.request("profile.renew", { leaseToken: "wrong", profileId: "driffs" })) as {
+          renewed: boolean;
+        }
+      ).renewed,
+    ).toBe(false);
+    expect(
+      (
+        (await client.request("profile.release", { leaseToken: "wrong", profileId: "driffs" })) as {
+          released: boolean;
+        }
+      ).released,
+    ).toBe(false);
+    expect(
+      (
+        (await client.request("profile.renew", {
+          leaseToken: first.result.leaseToken,
+          profileId: "driffs",
+        })) as { renewed: boolean }
+      ).renewed,
+    ).toBe(true);
+    expect(
+      (
+        (await client.request("profile.release", {
+          leaseToken: first.result.leaseToken,
+          profileId: "driffs",
+        })) as { released: boolean }
+      ).released,
+    ).toBe(true);
+  });
+
+  test("host events never touch a neutral owner: zero terminal lookup, zero presence claim/release", async () => {
+    const { built, client, server } = await rpcFixture();
+    const claim = (await client.request("profile.claim", NEUTRAL_CLAIM)) as {
+      result: { leaseToken: string };
+    };
+    const claimSpy = vi.spyOn(AgentOrchestratorService.prototype, "claim");
+    const releaseSpy = vi.spyOn(AgentOrchestratorService.prototype, "release");
+    const moveSpy = vi.spyOn(AgentOrchestratorService.prototype, "move");
+    const lookupSpy = vi.spyOn(built.agents, "findByPane");
+    server.reconcileAgentLocations({ agents: built.agents.list(), herdrSessionName: "default" });
+    expect(claimSpy).not.toHaveBeenCalled();
+    expect(releaseSpy).not.toHaveBeenCalled();
+    expect(moveSpy).not.toHaveBeenCalled();
+    expect(lookupSpy).not.toHaveBeenCalled();
+    const row = built.owners.get("driffs");
+    expect(row?.leaseToken).toBe(claim.result.leaseToken);
+    expect(row?.paneId).toBeNull();
+    expect(row?.terminalId).toBeNull();
+    claimSpy.mockRestore();
+    releaseSpy.mockRestore();
+    moveSpy.mockRestore();
+    lookupSpy.mockRestore();
+  });
+
+  test("hosted Pi positive control: presence registration and release still work", async () => {
+    const { client } = await rpcFixture();
+    const claimSpy = vi.spyOn(AgentOrchestratorService.prototype, "claim");
+    const releaseSpy = vi.spyOn(AgentOrchestratorService.prototype, "release");
+    await client.request("agent.orchestrator.register", {
+      herdrSocketPath: "/tmp/a.sock",
+      paneId: "wA:p1",
+      sessionRef: { agent: "pi", kind: "path", source: "shepy", value: "/tmp/pi.jsonl" },
+      subscriberId: "pi-sub",
+      subscriberKind: "pi",
+      workspaceId: "wA",
+    });
+    await client.request("agent.orchestrator.set", { enabled: true });
+    expect(claimSpy).toHaveBeenCalledTimes(1);
+    await client.request("agent.orchestrator.set", { enabled: false });
+    expect(releaseSpy).toHaveBeenCalledTimes(1);
+    claimSpy.mockRestore();
+    releaseSpy.mockRestore();
+  });
+});

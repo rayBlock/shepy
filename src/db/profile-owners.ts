@@ -32,14 +32,14 @@ export type OwnerRow = {
   claimed_at: number;
   harness_kind: string;
   harness_session_ref_json: string;
-  herdr_session_name: string;
+  herdr_session_name: string | null;
   last_seen_at: number;
   lease_expires_at: number;
   lease_token: string;
-  pane_id: string;
+  pane_id: string | null;
   profile_id: string;
   subscriber_id: string;
-  terminal_id: string;
+  terminal_id: string | null;
   workspace_id: string | null;
 };
 
@@ -48,14 +48,14 @@ export type ProfileOwner = {
   claimedAt: number;
   harnessKind: string;
   harnessSessionRefJson: string;
-  herdrSessionName: string;
+  herdrSessionName: string | null;
   lastSeenAt: number;
   leaseExpiresAt: number;
   leaseToken: string;
-  paneId: string;
+  paneId: string | null;
   profileId: string;
   subscriberId: string;
-  terminalId: string;
+  terminalId: string | null;
   workspaceId: string | null;
 };
 
@@ -119,14 +119,25 @@ export class ProfileOwnerStore {
     graceMs?: number;
     harnessKind: string;
     harnessSessionRefJson: string;
-    herdrSessionName: string;
+    /** Optional Herdr host location — ALL-OR-NONE. A standalone owner
+     * (e.g. Codex outside Herdr) carries none of the three fields; a hosted
+     * owner carries all of them. A partial tuple throws
+     * `owner:partial-host-location` before any mutation; the fields are
+     * descriptive identity, never authentication — the lease token remains
+     * the only authority. */
+    herdrSessionName?: string;
     leaseMs?: number;
-    paneId: string;
+    paneId?: string;
     profileId: string;
     subscriberId: string;
-    terminalId: string;
+    terminalId?: string;
     workspaceId?: string | null;
   }): ClaimResult {
+    const providedHost = [input.herdrSessionName, input.paneId, input.terminalId].filter(
+      (value) => value !== undefined,
+    );
+    if (providedHost.length !== 0 && (providedHost.length !== 3 || providedHost.some((v) => !v)))
+      throw new Error("owner:partial-host-location");
     const now = this.#now();
     const leaseMs = input.leaseMs ?? DEFAULT_LEASE_MS;
     const graceMs = input.graceMs ?? DEFAULT_LEASE_GRACE_MS;
@@ -170,10 +181,10 @@ export class ProfileOwnerStore {
         input.subscriberId,
         input.harnessKind,
         input.harnessSessionRefJson,
-        input.herdrSessionName,
+        input.herdrSessionName ?? null,
         input.workspaceId ?? null,
-        input.paneId,
-        input.terminalId,
+        input.paneId ?? null,
+        input.terminalId ?? null,
         leaseToken,
         now + leaseMs,
         now,
