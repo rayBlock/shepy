@@ -205,6 +205,18 @@ export class ProfileDeliveryService {
     // Filter at projection, not emission: the event log stays a complete
     // audit record, but only notifiable outcomes become owner obligations.
     if (!NOTIFIABLE_EVENT_TYPES.has(event.type)) return;
+    // Only the OpenCode reader's source entry is a stable delivery identity.
+    // An absent/malformed entry is UNKNOWN, not a new deliverable outcome.
+    const openCode = event.compactHistory?.source === "opencode-sqlite";
+    const sourceRef = event.compactHistory?.lastAssistantMessage?.ref;
+    const sourceEntryId = openCode ? /#entry=(prt_[a-zA-Z0-9]+)$/.exec(sourceRef ?? "")?.[1] : null;
+    const sourceText = event.compactHistory?.lastAssistantMessage?.text;
+    if (openCode && (!sourceEntryId || typeof sourceText !== "string" || !sourceText.length)) {
+      console.warn(`OpenCode outcome UNKNOWN: missing source entry or content (event ${event.id})`);
+      return;
+    }
+    const contentSha256 =
+      openCode && sourceText ? createHash("sha256").update(sourceText).digest("hex") : null;
     // Herdr's done/idle are the same settled state, differing only in
     // whether the completed tab has been seen. A within-settled transition is
     // suppressed ONLY with evidence it is the SAME outcome already recorded:
@@ -277,11 +289,22 @@ export class ProfileDeliveryService {
             continue;
           }
         }
-        this.#obligations.project({
+        const projection = {
           agentEventId: event.id,
           profileId: profile.profileId,
           subscriptionId: subscription.id,
-        });
+        };
+        if (sourceEntryId && contentSha256) {
+          if (
+            !this.#obligations.projectSourceEntry({ ...projection, sourceEntryId, contentSha256 })
+          ) {
+            console.warn(
+              `OpenCode duplicate delivery refused: entry ${sourceEntryId}, content ${contentSha256}, profile ${profile.profileId}, event ${event.id}`,
+            );
+          }
+        } else {
+          this.#obligations.project(projection);
+        }
       }
     }
   }

@@ -268,6 +268,27 @@ export const deliveryObligations = sqliteTable(
   ],
 );
 
+/** One durable OpenCode projection stamp per source part, content, and owner profile. */
+export const sourceEntryDeliveries = sqliteTable(
+  "source_entry_deliveries",
+  {
+    sourceEntryId: text("source_entry_id").notNull(),
+    contentSha256: text("content_sha256").notNull(),
+    profileId: text("profile_id")
+      .notNull()
+      .references(() => orchestratorProfiles.profileId, { onDelete: "cascade" }),
+    agentEventId: integer("agent_event_id").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [
+    uniqueIndex("source_entry_deliveries_profile_entry_idx").on(
+      table.profileId,
+      table.sourceEntryId,
+      table.contentSha256,
+    ),
+  ],
+);
+
 export const agentHistoryCache = sqliteTable(
   "agent_history_cache",
   {
