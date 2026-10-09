@@ -197,11 +197,6 @@ describe("SQLite migrations", () => {
         "insert into delivery_obligations(id, profile_id, subscription_id, agent_event_id, state, attempt_count, created_at, delivery_seq) values ('ob-keep','engine',1,1,'pending',0,1,1)",
       )
       .run();
-    sqlite
-      .prepare(
-        `insert into profile_owners (claimed_at,harness_kind,harness_session_ref_json,last_seen_at,lease_expires_at,lease_token,profile_id,subscriber_id) values (1,'codex','{"kind":"thread","value":"01a11ff6-9f7f-71a1-9741-366612d6390f"}',1,999999999,'tok-neutral','standalone','codex-neutral')`,
-      )
-      .run();
     const ownerIndexes = sqlite.prepare("pragma index_list(profile_owners)").all();
     const ownerFks = sqlite.prepare("pragma foreign_key_list(profile_owners)").all();
     const obligationIndexes = sqlite.prepare("pragma index_list(delivery_obligations)").all();
@@ -223,7 +218,13 @@ describe("SQLite migrations", () => {
     expect(
       sqlite.prepare("select count(*) as n from delivery_obligations where id='ob-keep'").get(),
     ).toEqual({ n: 1 });
-    // The neutral (host-free) shape survives the rebuild with NULLs intact.
+    // The neutral (host-free) shape is storable in the rebuilt schema and
+    // survives a safe reapply with NULLs intact.
+    sqlite
+      .prepare(
+        `insert into profile_owners (claimed_at,harness_kind,harness_session_ref_json,last_seen_at,lease_expires_at,lease_token,profile_id,subscriber_id) values (1,'codex','{"kind":"thread","value":"01a11ff6-9f7f-71a1-9741-366612d6390f"}',1,999999999,'tok-neutral','standalone','codex-neutral')`,
+      )
+      .run();
     expect(
       sqlite
         .prepare(
@@ -263,6 +264,18 @@ describe("SQLite migrations", () => {
       n: forwardCount,
     });
     expect(sqlite.prepare("pragma index_list(profile_owners)").all()).toEqual(afterOwnerIndexes);
+    expect(
+      sqlite
+        .prepare(
+          "select lease_token, herdr_session_name, pane_id, terminal_id from profile_owners where profile_id='standalone'",
+        )
+        .get(),
+    ).toEqual({
+      lease_token: "tok-neutral",
+      herdr_session_name: null,
+      pane_id: null,
+      terminal_id: null,
+    });
     for (const column of ["herdr_session_name", "pane_id", "terminal_id"]) {
       expect(
         (sqlite.prepare("pragma table_info(profile_owners)").all() as Array<{ name: string; notnull: number }>).find(
