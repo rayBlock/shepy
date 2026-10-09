@@ -23,10 +23,30 @@ export class OpenCodeHistoryReader implements AgentHistoryReader {
     options: { limit?: number } = {},
   ): Promise<AgentHistoryMessage[]> {
     const dbPath = ref.path;
-    if (!dbPath) return [];
+    if (!dbPath || !ref.value)
+      throw new Error("OpenCode history: missing store or session identity");
     let sqlite: DatabaseSync | null = null;
     try {
       sqlite = new DatabaseSync(dbPath, { readOnly: true });
+      const tables = sqlite
+        .prepare(
+          "select name from sqlite_master where type = 'table' and name in ('session', 'session_v2')",
+        )
+        .all() as { name: string }[];
+      const has = (name: string) => tables.some((table) => table.name === name);
+      // Never use the other family as a fallback after an exact session miss.
+      if (
+        has("session_v2") &&
+        sqlite.prepare("select id from session_v2 where id = ?").get(ref.value)
+      ) {
+        return limitMessages(readV2(sqlite, dbPath, ref.value), options.limit);
+      }
+      if (
+        !has("session") ||
+        !sqlite.prepare("select id from session where id = ?").get(ref.value)
+      ) {
+        throw new Error("OpenCode history: exact session not found");
+      }
       const rows = sqlite
         .prepare(`
           select
@@ -76,8 +96,6 @@ export class OpenCodeHistoryReader implements AgentHistoryReader {
         }
       }
       return limitMessages(messages, options.limit);
-    } catch {
-      return [];
     } finally {
       sqlite?.close();
     }
@@ -86,6 +104,61 @@ export class OpenCodeHistoryReader implements AgentHistoryReader {
   async readCompact(ref: AgentHistoryRef) {
     return compactFromMessages(ref, await this.read(ref));
   }
+}
+
+// V2 JSON shape is fixture-validated only; live session_message shape remains
+// UNKNOWN until a readable live V2 store is available for a follow-up check.
+function readV2(sqlite: DatabaseSync, dbPath: string, sessionId: string): AgentHistoryMessage[] {
+  const rows = sqlite
+    .prepare(`
+    select id, time_created, data from session_message
+    where session_id = ? order by time_created asc, id asc
+  `)
+    .all(sessionId) as { id: string; time_created: number; data: string }[];
+  const messages: AgentHistoryMessage[] = [];
+  for (const row of rows) {
+    const data = JSON.parse(row.data) as unknown;
+    if (!data || typeof data !== "object" || Array.isArray(data)) {
+      throw new Error("OpenCode history: malformed V2 message");
+    }
+    const message = record(data);
+    const role = message.role === "user" || message.role === "assistant" ? message.role : null;
+    const timestamp = timestampFrom(row.time_created);
+    const content = message.parts ?? message.content;
+    if (!role || (content === undefined && !stringValue(message.text))) {
+      throw new Error("OpenCode history: unsupported V2 message shape");
+    }
+    const parts = Array.isArray(content) ? content : [message];
+    for (const [index, value] of parts.entries()) {
+      const part = record(value);
+      const refValue = messageRef(dbPath, stringValue(part.id) ?? row.id, index);
+      const type = stringValue(part.type);
+      if (type === "tool") {
+        const toolName = stringValue(part.tool) ?? "unknown";
+        const state = record(part.state);
+        const output = state.output ?? state.error ?? part.output ?? part.content ?? part;
+        const text = typeof output === "string" ? output : JSON.stringify(output);
+        const compact = compactToolResult({
+          isError: Boolean(state.error) || state.status === "error",
+          ref: refValue,
+          text,
+          toolName,
+        });
+        messages.push({
+          compact,
+          ref: refValue,
+          role: "tool_result",
+          text: compact.text,
+          timestamp,
+          toolName,
+        });
+      } else if (role) {
+        const text = stringValue(part.text) ?? textFromContent(part.content);
+        if (text) messages.push({ ref: refValue, role, text, timestamp });
+      }
+    }
+  }
+  return messages;
 }
 
 function parseJsonRecord(value: string): Record<string, unknown> {

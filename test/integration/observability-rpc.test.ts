@@ -237,14 +237,10 @@ describe("ObservabilityRpcServer", () => {
         messages: [expect.objectContaining({ role: "user" })],
       },
     });
+    // Old contract returned cwd-latest oc_1; without a native ID the read refuses.
     await expect(
       client.request("agent.read", { limit: 10, target: "opencode", workspaceId: "wB" }),
-    ).resolves.toMatchObject({
-      agent: {
-        historyRef: { source: "opencode-sqlite", value: "oc_1" },
-        messages: [expect.objectContaining({ role: "user" })],
-      },
-    });
+    ).resolves.toMatchObject({ agent: { historyRef: null, messages: [] } });
     await expect(
       client.request("agent.read", { limit: 10, target: "gemini", workspaceId: "wB" }),
     ).resolves.toMatchObject({
