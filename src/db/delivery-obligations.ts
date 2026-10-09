@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import type { CompactAgentHistory } from "@/observability/contracts.js";
 
 /**
  * Phase 3 — delivery obligation store (vault §8.4, §9.2 state machine).
@@ -105,6 +106,28 @@ export class DeliveryObligationStore {
       .prepare("select * from delivery_obligations where profile_id = ? and agent_event_id = ?")
       .get(profileId, agentEventId) as ObligationRow | undefined;
     return row ? toObligation(row) : undefined;
+  }
+
+  /** Only actually delivered, retained outcomes can suppress a later replay.
+   * Pending/leased rows are excluded: a crash before delivery must not lose a final. */
+  recentDeliveredFinals(input: {
+    profileId: string;
+    subscriptionId: number;
+    since: number;
+  }): CompactAgentHistory[] {
+    const rows = this.#sqlite
+      .prepare(
+        `select e.compact_history_json as history
+         from delivery_obligations o join agent_events e on e.id = o.agent_event_id
+         where o.profile_id = ? and o.subscription_id = ?
+           and o.state in ('delivered', 'acked') and o.delivered_at >= ?
+           and e.type in ('agent.done', 'agent.idle')
+         order by o.delivered_at desc, o.agent_event_id desc limit 1`,
+      )
+      .all(input.profileId, input.subscriptionId, input.since) as { history: string | null }[];
+    return rows.flatMap(({ history }) =>
+      history ? [JSON.parse(history) as CompactAgentHistory] : [],
+    );
   }
 
   /** Single-obligation read for `inbox.get` — the deferred stub's read-back. */

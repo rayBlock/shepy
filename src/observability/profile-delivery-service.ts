@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { stripVTControlCharacters } from "node:util";
 import type { AgentEventStore } from "@/db/agent-events.js";
 import type { AgentStore } from "@/db/agents.js";
@@ -47,6 +48,18 @@ export const NOTIFIABLE_EVENT_TYPES: ReadonlySet<AgentEventType> = new Set([
  * orchestrator wake path (wake.ts AGENT_UPDATE_EXCERPT_CHARS).
  */
 export const INBOX_OUTCOME_EXCERPT_CHARS = 2_000;
+/** Replayed final content can recur on an idle-status flap; only deliveries
+ * within this window count as evidence against a new obligation. */
+export const FINAL_REPLAY_TTL_MS = 24 * 60 * 60 * 1_000;
+
+function finalFingerprint(history: AgentEventRecord["compactHistory"]): string | null {
+  const session = history?.historyRef;
+  const text = history?.lastAssistantMessage?.text;
+  if (!session?.value || !session.source || typeof text !== "string" || text.length === 0)
+    return null;
+  const hash = createHash("sha256").update(text).digest("hex");
+  return JSON.stringify([session.kind, session.source, session.value, hash]);
+}
 
 /**
  * A classified inbox.lease refusal. The RPC envelope serialises `code`, so
@@ -239,6 +252,27 @@ export class ProfileDeliveryService {
         });
         if (resolution.kind !== "matched") continue;
         if (resolution.agent.id !== event.agentId) continue;
+        // Dedup is scoped to THIS subscription, and only to finals whose
+        // delivery was persisted. Merely projected or leased rows cannot
+        // suppress a replay: a crash before delivery must remain recoverable.
+        if (event.type === "agent.done" || event.type === "agent.idle") {
+          const fingerprint = finalFingerprint(event.compactHistory);
+          if (
+            fingerprint !== null &&
+            this.#obligations
+              .recentDeliveredFinals({
+                profileId: profile.profileId,
+                subscriptionId: subscription.id,
+                since: this.#now() - FINAL_REPLAY_TTL_MS,
+              })
+              .some((history) => finalFingerprint(history) === fingerprint)
+          ) {
+            console.info(
+              `shepy: refused duplicate final projection event=${event.id} subscription=${subscription.id}`,
+            );
+            continue;
+          }
+        }
         this.#obligations.project({
           agentEventId: event.id,
           profileId: profile.profileId,
