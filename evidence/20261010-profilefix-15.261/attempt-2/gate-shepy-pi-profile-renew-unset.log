@@ -1,0 +1,9 @@
+
+ RUN  v4.1.9 /Users/ray/dev/shepy-wt/profilefix
+
+
+ Test Files  1 passed (1)
+      Tests  12 passed (12)
+   Start at  00:39:59
+   Duration  201ms (transform 48ms, setup 0ms, import 23ms, tests 114ms, environment 0ms)
+
