@@ -27,6 +27,7 @@ import {
 } from "@/observability/profile-delivery-service.js";
 import type { AgentSelector } from "@/observability/profile-selectors.js";
 import { ProfileService } from "@/observability/profile-service.js";
+import { projectAgentOutcomes } from "../../packages/shepy-pi/src/wake.js";
 import { RpcTestClient } from "./rpc-test-client.js";
 
 /**
@@ -297,6 +298,145 @@ describe("obligation projection filter (vault §9.1)", () => {
     const pending = delivery.inboxList({ profileId: "driffs" });
     expect(pending).toHaveLength(1);
     expect(pending[0]?.agentEventId).toBe(2);
+  });
+});
+
+describe("delivered final replay dedup", () => {
+  function setup(now = Date.now()) {
+    let clock = now;
+    const built = fixture({ now: () => clock });
+    const worker = built.agents.list().find((row) => row.name === "driffs-worker");
+    if (!worker) throw new Error("fixture worker missing");
+    const append = (text: string, session = "session-one", agentId = worker.id) => {
+      const stored = built.agentEvents.append({
+        agentId,
+        compactHistory: {
+          historyRef: { kind: "agent_session", source: "opencode-sqlite", value: session },
+          lastAssistantMessage: { ref: `prt-${text}`, text, timestamp: null },
+        } as never,
+        herdrSessionName: "default",
+        paneId: worker.paneId,
+        payload: { from: "working", to: "done" },
+        type: "agent.done",
+        workspaceId: "wA",
+      });
+      built.delivery.projectAgentEvent(stored);
+      return stored.id;
+    };
+    const deliver = (eventId: number, acknowledge = false) => {
+      const row = built.obligations.byProfileEvent("driffs", eventId);
+      if (!row) throw new Error("missing obligation");
+      built.obligations.leaseBatch({
+        expiresAt: Date.now() + 60_000,
+        ids: [row.id],
+        leaseToken: "token",
+        profileId: "driffs",
+      });
+      built.obligations.markDelivered({
+        ids: [row.id],
+        leaseToken: "token",
+        ownerSessionRefJson: "{}",
+      });
+      if (acknowledge)
+        built.obligations.ack({ ids: [row.id], leaseToken: "token", profileId: "driffs" });
+    };
+    const ids = () =>
+      built.delivery
+        .inboxList({ profileId: "driffs", limit: 100 })
+        .map((row) => row.agentEventId)
+        .sort((a, b) => a - b);
+    return {
+      append,
+      built,
+      deliver,
+      ids,
+      setClock: (value: number) => {
+        clock = value;
+      },
+    };
+  }
+
+  test("red-first: four flaps deliver X once, then genuinely new final Y (invariant 1)", () => {
+    const { append, deliver, ids } = setup();
+    const first = append("final X");
+    deliver(first, true);
+    for (let i = 0; i < 3; i++) append("final X");
+    const newer = append("final Y");
+    expect(ids()).toEqual([first, newer]);
+  });
+
+  test("compares only the last delivered final, not an older matching final", () => {
+    const { append, deliver, ids } = setup();
+    const first = append("final X");
+    deliver(first);
+    const second = append("final Y");
+    deliver(second);
+    const third = append("final X");
+    expect(ids()).toEqual([first, second, third]);
+  });
+
+  test("identical text from two source sessions both delivers (invariant 2)", () => {
+    const { append, deliver, ids } = setup();
+    const first = append("same text", "session-one");
+    deliver(first);
+    const second = append("same text", "session-two");
+    expect(ids()).toEqual([first, second]);
+  });
+
+  test("a crash before delivery cannot suppress a pending or leased final (invariant 3)", () => {
+    const { append, built, ids } = setup();
+    const first = append("final X");
+    const second = append("final X");
+    const row = built.obligations.byProfileEvent("driffs", second);
+    if (!row) throw new Error("missing obligation");
+    built.obligations.leaseBatch({
+      expiresAt: Date.now() + 60_000,
+      ids: [row.id],
+      leaseToken: "token",
+      profileId: "driffs",
+    });
+    const third = append("final X");
+    expect(ids()).toEqual([first, second, third]);
+  });
+
+  test("pi projection is unchanged (invariant 4)", () => {
+    const { append, deliver, ids } = setup();
+    const first = append("final X");
+    deliver(first);
+    expect(ids()).toEqual([first]);
+    // This daemon-side profile filter has no Pi orchestrator wake subscription.
+    expect(
+      projectAgentOutcomes([
+        {
+          id: 1,
+          type: "agent.done",
+          terminalId: "tA",
+          payload: {},
+          compactHistory: { lastAssistantMessage: { text: "final X" } },
+        },
+        {
+          id: 2,
+          type: "agent.done",
+          terminalId: "tA",
+          payload: {},
+          compactHistory: { lastAssistantMessage: { text: "final X" } },
+        },
+      ]).outcomes,
+    ).toHaveLength(2);
+  });
+
+  test("TTL expiry permits only a fresh post-expiry projection (invariant 5)", () => {
+    const start = Date.now();
+    const { append, deliver, ids, setClock } = setup(start);
+    const first = append("final X");
+    deliver(first);
+    setClock(start + 24 * 60 * 60 * 1_000 - 1);
+    append("final X");
+    expect(ids()).toEqual([first]);
+    setClock(start + 24 * 60 * 60 * 1_000 + 60_000);
+    expect(ids()).toEqual([first]);
+    const after = append("final X");
+    expect(ids()).toEqual([first, after]);
   });
 });
 
