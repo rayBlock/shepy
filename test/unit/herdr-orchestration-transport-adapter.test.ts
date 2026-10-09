@@ -115,7 +115,7 @@ describe("HerdrOrchestrationTransportAdapter", () => {
       native !== "native-1" || terminal !== "term-2" ? "identity" : "represented-turn proof",
     );
     expect(waitForAgent).toHaveBeenCalledWith(
-      { target: "w1:p2", until: ["idle", "done", "blocked"] },
+      { target: "w1:p2", timeout_ms: 30_000, until: ["idle", "done", "blocked"] },
       { evidence },
     );
   });
@@ -290,6 +290,28 @@ describe("HerdrOrchestrationTransportAdapter", () => {
   // Only herdr's own bounded-wait expiry (its `timeout` error response) may
   // become a wait timeout — the 10 s wait cut of 2026-09-04 relied on the
   // two shapes being indistinguishable.
+  test("a silent Codex socket is bounded and reports unknown, not a fake completion", async () => {
+    const adapter = new HerdrOrchestrationTransportAdapter({
+      promptAgent: vi.fn(),
+      waitForAgent: vi
+        .fn()
+        .mockRejectedValue(
+          new HerdrRequestTimeoutError("Herdr request timed out after 35000ms: agent.wait"),
+        ),
+    });
+    const event = await adapter.waitForLifecycle("op-1", target, {
+      evidence: {
+        agent: "codex",
+        agentSession: "hermes-session-1",
+        terminalId: "term-2",
+        stateChangeSeq: 838,
+        completionSeq: 836,
+      },
+    });
+    expect(event).toMatchObject({ kind: "transport_unknown", operationId: "op-1" });
+    expect(event.detail).toContain("bounded observation deadline");
+  });
+
   test("maps herdr's bounded-wait expiry to HerdrWaitTimeoutError", async () => {
     const adapter = new HerdrOrchestrationTransportAdapter({
       promptAgent: vi.fn(),

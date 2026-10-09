@@ -11,7 +11,7 @@ import {
   HerdrOrchestrationTransportAdapter,
   HerdrWaitTimeoutError,
 } from "@/herdr/orchestration-transport-adapter.js";
-import { HerdrRequestTimeoutError } from "@/herdr/socket-client.js";
+import { HerdrRequestError, HerdrRequestTimeoutError } from "@/herdr/socket-client.js";
 import { AgentContextService } from "@/observability/agent-context-service.js";
 import { AgentOrchestratorService } from "@/observability/agent-orchestrator-service.js";
 import { OperationDispatchService } from "@/observability/operation-dispatch-service.js";
@@ -168,7 +168,10 @@ describe("operation.wait — Herdr 0.8.x wait shapes at the RPC boundary", () =>
 });
 
 describe("operation.wait — native Codex attempt safety", () => {
-  test("one dispatch, observed working, report returned: wait cannot settle from a later turn on the same identity", async () => {
+  test.each([
+    ["old-turn", 836],
+    ["late-later-turn", 1100],
+  ])("one dispatch, observed working, report returned: %s cannot settle on same identity", async (_case, completionSeq) => {
     const native = "01a12097-477f-7512-afa3-507b2dbd76db";
     const terminal = "term_65d66cec9374d41";
     const agent = (status: string, seq: number) => ({
@@ -192,7 +195,7 @@ describe("operation.wait — native Codex attempt safety", () => {
       requestId: "wait-1",
       result: {
         type: "agent_info",
-        agent: agent("idle", 1100),
+        agent: agent("idle", completionSeq),
       },
     });
     const adapter = new HerdrOrchestrationTransportAdapter({ promptAgent, waitForAgent });
@@ -258,6 +261,66 @@ describe("operation.wait — native Codex attempt safety", () => {
         target: "w3P:p6",
         until: ["idle", "done", "blocked"],
       });
+    } finally {
+      client.close();
+    }
+  });
+});
+
+describe("operation.wait — Codex silent-peer bound", () => {
+  test("bare Codex wait returns honest unknown on Herdr bounded timeout, operation remains submitted", async () => {
+    const waitForAgent = vi
+      .fn()
+      .mockRejectedValue(new HerdrRequestError("timed out waiting for agent status", "timeout"));
+    const adapter = new HerdrOrchestrationTransportAdapter({ promptAgent: vi.fn(), waitForAgent });
+    const { operation, operations, server, socketPath } = fixture(
+      adapter.waitForLifecycle.bind(adapter),
+    );
+    // A dispatch receipt is private and persisted at acceptance; this fixture
+    // pins its exact Herdr Codex shape without sending another prompt.
+    const codex = operations.create({
+      herdrSessionName: "default",
+      profileId: "driffs",
+      prompt: "one review",
+      target: {
+        agentSession: "native-1",
+        herdrSessionName: "default",
+        paneId: "w3P:p6",
+        terminalId: "term-1",
+        workspaceId: "w3P",
+      },
+      workspaceId: "w3P",
+    });
+    operations.recordSubmission({
+      operationId: codex.id,
+      requestId: "shepy-1",
+      submittedAt: new Date(),
+      evidence: {
+        agent: "codex",
+        agentSession: "native-1",
+        terminalId: "term-1",
+        stateChangeSeq: 838,
+        completionSeq: 836,
+      },
+    });
+    await server.start();
+    const client = await connected(socketPath);
+    try {
+      const result = (await client.request("operation.wait", { operationId: codex.id })) as {
+        outcome: { kind: string; detail: string };
+      };
+      expect(result.outcome.kind).toBe("transport_unknown");
+      expect(result.outcome.detail).toContain("bounded observation deadline");
+      expect(waitForAgent).toHaveBeenCalledWith(
+        { target: "w3P:p6", timeout_ms: 30_000, until: ["idle", "done", "blocked"] },
+        expect.objectContaining({ evidence: expect.objectContaining({ agent: "codex" }) }),
+      );
+      expect(operations.get(codex.id)).toMatchObject({
+        state: "submitted",
+        lifecycle: null,
+        settledAt: null,
+      });
+      expect(operations.get(operation.id)?.state).toBe("submitted");
     } finally {
       client.close();
     }

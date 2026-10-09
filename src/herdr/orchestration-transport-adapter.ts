@@ -6,7 +6,11 @@ import type {
   PromptEvidence,
   SubmitPromptResult,
 } from "@/herdr/orchestration-transport.js";
-import { HerdrRequestError, type HerdrSocketClient } from "@/herdr/socket-client.js";
+import {
+  HerdrRequestError,
+  HerdrRequestTimeoutError,
+  type HerdrSocketClient,
+} from "@/herdr/socket-client.js";
 
 /**
  * herdr itself expired the bounded wait (its `agent.wait` error response with
@@ -68,11 +72,15 @@ export class HerdrOrchestrationTransportAdapter implements HerdrOrchestrationTra
   ): Promise<LifecycleEvent> {
     validateTarget(target);
     let receipt: { requestId: string; result: unknown };
+    // A Codex turn has no Herdr turn token. Even a silent peer must not leave
+    // an unbounded operation.wait when the result could never prove settlement.
+    const codexUnbounded = options.evidence?.agent === "codex" && options.timeoutMs === undefined;
+    const timeoutMs = codexUnbounded ? 30_000 : options.timeoutMs;
     try {
       receipt = await this.#client.waitForAgent(
         {
           target: target.paneId,
-          ...(options.timeoutMs === undefined ? {} : { timeout_ms: options.timeoutMs }),
+          ...(timeoutMs === undefined ? {} : { timeout_ms: timeoutMs }),
           // Pi's wire contract is unchanged. Codex can finish idle when its
           // tab was seen; only a dispatch carrying native receipt evidence
           // enables this broader observation (not automatic settlement).
@@ -82,7 +90,18 @@ export class HerdrOrchestrationTransportAdapter implements HerdrOrchestrationTra
         options,
       );
     } catch (error) {
-      if (isHerdrWaitTimeoutSignal(error)) {
+      if (
+        isHerdrWaitTimeoutSignal(error) ||
+        (codexUnbounded && error instanceof HerdrRequestTimeoutError)
+      ) {
+        if (codexUnbounded)
+          return {
+            kind: "transport_unknown",
+            operationId,
+            target,
+            detail:
+              "codex wait reached its bounded observation deadline; represented turn unproven",
+          };
         throw new HerdrWaitTimeoutError(operationId, error);
       }
       throw error;
