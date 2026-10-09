@@ -832,11 +832,14 @@ export class ObservabilityRpcServer {
       const owner = state.owner;
       // Explicit all-or-none host guard: only a fully host-qualified owner
       // state may reach terminal keys, presence checks or host releases.
-      if (!owner || !owner.terminalId || !owner.paneId || !state.workspaceId) continue;
+      if (!owner?.terminalId || !owner.paneId || !state.workspaceId) continue;
       const key = terminalPresenceKey({ ...state, terminalId: owner.terminalId });
       const handle = this.#setTimeout(() => {
         this.#startupTimers.delete(key);
-        if (this.#stopping || this.#hasTerminalPresence({ ...state, terminalId: owner.terminalId })) {
+        if (
+          this.#stopping ||
+          this.#hasTerminalPresence({ ...state, terminalId: owner.terminalId })
+        ) {
           return;
         }
         this.#releaseCurrentOwnersForTerminal({

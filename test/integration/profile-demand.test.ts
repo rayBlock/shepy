@@ -661,7 +661,10 @@ test("a neutral owner fails the host-tuple demand fence", () => {
     currentLeaseToken: hosted.leaseToken,
     subscriberId: "codex-neutral",
     harnessKind: "codex",
-    harnessSessionRefJson: JSON.stringify({ kind: "thread", value: "01a11ff6-9f7f-71a1-9741-366612d6390f" }),
+    harnessSessionRefJson: JSON.stringify({
+      kind: "thread",
+      value: "01a11ff6-9f7f-71a1-9741-366612d6390f",
+    }),
   });
   if (neutral.kind === "rejected") throw new Error("neutral re-claim refused");
   let refusal = "";
@@ -670,9 +673,7 @@ test("a neutral owner fails the host-tuple demand fence", () => {
       ...hostedDuty,
       episodeId: "b".repeat(64),
       dutyRef: ref("duty.json", JSON.stringify(duty("on-duty", 1))),
-      idempotencyKey: `${
-        "b".repeat(64)
-      }/queue-claimable/${request.activationRevision}`,
+      idempotencyKey: `${"b".repeat(64)}/queue-claimable/${request.activationRevision}`,
     });
   } catch (error) {
     refusal = (error as Error).message;

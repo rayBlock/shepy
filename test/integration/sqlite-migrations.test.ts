@@ -142,9 +142,8 @@ describe("SQLite migrations", () => {
     });
     // The full folder: R1 recovery + dedup stamp + the neutral-owner
     // migration; the count is the journal length, never hard-coded.
-    const journalCount = JSON.parse(
-      readFileSync("drizzle/meta/_journal.json", "utf8"),
-    ).entries.length;
+    const journalCount = JSON.parse(readFileSync("drizzle/meta/_journal.json", "utf8")).entries
+      .length;
     expect(sqlite.prepare("select count(*) as n from __drizzle_migrations").get()).toEqual({
       n: journalCount,
     });
@@ -253,9 +252,8 @@ describe("SQLite migrations", () => {
       expect(afterObligationIndexes.map((i) => i.name)).toContain(index.name);
     }
     expect(sqlite.prepare("pragma foreign_key_list(profile_owners)").all()).toEqual(ownerFks);
-    const forwardCount = JSON.parse(
-      readFileSync("drizzle/meta/_journal.json", "utf8"),
-    ).entries.length;
+    const forwardCount = JSON.parse(readFileSync("drizzle/meta/_journal.json", "utf8")).entries
+      .length;
     expect(sqlite.prepare("select count(*) as n from __drizzle_migrations").get()).toEqual({
       n: forwardCount,
     });
@@ -278,9 +276,12 @@ describe("SQLite migrations", () => {
     });
     for (const column of ["herdr_session_name", "pane_id", "terminal_id"]) {
       expect(
-        (sqlite.prepare("pragma table_info(profile_owners)").all() as Array<{ name: string; notnull: number }>).find(
-          (c) => c.name === column,
-        ),
+        (
+          sqlite.prepare("pragma table_info(profile_owners)").all() as Array<{
+            name: string;
+            notnull: number;
+          }>
+        ).find((c) => c.name === column),
       ).toMatchObject({ notnull: 0 });
     }
     sqlite.close();

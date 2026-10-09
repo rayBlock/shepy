@@ -3161,7 +3161,10 @@ describe("profile.claim on a nonexistent profile", () => {
 describe("neutral owner — host-free owner representation (CODEX-NEUTRAL-OWNER)", () => {
   const NEUTRAL_CLAIM = {
     harnessKind: "codex",
-    harnessSessionRefJson: JSON.stringify({ kind: "thread", value: "01a11ff6-9f7f-71a1-9741-366612d6390f" }),
+    harnessSessionRefJson: JSON.stringify({
+      kind: "thread",
+      value: "01a11ff6-9f7f-71a1-9741-366612d6390f",
+    }),
     profileId: "driffs",
     subscriberId: "codex-neutral",
   } as const;
@@ -3211,26 +3214,34 @@ describe("neutral owner — host-free owner representation (CODEX-NEUTRAL-OWNER)
     expect(rival.result.kind).toBe("rejected");
     expect(rival.result).not.toHaveProperty("leaseToken");
     expect(
-      ((await client.request("profile.renew", { leaseToken: "wrong", profileId: "driffs" })) as {
-        renewed: boolean;
-      }).renewed,
+      (
+        (await client.request("profile.renew", { leaseToken: "wrong", profileId: "driffs" })) as {
+          renewed: boolean;
+        }
+      ).renewed,
     ).toBe(false);
     expect(
-      ((await client.request("profile.release", { leaseToken: "wrong", profileId: "driffs" })) as {
-        released: boolean;
-      }).released,
+      (
+        (await client.request("profile.release", { leaseToken: "wrong", profileId: "driffs" })) as {
+          released: boolean;
+        }
+      ).released,
     ).toBe(false);
     expect(
-      ((await client.request("profile.renew", {
-        leaseToken: first.result.leaseToken,
-        profileId: "driffs",
-      })) as { renewed: boolean }).renewed,
+      (
+        (await client.request("profile.renew", {
+          leaseToken: first.result.leaseToken,
+          profileId: "driffs",
+        })) as { renewed: boolean }
+      ).renewed,
     ).toBe(true);
     expect(
-      ((await client.request("profile.release", {
-        leaseToken: first.result.leaseToken,
-        profileId: "driffs",
-      })) as { released: boolean }).released,
+      (
+        (await client.request("profile.release", {
+          leaseToken: first.result.leaseToken,
+          profileId: "driffs",
+        })) as { released: boolean }
+      ).released,
     ).toBe(true);
   });
 
