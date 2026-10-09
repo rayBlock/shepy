@@ -109,6 +109,26 @@ test("atomic event/obligation, idempotent replay and conflicting key", () => {
   ]);
 });
 
+test("an obligation insert failure rolls back both the demand event and obligation", () => {
+  const { sqlite, request, store } = fixture();
+  sqlite.exec(`create trigger refuse_demand_obligation before insert on delivery_obligations
+    when new.kind = 'demand' begin select raise(abort, 'injected-obligation-failure'); end`);
+  expect(() => store.publish(request)).toThrow("injected-obligation-failure");
+  expect(sqlite.prepare("select count(*) as n from profile_demand_events").get()).toEqual({ n: 0 });
+  expect(sqlite.prepare("select count(*) as n from delivery_obligations").get()).toEqual({ n: 0 });
+  expect(
+    store.lookup({
+      profileId: request.profileId,
+      sourceId: request.sourceId,
+      idempotencyKey: request.idempotencyKey,
+    }),
+  ).toEqual({ found: false });
+  sqlite.exec("drop trigger refuse_demand_obligation");
+  expect(store.publish(request).disposition).toBe("created");
+  expect(sqlite.prepare("select count(*) as n from profile_demand_events").get()).toEqual({ n: 1 });
+  expect(sqlite.prepare("select count(*) as n from delivery_obligations").get()).toEqual({ n: 1 });
+});
+
 test("strict duty gate retains off-duty but refuses STOP and occupied capacity", async () => {
   const { dir, sqlite, request, store, ref } = fixture();
   const now = Date.parse("2026-10-09T13:15:00.000Z");
@@ -421,6 +441,34 @@ test("strict duty gate retains off-duty but refuses STOP and occupied capacity",
       disposition: "existing",
       demandEventId: published.demandEventId,
     });
+    // Both the first publication and replay cross the RPC + validator + duty gate.
+    const rpcEpisodeId = "e".repeat(64);
+    const rpcRequest = {
+      ...next,
+      episodeId: rpcEpisodeId,
+      idempotencyKey: `${rpcEpisodeId}/queue-claimable/1`,
+    };
+    const firstRpc = (await client.request("inbox.publishDemand", rpcRequest)) as {
+      disposition: string;
+      demandEventId: string;
+      obligationId: string;
+      payloadSha256: string;
+    };
+    const replayRpc = await client.request("inbox.publishDemand", rpcRequest);
+    expect(firstRpc.disposition).toBe("created");
+    expect(replayRpc).toEqual({ ...firstRpc, disposition: "existing" });
+    expect(
+      sqlite
+        .prepare(`select count(*) as n from profile_demand_events
+      where profile_id = ? and source_id = ? and idempotency_key = ?`)
+        .get(request.profileId, request.sourceId, rpcRequest.idempotencyKey),
+    ).toEqual({ n: 1 });
+    expect(
+      sqlite
+        .prepare(`select count(*) as n from delivery_obligations
+      where profile_demand_event_id = ? and kind = 'demand'`)
+        .get(firstRpc.demandEventId),
+    ).toEqual({ n: 1 });
     expect(
       await client.request("inbox.lookupDemand", {
         schema: "factory.demand.lookup.v1",

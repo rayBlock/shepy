@@ -61,7 +61,7 @@ const sourceSchema = Type.Object(
     profiles: Type.Array(Type.String()),
     kinds: Type.Array(demandRequestSchema.properties.kind),
     duty_paths: Type.Array(Type.String()),
-    grant_hashes: Type.Array(hex),
+    grant_hashes: Type.Array(hex, { minItems: 1, uniqueItems: true }),
     evidence_roots: Type.Array(Type.String()),
     max_expiry_minutes: Type.Number({ exclusiveMinimum: 0, maximum: 60 }),
     seat_state_path: Type.Optional(Type.String({ minLength: 1 })),
@@ -132,7 +132,7 @@ export function validateDemandRequest(
   const request = value as DemandRequest;
   const source = demandSource(request, options.allowlistPath);
   if (!source.duty_paths.includes(request.dutyRef.path)) throw new Error("demand:duty-not-allowed");
-  if (source.grant_hashes.length && !source.grant_hashes.includes(request.grantRef.sha256))
+  if (!source.grant_hashes.includes(request.grantRef.sha256))
     throw new Error("demand:grant-not-allowed");
   const start = utc(request.observedAt);
   const end = utc(request.expiresAt);

@@ -21,7 +21,7 @@ writeFileSync(
         profiles: ["engine-coordinator"],
         kinds: ["queue-claimable"],
         duty_paths: [citation],
-        grant_hashes: [],
+        grant_hashes: [hash],
         evidence_roots: [root],
         max_expiry_minutes: 60,
       },
@@ -91,6 +91,31 @@ describe("demand publish admission", () => {
         idempotencyKey: `${episodeId}/queue-claimable/2`,
       }).activationRevision,
     ).toBe(2);
+  });
+  it("refuses an empty grant pin allowlist", () => {
+    const emptyConfig = join(root, "empty-grant-allowlist.json");
+    writeFileSync(
+      emptyConfig,
+      JSON.stringify({
+        schema: "shepy.ingress-allowlist.v1",
+        sources: {
+          "factory-router": {
+            profiles: ["engine-coordinator"],
+            kinds: ["queue-claimable"],
+            duty_paths: [citation],
+            grant_hashes: [],
+            evidence_roots: [root],
+            max_expiry_minutes: 60,
+          },
+        },
+      }),
+    );
+    expect(() =>
+      validateDemandRequest(request(), {
+        allowlistPath: emptyConfig,
+        now: Date.parse("2026-10-08T14:15:00.000Z"),
+      }),
+    ).toThrow("demand:invalid-allowlist");
   });
   it("rejects wrong citation sha", () =>
     expect(() => validate({ ...request(), markerRef: { ...ref, sha256: "0".repeat(64) } })).toThrow(
