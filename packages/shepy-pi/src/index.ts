@@ -23,6 +23,9 @@ import {
   projectAgentOutcomes,
   WAKE_SETTLE_MS,
 	formatProfileObligationUpdates,
+  formatDemandObligationUpdates,
+  isDemandSnapshot,
+  type DemandSnapshot,
 	type ProfileObligationOutcome,
 } from "./wake.js";
 
@@ -105,6 +108,7 @@ type ProfileBatch = {
 type ShepyState = {
   client: ShepyDaemonClient | undefined;
   connected: boolean;
+  demandCapable: boolean;
   currentScope: CurrentScope | undefined;
   deliveredBatch: DeliveredBatch | undefined;
   failedWakeThroughEventId: number;
@@ -232,6 +236,7 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
     const state: ShepyState = {
       client: undefined,
       connected: false,
+      demandCapable: false,
       currentScope: undefined,
       deliveredBatch: undefined,
       failedWakeThroughEventId: 0,
@@ -527,13 +532,14 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
       try {
         const claim = (await client.request("profile.claim", {
           currentLeaseToken: mode.leaseToken,
+          ...(state.demandCapable ? { acceptedSourceKinds: ["agent", "profile-demand"] } : {}),
           harnessKind: "pi",
           harnessSessionRefJson: JSON.stringify(state.sessionRef),
           herdrSessionName: state.currentScope?.herdrSessionName ?? "default",
           paneId: launchIdentity.paneId,
           profileId: mode.profileId,
           subscriberId: state.subscriberId,
-          terminalId: launchIdentity.paneId,
+          terminalId: state.currentScope?.terminalId ?? launchIdentity.paneId,
           workspaceId: launchIdentity.workspaceId,
         })) as { result?: { kind?: string; leaseToken?: string } };
         const result = claim.result ?? {};
@@ -688,13 +694,17 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
       };
       try {
         const lease = (await client.request("inbox.lease", {
+          ...(state.demandCapable ? { sourceKinds: ["agent", "profile-demand"] } : {}),
           leaseToken: mode.leaseToken,
           maxBatch: 20,
           profileId: mode.profileId,
         })) as {
           obligations?: Array<{
-            agentEventId: number;
+            agentEventId: number | null;
             id: string;
+            sourceKind?: "profile-demand";
+            profileDemandEventId?: string | null;
+            demand?: unknown;
             outcome?: ProfileObligationOutcome | null;
           }>;
         };
@@ -728,13 +738,28 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
         // Current profile history (profile.context) is never read as outcome
         // truth — it can attribute the wake to the wrong worker or drift
         // after the event fired.
-        const content = formatProfileObligationUpdates(
-          obligations.map((obligation) => ({
+        const demands = obligations.filter((obligation) => obligation.sourceKind === "profile-demand");
+        if (demands.some((obligation) => !isDemandSnapshot(obligation.demand) || !obligation.profileDemandEventId)) {
+          await nackStaleLease(ids, "demand_snapshot_missing");
+          return;
+        }
+        const agents = obligations.filter((obligation) => obligation.sourceKind !== "profile-demand");
+        if (agents.some((obligation) => obligation.agentEventId === null)) {
+          await nackStaleLease(ids, "agent_source_missing");
+          return;
+        }
+        const content = [
+          ...(agents.length ? [formatProfileObligationUpdates(agents.map((obligation) => ({
             agentEventId: obligation.agentEventId,
             obligationId: obligation.id,
             outcome: obligation.outcome ?? null,
-          })),
-        );
+          })))] : []),
+          ...(demands.length ? [formatDemandObligationUpdates(demands.map((obligation) => ({
+            obligationId: obligation.id,
+            demandEventId: obligation.profileDemandEventId as string,
+            demand: obligation.demand as DemandSnapshot,
+          })))] : []),
+        ].join("\n\n");
         const nackBatch = async () => {
           try {
             await client.request("inbox.nack", {
@@ -766,7 +791,7 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
           );
           pi.sendMessage(
             {
-              content: `Shepy · profile ${mode.profileId}: ${obligations.length} agent update(s) delivered — review the shepy context above and continue.`,
+              content: `Shepy · profile ${mode.profileId}: ${obligations.length} ${demands.length ? "obligation(s)" : "agent update(s)"} delivered — review the shepy context above and continue.`,
               customType: "shepy-wake",
               details: {
                 obligationIds: ids,
@@ -1010,15 +1035,21 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
         // like any rival instead of impersonating the owner.
         const currentLeaseToken =
           state.profileMode?.profileId === profileId ? state.profileMode.leaseToken : undefined;
+        let demandCapable = false;
+        try {
+          const info = (await state.client.request("daemon.info", {})) as { capabilities?: string[] };
+          demandCapable = info.capabilities?.includes("profile-demand-v1") === true;
+        } catch { /* legacy daemon: agent-only */ }
         const claim = (await state.client.request("profile.claim", {
           ...(currentLeaseToken !== undefined ? { currentLeaseToken } : {}),
+          ...(demandCapable ? { acceptedSourceKinds: ["agent", "profile-demand"] } : {}),
           harnessKind: "pi",
           harnessSessionRefJson: JSON.stringify(state.sessionRef),
           herdrSessionName: state.currentScope?.herdrSessionName ?? "default",
           paneId: state.launchIdentity.paneId,
           profileId,
           subscriberId: state.subscriberId,
-          terminalId: state.launchIdentity.paneId,
+          terminalId: state.currentScope?.terminalId ?? state.launchIdentity.paneId,
           workspaceId: state.launchIdentity.workspaceId,
         })) as {
           result?: {
@@ -1061,6 +1092,7 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
         if (state.profileMode && state.profileMode.profileId !== profileId) {
           await releaseProfile(ctx);
         }
+        state.demandCapable = demandCapable;
         state.profileMode = { leaseToken: result.leaseToken, pendingCount: 0, profileId };
         ctx.ui.notify?.(`Shepy · profile ${profileId} claimed`, "info");
         startProfilePump(ctx);

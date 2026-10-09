@@ -64,6 +64,7 @@ const sourceSchema = Type.Object(
     grant_hashes: Type.Array(hex),
     evidence_roots: Type.Array(Type.String()),
     max_expiry_minutes: Type.Number({ exclusiveMinimum: 0, maximum: 60 }),
+    seat_state_path: Type.Optional(Type.String({ minLength: 1 })),
   },
   { additionalProperties: false },
 );
@@ -89,7 +90,7 @@ function within(path: string, root: string): boolean {
   return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
 
-function verifyRef(input: Static<typeof ref>, roots: string[]): void {
+export function verifyDemandRef(input: Static<typeof ref>, roots: string[]): void {
   if (!isAbsolute(input.path) || !roots.some((root) => within(input.path, root)))
     throw new Error("demand:ref-outside-roots");
   let path = input.path;
@@ -105,6 +106,19 @@ function verifyRef(input: Static<typeof ref>, roots: string[]): void {
   if (actual !== input.sha256) throw new Error("demand:ref-sha-mismatch");
 }
 
+export function demandSource(request: DemandRequest, allowlistPath?: string) {
+  const config: unknown = JSON.parse(
+    readFileSync(allowlistPath ?? resolve(homedir(), ".shepy/ingress-allowlist.json"), "utf8"),
+  );
+  if (!Value.Check(allowlistSchema, config)) throw new Error("demand:invalid-allowlist");
+  const source = Object.hasOwn(config.sources, request.sourceId)
+    ? config.sources[request.sourceId]
+    : undefined;
+  if (!source?.profiles.includes(request.profileId) || !source.kinds.includes(request.kind))
+    throw new Error("demand:source-not-allowed");
+  return source;
+}
+
 /** Publish-time validation only. The allowlist is operator-owned; clients cannot supply its path. */
 export function validateDemandRequest(
   value: unknown,
@@ -116,19 +130,7 @@ export function validateDemandRequest(
   if (Buffer.byteLength(encoded, "utf8") > 16 * 1024) throw new Error("demand:oversized");
   if (!Value.Check(demandRequestSchema, value)) throw new Error("demand:invalid-schema");
   const request = value as DemandRequest;
-  const allowlistPath =
-    options.allowlistPath ?? resolve(homedir(), ".shepy/ingress-allowlist.json");
-  const config: unknown = JSON.parse(readFileSync(allowlistPath, "utf8"));
-  if (!Value.Check(allowlistSchema, config)) throw new Error("demand:invalid-allowlist");
-  const source = Object.hasOwn(config.sources, request.sourceId)
-    ? config.sources[request.sourceId]
-    : undefined;
-  if (
-    !source ||
-    !source.profiles.includes(request.profileId) ||
-    !source.kinds.includes(request.kind)
-  )
-    throw new Error("demand:source-not-allowed");
+  const source = demandSource(request, options.allowlistPath);
   if (!source.duty_paths.includes(request.dutyRef.path)) throw new Error("demand:duty-not-allowed");
   if (source.grant_hashes.length && !source.grant_hashes.includes(request.grantRef.sha256))
     throw new Error("demand:grant-not-allowed");
@@ -157,6 +159,6 @@ export function validateDemandRequest(
     request.snapshotRef,
     request.markerRef,
   ])
-    verifyRef(citation, source.evidence_roots);
+    verifyDemandRef(citation, source.evidence_roots);
   return request;
 }

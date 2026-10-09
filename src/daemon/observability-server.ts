@@ -36,6 +36,7 @@ import type {
 import type { OperationDispatchService } from "@/observability/operation-dispatch-service.js";
 import type { OperationWaitService } from "@/observability/operation-wait-service.js";
 import type { ProfileDeliveryService } from "@/observability/profile-delivery-service.js";
+import type { ProfileDemandService } from "@/observability/profile-demand-service.js";
 import type { ProfileDiagnoseService } from "@/observability/profile-diagnose-service.js";
 import type { ProfileService } from "@/observability/profile-service.js";
 import { RpcRefusedError } from "@/observability/rpc-refused-error.js";
@@ -48,6 +49,8 @@ import {
   agentOrchestratorRegisterInputSchema,
   agentOrchestratorSetInputSchema,
   agentReadInputSchema,
+  demandLookupInputSchema,
+  demandPublishInputSchema,
   inboxAckInputSchema,
   inboxDeferInputSchema,
   inboxDeliveredInputSchema,
@@ -115,6 +118,7 @@ export class ObservabilityRpcServer {
   readonly #profiles: ProfileService | undefined;
   readonly #profileDiagnose: ProfileDiagnoseService | undefined;
   readonly #delivery: ProfileDeliveryService | undefined;
+  readonly #demands: ProfileDemandService | undefined;
   readonly #operationDispatch: OperationDispatchService | undefined;
   readonly #operationStore: OperationStore | undefined;
   readonly #operationWait: OperationWaitService | undefined;
@@ -147,6 +151,7 @@ export class ObservabilityRpcServer {
     now?: () => number;
     orchestrator: AgentOrchestratorService;
     delivery?: ProfileDeliveryService;
+    demands?: ProfileDemandService;
     profileDiagnose?: ProfileDiagnoseService;
     profiles?: ProfileService;
     operationDispatch?: OperationDispatchService;
@@ -185,6 +190,7 @@ export class ObservabilityRpcServer {
     this.#now = options.now ?? Date.now;
     this.#orchestrator = options.orchestrator;
     this.#delivery = options.delivery;
+    this.#demands = options.demands;
     this.#profileDiagnose = options.profileDiagnose;
     this.#profiles = options.profiles;
     this.#operationDispatch = options.operationDispatch;
@@ -351,7 +357,9 @@ export class ObservabilityRpcServer {
       case "daemon.info": {
         // No params by design: the identity is the daemon's own answer to
         // "which build is answering this socket".
-        return this.#daemonInfo;
+        return this.#demands
+          ? { ...this.#daemonInfo, capabilities: ["profile-demand-v1"] }
+          : this.#daemonInfo;
       }
       case "agent.list": {
         assertSchema(agentListInputSchema, params);
@@ -510,6 +518,7 @@ export class ObservabilityRpcServer {
         assertSchema(profileClaimInputSchema, params);
         const input = params as {
           currentLeaseToken?: string;
+          acceptedSourceKinds?: ("agent" | "profile-demand")[];
           harnessKind: string;
           harnessSessionRefJson: string;
           herdrSessionName: string;
@@ -538,6 +547,17 @@ export class ObservabilityRpcServer {
         const input = params as { leaseToken: string; profileId: string };
         return { renewed: this.#requireDelivery().renew(input) };
       }
+      case "inbox.publishDemand": {
+        assertSchema(demandPublishInputSchema, params);
+        if (!this.#demands) throw new Error("Demand service not configured on this daemon");
+        return this.#demands.publishDemand(params);
+      }
+      case "inbox.lookupDemand": {
+        assertSchema(demandLookupInputSchema, params);
+        if (!this.#demands) throw new Error("Demand service not configured on this daemon");
+        const input = params as { profileId: string; sourceId: string; idempotencyKey: string };
+        return this.#demands.lookupDemand(input);
+      }
       case "inbox.list": {
         assertSchema(inboxListInputSchema, params);
         const input = params as {
@@ -558,8 +578,14 @@ export class ObservabilityRpcServer {
       }
       case "inbox.lease": {
         assertSchema(inboxLeaseInputSchema, params);
-        const input = params as { leaseToken: string; maxBatch?: number; profileId: string };
+        const input = params as {
+          leaseToken: string;
+          maxBatch?: number;
+          profileId: string;
+          sourceKinds?: ("agent" | "profile-demand")[];
+        };
         return this.#requireDelivery().inboxLease({
+          ...(input.sourceKinds !== undefined ? { sourceKinds: input.sourceKinds } : {}),
           ...(input.maxBatch !== undefined ? { maxBatch: input.maxBatch } : {}),
           leaseToken: input.leaseToken,
           profileId: input.profileId,

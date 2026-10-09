@@ -391,10 +391,14 @@ describe("claude-hook UserPromptSubmit", () => {
 
     // Delivered under this prompt id, with the daemon-side event correlation.
     const delivered = fixture.delivery.inboxList({ profileId: "driffs", state: "delivered" });
-    expect(delivered.map((row) => row.agentEventId).sort((a, b) => a - b)).toEqual([
-      firstEventId,
-      firstEventId + 1,
-    ]);
+    expect(
+      delivered
+        .map((row) => row.agentEventId)
+        .sort((a, b) => {
+          if (a === null || b === null) throw new Error("expected agent obligations");
+          return a - b;
+        }),
+    ).toEqual([firstEventId, firstEventId + 1]);
     // inbox.list is the public read and deliberately redacts the delivery
     // correlation: deliveredHarnessTurnId used to carry the Pi owner's own
     // subscriber id, completing a credential an attacker could mint a lease

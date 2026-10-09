@@ -1,4 +1,6 @@
+import { sql } from "drizzle-orm";
 import {
+  check,
   index,
   integer,
   primaryKey,
@@ -169,6 +171,7 @@ export const profileSubscriptions = sqliteTable(
  * claim by a new terminal replaces it and invalidates the old lease token.
  */
 export const profileOwners = sqliteTable("profile_owners", {
+  acceptedSourceKindsJson: text("accepted_source_kinds_json").notNull().default('["agent"]'),
   claimedAt: integer("claimed_at", { mode: "timestamp_ms" }).notNull(),
   harnessKind: text("harness_kind").notNull(),
   harnessSessionRefJson: text("harness_session_ref_json").notNull(),
@@ -192,17 +195,54 @@ export const profileOwners = sqliteTable("profile_owners", {
  * understandable (§6.2.3). Acknowledged rows are retained for audit and may
  * be pruned by later policy; pending rows may not (§6.2.7).
  */
+export const profileDemandEvents = sqliteTable(
+  "profile_demand_events",
+  {
+    id: text("id").primaryKey(),
+    profileId: text("profile_id")
+      .notNull()
+      .references(() => orchestratorProfiles.profileId, { onDelete: "cascade" }),
+    sourceId: text("source_id").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    episodeId: text("episode_id").notNull(),
+    activationRevision: integer("activation_revision").notNull(),
+    payloadJson: text("payload_json").notNull(),
+    payloadSha256: text("payload_sha256").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [
+    uniqueIndex("profile_demand_events_key_idx").on(
+      table.profileId,
+      table.sourceId,
+      table.idempotencyKey,
+    ),
+    uniqueIndex("profile_demand_events_episode_revision_idx").on(
+      table.profileId,
+      table.episodeId,
+      table.activationRevision,
+      table.sourceId,
+    ),
+  ],
+);
+
 export const deliveryObligations = sqliteTable(
   "delivery_obligations",
   {
     ackedAt: integer("acked_at", { mode: "timestamp_ms" }),
-    agentEventId: integer("agent_event_id").notNull(),
+    agentEventId: integer("agent_event_id"),
+    profileDemandEventId: text("profile_demand_event_id").references(() => profileDemandEvents.id, {
+      onDelete: "cascade",
+    }),
+    deliverySeq: integer("delivery_seq").notNull(),
     attemptCount: integer("attempt_count").notNull().default(0),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
     deliveredAt: integer("delivered_at", { mode: "timestamp_ms" }),
     deliveredHarnessTurnId: text("delivered_harness_turn_id"),
     deliveredOwnerSessionRefJson: text("delivered_owner_session_ref_json"),
     id: text("id").primaryKey(),
+    kind: text("kind", { enum: ["agent", "demand"] })
+      .notNull()
+      .default("agent"),
     lastErrorCode: text("last_error_code"),
     lastErrorSummary: text("last_error_summary"),
     leaseExpiresAt: integer("lease_expires_at", { mode: "timestamp_ms" }),
@@ -211,10 +251,19 @@ export const deliveryObligations = sqliteTable(
       .notNull()
       .references(() => orchestratorProfiles.profileId, { onDelete: "cascade" }),
     state: text("state").notNull(),
-    subscriptionId: integer("subscription_id").notNull(),
+    subscriptionId: integer("subscription_id"),
   },
   (table) => [
     uniqueIndex("delivery_obligations_profile_event_idx").on(table.profileId, table.agentEventId),
+    uniqueIndex("delivery_obligations_profile_demand_idx").on(
+      table.profileId,
+      table.profileDemandEventId,
+    ),
+    uniqueIndex("delivery_obligations_seq_idx").on(table.deliverySeq),
+    check(
+      "delivery_obligations_exact_source",
+      sql`(${table.kind} = 'agent' and ${table.agentEventId} is not null and ${table.subscriptionId} is not null and ${table.profileDemandEventId} is null) or (${table.kind} = 'demand' and ${table.agentEventId} is null and ${table.subscriptionId} is null and ${table.profileDemandEventId} is not null)`,
+    ),
     index("delivery_obligations_profile_state_idx").on(table.profileId, table.state),
   ],
 );
