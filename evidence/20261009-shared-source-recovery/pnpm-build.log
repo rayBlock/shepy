@@ -1,0 +1,8 @@
+Already up to date
+Done in 256ms using pnpm v11.9.0
+$ pnpm clean:dist && tsc -p tsconfig.build.json && tsc-alias -p tsconfig.build.json && node scripts/stamp-pi-build.mjs
+$ node scripts/clean-dist.mjs
+Shepy Pi build: 047339ff4caad30f8e87a70182195ff2a1adff9a
+$ node scripts/ensure-bin-executable.mjs
+chmod +x dist/src/cli/shepy.js
+EXIT=0

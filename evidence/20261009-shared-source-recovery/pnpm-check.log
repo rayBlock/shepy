@@ -1,0 +1,64 @@
+Already up to date
+Done in 261ms using pnpm v11.9.0
+$ pnpm typecheck && pnpm test && pnpm lint && pnpm format:check && pnpm db:check && pnpm package:check && pnpm pi-package:check && pnpm herdr-plugin:check
+$ tsc --noEmit -p tsconfig.json
+$ vitest run
+
+ RUN  v4.1.9 /Users/ray/dev/shepy-wt/recovery
+
+npm warn Unknown env config "manage-package-manager-versions". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+
+ Test Files  65 passed (65)
+      Tests  737 passed (737)
+   Start at  23:28:34
+   Duration  8.95s (transform 9.55s, setup 0ms, import 14.64s, tests 32.10s, environment 3ms)
+
+$ biome check .
+src/observability/profile-selector-scope.ts:7:3 lint/correctness/noUnusedImports  FIXABLE  ━━━━━━━━━━
+
+  ! Several of these imports are unused.
+  
+    5 │   type AgentSelector,
+    6 │   resolveAgentSelector,
+  > 7 │   type SelectableAgent,
+      │   ^^^^^^^^^^^^^^^^^^^^
+    8 │   selectableFromRow,
+    9 │   type WorkspaceSelector,
+  
+  i Unused imports might be the result of an incomplete refactoring.
+  
+  i Unsafe fix: Remove the unused imports.
+  
+     5  5 │     type AgentSelector,
+     6  6 │     resolveAgentSelector,
+     7    │ - ··type·SelectableAgent,
+     8  7 │     selectableFromRow,
+     9  8 │     type WorkspaceSelector,
+  
+
+Checked 144 files in 64ms. No fixes applied.
+Found 1 warning.
+$ biome format .
+Checked 144 files in 27ms. No fixes applied.
+$ drizzle-kit check --config drizzle.config.ts
+Reading config file '/Users/ray/dev/shepy-wt/recovery/drizzle.config.ts'
+Everything's fine 🐶🔥
+$ node scripts/check-root-package.mjs
+npm warn Unknown env config "manage-package-manager-versions". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+
+> shepy@0.5.0 prepack
+> pnpm build
+
+$ pnpm clean:dist && tsc -p tsconfig.build.json && tsc-alias -p tsconfig.build.json && node scripts/stamp-pi-build.mjs
+$ node scripts/clean-dist.mjs
+$ node scripts/ensure-bin-executable.mjs
+shepy@0.5.0: 302 files
+$ pnpm --dir packages/shepy-pi typecheck && node scripts/check-pi-package.mjs
+$ tsc --noEmit -p tsconfig.json
+npm warn Unknown env config "manage-package-manager-versions". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+shepy-pi@0.5.0: 10 files
+$ pnpm --dir packages/shepy-herdr-plugin typecheck && pnpm --dir packages/shepy-herdr-plugin package:check
+$ tsc -p tsconfig.json
+$ node check-package.mjs
+npm warn Unknown env config "manage-package-manager-versions". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+EXIT=0

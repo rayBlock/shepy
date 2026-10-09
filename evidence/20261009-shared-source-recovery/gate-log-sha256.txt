@@ -1,0 +1,4 @@
+328ee0b6488ad6cb4f82df1edcb694c1b0ab8f33f0595b46f8d82420f350c5a7  /Users/ray/dev/shepy/evidence/20261009-shared-source-recovery/pnpm-build.log
+50362c1355ae54375a15bc868b3f5268a8b8d6ac4324326629955cccc4fd2725  /Users/ray/dev/shepy/evidence/20261009-shared-source-recovery/pnpm-check.log
+3689d19b98ae39141780a6083e0dd168d158d8629d4b34272d79f0e5042d2c7b  /Users/ray/dev/shepy/evidence/20261009-shared-source-recovery/pnpm-package-check.log
+cc64109b85b73bf4b451fa9897f4315f1ddb4eed61a1b66a25aee434e1faa345  /Users/ray/dev/shepy/evidence/20261009-shared-source-recovery/versions.log

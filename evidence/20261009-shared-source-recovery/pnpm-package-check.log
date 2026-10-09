@@ -1,0 +1,13 @@
+Already up to date
+Done in 256ms using pnpm v11.9.0
+$ node scripts/check-root-package.mjs
+npm warn Unknown env config "manage-package-manager-versions". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+
+> shepy@0.5.0 prepack
+> pnpm build
+
+$ pnpm clean:dist && tsc -p tsconfig.build.json && tsc-alias -p tsconfig.build.json && node scripts/stamp-pi-build.mjs
+$ node scripts/clean-dist.mjs
+$ node scripts/ensure-bin-executable.mjs
+shepy@0.5.0: 302 files
+EXIT=0
