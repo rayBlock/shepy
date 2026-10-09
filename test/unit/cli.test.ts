@@ -445,6 +445,29 @@ describe("shepy CLI", () => {
     expect(missing.join("\n")).toContain("Obligation not found.");
   });
 
+  test("inbox get tolerates a partial obligation without inventing a known count", async () => {
+    const output: string[] = [];
+    await runCliCommand(
+      { command: "inbox-get", id: "partial", json: false },
+      {
+        connect: async () => ({
+          close: () => {},
+          request: async () => ({
+            obligation: {
+              id: "partial",
+              state: "pending",
+              outcome: { excerpt: { truncated: false } },
+            },
+          }),
+        }),
+        output: (line) => output.push(line),
+        socketPath: "/tmp/s.sock",
+      },
+    );
+    expect(output.join("\n")).toContain("attempts: 0 (UNKNOWN: attemptCount missing)");
+    expect(output.join("\n")).toContain("(no assistant message)");
+  });
+
   test("inbox get strips control bytes from the excerpt before the terminal sees it", async () => {
     // The human formatter writes to the operator's terminal; a hostile or
     // stale snapshot must not be able to put a raw escape there. (--json is

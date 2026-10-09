@@ -1765,11 +1765,11 @@ function stripControlChars(text: string): string {
 function formatInboxGet(result: { obligation?: unknown }): string {
   const obligation = result.obligation as
     | {
-        agentEventId: number;
-        attemptCount: number;
+        agentEventId?: number;
+        attemptCount?: number;
         id: string;
-        lastErrorCode: string | null;
-        outcome?: { excerpt: { text: string; truncated: boolean } | null } | null;
+        lastErrorCode?: string | null;
+        outcome?: { excerpt?: { text?: string; truncated?: boolean } | null } | null;
         state: string;
       }
     | null
@@ -1779,21 +1779,29 @@ function formatInboxGet(result: { obligation?: unknown }): string {
   return [
     `id: ${obligation.id}`,
     `state: ${obligation.state}`,
-    `event: ${obligation.agentEventId}`,
-    `attempts: ${obligation.attemptCount}`,
+    `event: ${obligation.agentEventId ?? "UNKNOWN"}`,
+    `attempts: ${inboxAttemptCount(obligation.attemptCount)}`,
     `last_error: ${obligation.lastErrorCode ? stripControlChars(obligation.lastErrorCode) : "-"}`,
     "excerpt:",
     // The whole point of the read-back: the FULL excerpt, never truncated —
     // the hook's stub deferred it precisely because the summary could not
     // carry it.
-    excerpt && excerpt.text.length > 0 ? stripControlChars(excerpt.text) : "(no assistant message)",
+    typeof excerpt?.text === "string" && excerpt.text.length > 0
+      ? stripControlChars(excerpt.text)
+      : "(no assistant message)",
   ].join("\n");
+}
+
+function inboxAttemptCount(value: number | undefined): string {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? String(value)
+    : "0 (UNKNOWN: attemptCount missing)";
 }
 
 function formatInboxList(result: {
   obligations?: Array<{
-    agentEventId: number;
-    attemptCount: number;
+    agentEventId?: number;
+    attemptCount?: number;
     id: string;
     lastErrorCode: string | null;
     state: string;
@@ -1805,8 +1813,8 @@ function formatInboxList(result: {
   const rows = obligations.map((obligation) =>
     [
       obligation.state,
-      String(obligation.agentEventId),
-      String(obligation.attemptCount),
+      obligation.agentEventId === undefined ? "UNKNOWN" : String(obligation.agentEventId),
+      inboxAttemptCount(obligation.attemptCount),
       obligation.lastErrorCode ?? "-",
       obligation.id,
     ].join("\t"),

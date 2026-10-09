@@ -2,6 +2,7 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { createHash } from "node:crypto";
 import { Type } from "typebox";
 import { agentIdentityLabel } from "./agent-display.js";
+import { extensionBuild } from "./build-info.js";
 import { readPulseLine } from "./pulse.js";
 import {
   type AgentContextListItem,
@@ -313,6 +314,10 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
         (outcome) => outcome.eventId > state.failedWakeThroughEventId,
       );
       if (wakeable.length === 0 || state.wakeTimer || state.wakeRequested) return;
+      // Blocked is an authoritative Herdr state transition: do not hold it
+      // behind the routine turn-end coalescing window. Keep the same owner,
+      // idle, delivery and acknowledgement fences as every other wake.
+      const immediate = wakeable.some((outcome) => outcome.kind === "blocked");
       if (state.deliveredBatch || ctx.isIdle?.() === false) {
         state.wakeDeferredUntilSettled = true;
         return;
@@ -412,6 +417,7 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
               content: wakeLabel(current.length),
               customType: "shepy-wake",
               details: {
+                build: extensionBuild,
                 eventIds: current.map((outcome) => outcome.eventId),
                 outcomes: current,
                 ...(() => { const p = readPulseLine(); return p ? { pulse: p } : {}; })(),
@@ -424,7 +430,7 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
           state.wakeRequestedThroughEventId = 0;
         };
         void startWake();
-      }, WAKE_SETTLE_MS);
+      }, immediate ? 0 : WAKE_SETTLE_MS);
     };
 
     const loseRole = (ctx: PiContext | undefined) => {
@@ -769,6 +775,7 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
               content: `Shepy · profile ${mode.profileId}: ${obligations.length} agent update(s) delivered — review the shepy context above and continue.`,
               customType: "shepy-wake",
               details: {
+                build: extensionBuild,
                 obligationIds: ids,
                 profileId: mode.profileId,
                 ...(() => { const p = readPulseLine(); return p ? { pulse: p } : {}; })(),
@@ -876,6 +883,9 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
       if (event.terminalId === state.currentScope.terminalId) return;
       addPendingEvents([event], ctx);
       pi.appendEntry?.("shepy.agent_event", event);
+      // A routine outcome may have started a 500 ms lease window. A blocked
+      // transition arriving inside it promotes that same pending batch now.
+      if (event.type === "agent.blocked" && state.wakeTimer) cancelWakeTimer();
       scheduleWake(ctx);
     };
 

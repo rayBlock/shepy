@@ -6,6 +6,8 @@ import type { AgentOutcome } from "./wake.js";
 export const COLLAPSED_AGENT_UPDATE_LIMIT = 3;
 
 export type AgentUpdateMessageDetails = {
+  /** Build identity carried by each visible wake, not shown in the card. */
+  build?: { pkgVersion: string; gitSha: string | null };
   eventIds: number[];
   outcomes: AgentOutcome[];
   /** Factory pulse line (tools/seat/factory-pulse.zsh stamp), composed at send time; absent = stale/missing. */
