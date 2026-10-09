@@ -111,6 +111,10 @@ type ShepyState = {
   connected: boolean;
   demandCapable: boolean;
   currentScope: CurrentScope | undefined;
+  /** Monotonic per-delivery counter folded into harnessTurnId: a
+   * redelivered obligation set (nack → re-lease, wake_failed → re-pump)
+   * must never alias to its first attempt's turn id. */
+  deliveryGeneration: number;
   deliveredBatch: DeliveredBatch | undefined;
   failedWakeThroughEventId: number;
   isOrchestrator: boolean;
@@ -239,6 +243,7 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
       connected: false,
       demandCapable: false,
       currentScope: undefined,
+      deliveryGeneration: 0,
       deliveredBatch: undefined,
       failedWakeThroughEventId: 0,
       isOrchestrator: false,
@@ -611,6 +616,17 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
           if (!stillCurrent) return;
           const recovered = await recoverLapsedLease(mode, ctx);
           if (!recovered) {
+            // POST-RECOVERY REVALIDATION (the overlap race): the recovery
+            // just AWAITED a claim, and during that await an overlapping
+            // tick's recovery — or any same-profile re-claim — can install
+            // a FRESH token. A rejected recovery only owns what it can
+            // still see: if the live mode has moved on, this continuation
+            // is stale and must tear down NOTHING (no stop, no clear, no
+            // ownership-lost notify — the recovered pump stays alive).
+            const stillCurrentAfterRecovery =
+              state.profileMode?.profileId === mode.profileId &&
+              state.profileMode.leaseToken === mode.leaseToken;
+            if (!stillCurrentAfterRecovery) return;
             stopProfileTimer();
             state.profileMode = undefined;
             if (state.profileBatch) state.profileBatch.invalidated = true;
@@ -831,9 +847,14 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
         // (unauthenticated), and the subscriber id is a re-claim credential
         // half — the F3-1 shorter chain read it straight off the listing.
         // A digest of the batch's obligation ids identifies this delivery
-        // turn without identifying the subscriber.
+        // turn without identifying the subscriber — and the lease token
+        // plus a per-delivery generation keep a REDELIVERED set from
+        // aliasing to its first attempt's turn id.
+        state.deliveryGeneration += 1;
         const harnessTurnId = createHash("sha256")
-          .update([...ids].sort().join("\n"))
+          .update(
+            `${[...ids].sort().join("\n")}\n${mode.leaseToken}\n${state.deliveryGeneration}`,
+          )
           .digest("hex")
           .slice(0, 24);
         try {

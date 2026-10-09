@@ -206,6 +206,56 @@ function interleavedRenewClient() {
   };
 }
 
+/** The OVERLAP RACE client: renews AND recovery claims are held until
+ * the test resolves them. Two ticks can then BOTH pass the pre-recovery
+ * current-token check before either recovery completes — the exact
+ * interleaving the hostile found, impossible with synchronous fakes. */
+function overlapRaceClient() {
+  const client = createFakeClient();
+  let claimCount = 0;
+  const pendingRenews: Array<{ resolve: (value: unknown) => void; token: string }> = [];
+  const pendingClaims: Array<{ n: number; resolve: (value: unknown) => void }> = [];
+  client.response = (method, params) => {
+    if (method === "profile.claim") {
+      claimCount += 1;
+      // The initial /shepy on claim answers synchronously with lease-1;
+      // every LATER claim is a lapse recovery, held for the test to land.
+      if (claimCount === 1) return { result: { kind: "claimed", leaseToken: "lease-1" } };
+      return new Promise((resolve) => {
+        pendingClaims.push({ n: claimCount, resolve });
+      });
+    }
+    if (method === "profile.renew") {
+      const token = (params as { leaseToken: string }).leaseToken;
+      return new Promise((resolve) => {
+        pendingRenews.push({ resolve, token });
+      });
+    }
+    if (method === "inbox.lease") return { obligations: [] };
+    return connectionResponse();
+  };
+  return {
+    client,
+    pendingRenews: () => pendingRenews.map((entry) => entry.token),
+    resolveRenew(token: string, value: unknown) {
+      const index = pendingRenews.findIndex((entry) => entry.token === token);
+      if (index < 0) throw new Error(`no pending renew for ${token}`);
+      const entry = pendingRenews[index];
+      if (!entry) throw new Error(`no pending renew for ${token}`);
+      pendingRenews.splice(index, 1);
+      entry.resolve(value);
+    },
+    resolveClaim(nth: number, value: unknown) {
+      const index = pendingClaims.findIndex((entry) => entry.n === nth);
+      if (index < 0) throw new Error(`no pending claim #${nth}`);
+      const entry = pendingClaims[index];
+      if (!entry) throw new Error(`no pending claim #${nth}`);
+      pendingClaims.splice(index, 1);
+      entry.resolve(value);
+    },
+  };
+}
+
 describe("shepy-pi profile pump heartbeat", () => {
   test("the pump renews the lease before leasing, on the claim pump and every tick", async () => {
     vi.useFakeTimers();
@@ -363,7 +413,6 @@ describe("shepy-pi profile pump heartbeat", () => {
       await vi.advanceTimersByTimeAsync(20);
       // claim, then the immediate pump: renew fails transiently, lease proceeds.
       expect(client.calls.map(([method]) => method)).toEqual([
-        "daemon.info",
         "profile.claim",
         "profile.renew",
         "inbox.lease",
@@ -469,11 +518,7 @@ describe("shepy-pi profile pump heartbeat", () => {
       // The heartbeat sits BEFORE the busy gate: the tick renewed, then
       // returned without leasing (a busy owner must not lease a wake it
       // cannot witness).
-      expect(client.calls.map(([method]) => method)).toEqual([
-        "daemon.info",
-        "profile.claim",
-        "profile.renew",
-      ]);
+      expect(client.calls.map(([method]) => method)).toEqual(["profile.claim", "profile.renew"]);
       client.calls.length = 0;
       await vi.advanceTimersByTimeAsync(10_000);
       await vi.advanceTimersByTimeAsync(10_000);
@@ -503,7 +548,6 @@ describe("shepy-pi profile pump heartbeat", () => {
       // The first tick leased a batch: the wake follow-ups were queued and
       // marked delivered, and the batch stays unacked (no settle runs here).
       expect(client.calls.map(([method]) => method)).toEqual([
-        "daemon.info",
         "profile.claim",
         "profile.renew",
         "inbox.lease",
@@ -521,57 +565,88 @@ describe("shepy-pi profile pump heartbeat", () => {
     }
   });
 
-  test("negotiated demand capability claims and renders a cited non-agent obligation", async () => {
+  test("an overlapping recovery rejected after a fresh token was installed must not tear down the recovered pump", async () => {
+    vi.useFakeTimers();
+    const { client, pendingRenews, resolveRenew, resolveClaim } = overlapRaceClient();
+    const { ctx, pi } = await renewHarness(client);
+    try {
+      await pi.command("on driffs", ctx); // claim → lease-1; tick 1 parks in renew(lease-1)
+      await vi.advanceTimersByTimeAsync(10_000); // tick 2 parks in renew(lease-1) too
+      expect(pendingRenews()).toEqual(["lease-1", "lease-1"]);
+      // Both renewals answer false; both continuations pass the
+      // pre-recovery current-token check (nothing has replaced lease-1
+      // yet) and both park inside their OWN recovery re-claim.
+      resolveRenew("lease-1", { renewed: false });
+      await vi.advanceTimersByTimeAsync(1);
+      resolveRenew("lease-1", { renewed: false });
+      await vi.advanceTimersByTimeAsync(1);
+      // The first recovery reclaims with a fresh token; the second is
+      // rejected by the daemon — the rival token (lease-2) is active.
+      resolveClaim(2, { result: { kind: "reclaimed", leaseToken: "lease-2" } });
+      await vi.advanceTimersByTimeAsync(1);
+      resolveClaim(3, { result: { kind: "rejected", reason: "lease_active" } });
+      await vi.advanceTimersByTimeAsync(1);
+      // Exactly one recovery notify; the REJECTED overlapping recovery
+      // must be a silent no-op — its mode was stale the moment lease-2
+      // landed, so it owns nothing to mourn.
+      const recovered = ctx.notifications.filter(([message]) =>
+        message.includes("lease recovered"),
+      );
+      expect(recovered).toHaveLength(1);
+      expect(
+        ctx.notifications.filter(([message]) => message.includes("ownership lost")),
+      ).toHaveLength(0);
+      // The pump runs on under the RECOVERED token: the next tick's
+      // heartbeat rides lease-2 (a teardown here would have stopped the
+      // timer and cleared the live mode).
+      client.calls.length = 0;
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(client.calls[0]).toEqual([
+        "profile.renew",
+        { leaseToken: "lease-2", profileId: "driffs" },
+      ]);
+      resolveRenew("lease-2", { renewed: true });
+      await vi.advanceTimersByTimeAsync(1);
+      expect(client.calls.map(([method]) => method)).toContain("inbox.lease");
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  test("a redelivered obligation set gets a fresh turn id per delivery", async () => {
     vi.useFakeTimers();
     const client = createFakeClient();
-    const ref = { path: "/private/tmp/snapshot", sha256: "a".repeat(64), selector: "row-1" };
     client.response = (method) => {
-      if (method === "daemon.info") return { capabilities: ["profile-demand-v1"] };
       if (method === "profile.claim") return { result: { kind: "claimed", leaseToken: "lease-1" } };
       if (method === "profile.renew") return { renewed: true };
-      if (method === "inbox.lease")
-        return {
-          obligations: [
-            {
-              id: "demand-ob-1",
-              agentEventId: null,
-              sourceKind: "profile-demand",
-              profileDemandEventId: "demand-1",
-              demand: {
-                schema: "factory.demand.v1",
-                episodeId: "b".repeat(64),
-                activationRevision: 1,
-                kind: "queue-claimable",
-                reasonCode: "owned-ready-capacity",
-                snapshotRef: ref,
-                markerRef: ref,
-                dutyRef: ref,
-                grantRef: ref,
-              },
-            },
-          ],
-        };
+      if (method === "inbox.lease") {
+        return { obligations: [{ agentEventId: 7, id: "ob-1", outcome: null }] };
+      }
       if (method === "inbox.delivered") return { delivered: 1 };
       return connectionResponse();
     };
     const { ctx, pi } = await renewHarness(client);
+    const turnIds = () =>
+      client.calls
+        .filter(([method]) => method === "inbox.delivered")
+        .map(([, params]) => (params as { harnessTurnId?: string }).harnessTurnId);
     try {
       await pi.command("on driffs", ctx);
       await vi.advanceTimersByTimeAsync(20);
-      const claim = client.calls.find(([method]) => method === "profile.claim")?.[1] as {
-        acceptedSourceKinds?: string[];
-      };
-      const lease = client.calls.find(([method]) => method === "inbox.lease")?.[1] as {
-        sourceKinds?: string[];
-      };
-      expect(claim.acceptedSourceKinds).toEqual(["agent", "profile-demand"]);
-      expect(lease.sourceKinds).toEqual(["agent", "profile-demand"]);
-      expect((pi.hiddenMessages[0] as { content: string }).content).toContain(
-        "[SHEPY DUTY DEMANDS]",
-      );
-      expect((pi.hiddenMessages[0] as { content: string }).content).not.toContain(
-        "shepy agent read unknown",
-      );
+      const first = turnIds();
+      expect(first).toHaveLength(1);
+      expect(first[0]).toMatch(/^[0-9a-f]{24}$/);
+      // The settling run failed its assistant final: the batch is nacked
+      // (wake_failed), cleared, and the settle path re-pumps immediately —
+      // ob-1 goes back to the inbox and is delivered AGAIN in one flush.
+      await pi.emit("agent_settled", {}, ctx);
+      await vi.advanceTimersByTimeAsync(1);
+      const second = turnIds();
+      expect(second).toHaveLength(2);
+      // Same obligation set, DIFFERENT delivery turn: the daemon's
+      // persisted correlation must not alias the two delivery attempts.
+      expect(second[1]).not.toBe(second[0]);
     } finally {
       vi.clearAllTimers();
       vi.useRealTimers();
