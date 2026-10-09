@@ -1,0 +1,74 @@
+{
+  "schema": "factory.evidence.unpublished.v1",
+  "packet": "20261010-profilefix-15.261",
+  "files": [
+    {
+      "path": "receipt.md",
+      "sha256": "5f64fa37f3f44388707ed42dfcf26cc1e9bdd95e567fd7387d3a694dd19a325f"
+    },
+    {
+      "path": "attempt-1/run-a-profile-unset.log",
+      "sha256": "b3e4229eca486dcc8231520d9c3ba83299f9ef391e94a6385fe92dfec8364705"
+    },
+    {
+      "path": "attempt-1/run-a.exit",
+      "sha256": "31a10c07564e1ca286f78de46c63b10c0273caac2ee3d695280e1fd0b543bb43"
+    },
+    {
+      "path": "attempt-1/run-b-ambient-profile.log",
+      "sha256": "4992d58ade54afd80856231277a69b5a7b94c6165118cc01e6d9599bd9420e38"
+    },
+    {
+      "path": "attempt-1/run-b.exit",
+      "sha256": "d5a8a61ba6f1970debbff20544981bc677fa7fef733233db1faa022f29047be8"
+    },
+    {
+      "path": "attempt-2/gate-pi-profile-tool-ambient.log",
+      "sha256": "d6248153cd067a2470ba72a63969a9c425295ec190623e50df4bc251fe3e5c5b"
+    },
+    {
+      "path": "attempt-2/gate-pi-profile-tool-unset.log",
+      "sha256": "047e9281ea796a4e89c0cc982da31dfdc6c804516adcca635b600cf6452eca54"
+    },
+    {
+      "path": "attempt-2/gate-shepy-pi-env-claim-ambient.log",
+      "sha256": "73ac0fb17ae18ea0cb3ba4c1cc70017cad50d983353a0225014be628b519eec9"
+    },
+    {
+      "path": "attempt-2/gate-shepy-pi-env-claim-unset.log",
+      "sha256": "0dcbedea594be58c5504fe3fca75bb0698b4123619409abbf879d98c653e9017"
+    },
+    {
+      "path": "attempt-2/gate-shepy-pi-profile-renew-ambient.log",
+      "sha256": "bcf24fe8ec201dd3e4e25b340613e5a0727f1bafafd4a04bd1a48d1cf1cbd25e"
+    },
+    {
+      "path": "attempt-2/gate-shepy-pi-profile-renew-unset.log",
+      "sha256": "3084648fa4a7e9962d37d589a254cede8a2ed4f15bc907b1b7fa8419ca6e6ea6"
+    },
+    {
+      "path": "attempt-2/gate-stamp-pi-build-ambient.log",
+      "sha256": "5f49a2779119577cd94667123db903cea059e6f381764f7992945505abdb1413"
+    },
+    {
+      "path": "attempt-2/gate-stamp-pi-build-unset.log",
+      "sha256": "df699a0daa3dd6aa4c23e080e3d0fb4b071157ad5e40d0b8e6e3e7a382caf01f"
+    },
+    {
+      "path": "attempt-2/run-c-fixed-profile-unset.log",
+      "sha256": "ff5d932865828b37db4193405f648cfcadf7b0a388a740ec45bfe5ff6197744c"
+    },
+    {
+      "path": "attempt-2/run-c.exit",
+      "sha256": "aa64d722d843e1680c39cfd7b863c2c602ee93c1f2ce2b1b61224301972073ce"
+    },
+    {
+      "path": "attempt-2/run-d-fixed-ambient-profile.log",
+      "sha256": "c26df06384d8ade4fe61cf3633675513db74b987f5440e845d0d391e948d77e3"
+    },
+    {
+      "path": "attempt-2/run-d.exit",
+      "sha256": "aef8459b80f964bd20050e9190d3a11b18dee69531ea727597e2ac4190ec7221"
+    }
+  ]
+}

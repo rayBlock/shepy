@@ -1,0 +1,140 @@
+
+ RUN  v4.1.9 /Users/ray/dev/shepy-wt/profilefix
+
+ ❯ test/unit/shepy-pi-extension.test.ts (69 tests | 5 failed) 706ms
+     × shows reconnecting only for a previous owner and restores it without feedback 4ms
+     × keeps a previous owner reconnecting across repeated registration failure callbacks 1ms
+     × reports ownership loss discovered on reconnect to term_other 1ms
+     × reports ownership loss discovered on reconnect to null 1ms
+     × clears reconnecting UI on shutdown 1ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 5 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/unit/shepy-pi-extension.test.ts > shepy-pi orchestrator bridge > shows reconnecting only for a previous owner and restores it without feedback
+AssertionError: expected [ [ …(2) ], [ …(2) ] ] to deeply equal []
+
+- Expected
++ Received
+
+- []
++ [
++   [
++     "Shepy profile claim rejected (unknown) — the active owner's lease must expire first",
++     "error",
++   ],
++   [
++     "Shepy profile claim rejected (unknown) — the active owner's lease must expire first",
++     "error",
++   ],
++ ]
+
+ ❯ test/unit/shepy-pi-extension.test.ts:812:33
+    810|       await client.connect();
+    811|       expect(ctx.statuses.get("shepy")).toBe("◆ Shepy");
+    812|       expect(ctx.notifications).toEqual([]);
+       |                                 ^
+    813|     } finally {
+    814|       restoreEnv(previous);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/5]⎯
+
+ FAIL  test/unit/shepy-pi-extension.test.ts > shepy-pi orchestrator bridge > keeps a previous owner reconnecting across repeated registration failure callbacks
+AssertionError: expected [ [ …(2) ] ] to deeply equal []
+
+- Expected
++ Received
+
+- []
++ [
++   [
++     "Shepy profile claim rejected (unknown) — the active owner's lease must expire first",
++     "error",
++   ],
++ ]
+
+ ❯ test/unit/shepy-pi-extension.test.ts:841:33
+    839|
+    840|       expect(ctx.statuses.get("shepy")).toBe("◇ Shepy · reconnecting");
+    841|       expect(ctx.notifications).toEqual([]);
+       |                                 ^
+    842|     } finally {
+    843|       restoreEnv(previous);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/5]⎯
+
+ FAIL  test/unit/shepy-pi-extension.test.ts > shepy-pi orchestrator bridge > reports ownership loss discovered on reconnect to term_other
+AssertionError: expected [ …(2) ] to deeply equal [ …(2) ]
+
+- Expected
++ Received
+
+  [
+-   "Shepy is off · moved to wB:p-other",
+-   "info",
++   "Shepy profile claim rejected (unknown) — the active owner's lease must expire first",
++   "error",
+  ]
+
+ ❯ test/unit/shepy-pi-extension.test.ts:889:40
+    887|
+    888|       expect(ctx.statuses.get("shepy")).toBeUndefined();
+    889|       expect(ctx.notifications.at(-1)).toEqual([message, "info"]);
+       |                                        ^
+    890|     } finally {
+    891|       restoreEnv(previous);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/5]⎯
+
+ FAIL  test/unit/shepy-pi-extension.test.ts > shepy-pi orchestrator bridge > reports ownership loss discovered on reconnect to null
+AssertionError: expected [ …(2) ] to deeply equal [ 'Shepy is off', 'info' ]
+
+- Expected
++ Received
+
+  [
+-   "Shepy is off",
+-   "info",
++   "Shepy profile claim rejected (unknown) — the active owner's lease must expire first",
++   "error",
+  ]
+
+ ❯ test/unit/shepy-pi-extension.test.ts:889:40
+    887|
+    888|       expect(ctx.statuses.get("shepy")).toBeUndefined();
+    889|       expect(ctx.notifications.at(-1)).toEqual([message, "info"]);
+       |                                        ^
+    890|     } finally {
+    891|       restoreEnv(previous);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/5]⎯
+
+ FAIL  test/unit/shepy-pi-extension.test.ts > shepy-pi orchestrator bridge > clears reconnecting UI on shutdown
+AssertionError: expected [ [ …(2) ] ] to deeply equal []
+
+- Expected
++ Received
+
+- []
++ [
++   [
++     "Shepy profile claim rejected (unknown) — the active owner's lease must expire first",
++     "error",
++   ],
++ ]
+
+ ❯ test/unit/shepy-pi-extension.test.ts:1644:33
+    1642|
+    1643|       expect(ctx.statuses.get("shepy")).toBeUndefined();
+    1644|       expect(ctx.notifications).toEqual([]);
+       |                                 ^
+    1645|     } finally {
+    1646|       vi.clearAllTimers();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/5]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  5 failed | 64 passed (69)
+   Start at  00:35:28
+   Duration  829ms (transform 92ms, setup 0ms, import 59ms, tests 706ms, environment 0ms)
+

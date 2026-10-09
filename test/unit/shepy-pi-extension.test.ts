@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from "vitest";
+import { afterAll, describe, expect, test, vi } from "vitest";
 import type {
   AgentEventWireRecord,
   AgentWorkspaceContextSnapshot,
@@ -8,13 +8,25 @@ import {
   type BuildStampFixture,
   installAmbientBuildStampSandbox,
 } from "./helpers/build-info-sandbox.js";
+import {
+  injectProfileForControl,
+  installAmbientProfileSandbox,
+  restoreAmbientProfileSandbox,
+  uninstallAmbientProfileSandbox,
+} from "./helpers/profile-sandbox.js";
 
 // The build stamp is gitignored machine-local checkout state (the SHEPY_PROFILE
 // leak class): a built tree carries a real commit SHA, an unbuilt tree none.
 // Production forwarding of that identity is correct, so the suite sandboxes the
 // ambient stamp to the unstamped identity before any extension import; the
 // controls below re-inject fixtures deliberately and restore the default.
+// The ambient SHEPY_PROFILE is the sibling leak: a dispatched pane owns its
+// profile by environment, so the suite saves and unsets it for this file's
+// tests; only the deliberate profile-injection controls below exercise the
+// profile-aware paths.
 installAmbientBuildStampSandbox();
+installAmbientProfileSandbox();
+afterAll(uninstallAmbientProfileSandbox);
 
 const extensionModuleUrl = new URL("../../packages/shepy-pi/src/index.ts", import.meta.url).href;
 
@@ -2733,5 +2745,65 @@ describe("shepy-pi orchestrator bridge build-stamp sandbox controls", () => {
       raw: '{"gitSha":"not-a-commit"}',
     });
     expect(wakeBuild(pi)).toEqual({ pkgVersion: "0.5.0", gitSha: null });
+  });
+});
+
+describe("shepy-pi orchestrator bridge ambient-profile sandbox controls", () => {
+  /** Start one bridge session under the file's profile sandbox (complete
+   * Herdr identity, no SHEPY_PROFILE unless a control injects one before
+   * calling this). The caller owns restoreEnv; shutdown is returned so a
+   * claiming control can stop the 10 s ownership pump. */
+  async function startBridgeUnderProfileSandbox(response?: FakeClient["response"]) {
+    const client = createFakeClient();
+    if (response) client.response = response;
+    const pi = createFakePi();
+    const ctx = fakeCtx({ idle: true });
+    const previous = withHerdrEnv({ paneId: "w15:p1", workspaceId: "w15" });
+    const { createShepyPiExtension } = (await import(extensionModuleUrl)) as Module;
+    createShepyPiExtension({ clientFactory: () => client })(pi);
+    await pi.emit("session_start", {}, ctx);
+    await client.connect();
+    await tick();
+    return { client, pi, previous, shutdown: () => pi.emit("session_shutdown", {}, ctx) };
+  }
+
+  test("sandbox control: with the ambient profile sandboxed away, session_start never claims", async () => {
+    const { client, previous, shutdown } = await startBridgeUnderProfileSandbox();
+    try {
+      // The environment claim is exactly what an ambient SHEPY_PROFILE used
+      // to fire on every session_start; the sandbox must keep it silent.
+      expect(client.calls.map(([method]) => method)).not.toContain("profile.claim");
+    } finally {
+      await shutdown();
+      restoreEnv(previous);
+    }
+  });
+
+  test("injection control: a deliberately injected SHEPY_PROFILE claims exactly that profile on session_start", async () => {
+    // The claim reads process.env at connect time, so the injection precedes
+    // session_start — the deliberate environment-variant twin of the Phase 4
+    // /shepy on harness.
+    injectProfileForControl("env-claim-control");
+    const { client, previous, shutdown } = await startBridgeUnderProfileSandbox(
+      (method, params) => {
+        if (method === "profile.claim") {
+          expect(params).toMatchObject({ harnessKind: "pi", profileId: "env-claim-control" });
+          return { result: { kind: "claimed", leaseToken: "lease-env-1" } };
+        }
+        if (method === "inbox.lease") return { obligations: [] };
+        return connectionResponse();
+      },
+    );
+    try {
+      // Exactly one environment claim, carrying the injected id — never an
+      // ambient echo on top.
+      expect(client.calls.filter(([method]) => method === "profile.claim")).toEqual([
+        ["profile.claim", expect.objectContaining({ profileId: "env-claim-control" })],
+      ]);
+    } finally {
+      await shutdown();
+      restoreAmbientProfileSandbox();
+      restoreEnv(previous);
+    }
   });
 });
