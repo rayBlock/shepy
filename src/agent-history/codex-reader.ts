@@ -1,11 +1,11 @@
 import type { AgentHistoryMessage, AgentHistoryRef } from "@/observability/contracts.js";
+import { projectCodexContextHealth } from "./codex-context.js";
 import {
   type AgentHistoryReader,
   compactFromMessages,
   limitMessages,
   readJsonl,
 } from "./readers.js";
-import { projectCodexContextHealth } from "./codex-context.js";
 import { messageRef, textFromContent, timestampFrom } from "./text.js";
 import { compactToolResult } from "./tool-compaction.js";
 
@@ -30,10 +30,15 @@ export class CodexHistoryReader implements AgentHistoryReader {
       const payloadType = stringValue(payload.type);
       const id =
         stringValue(payload.id) ?? stringValue(payload.call_id) ?? stringValue(entry.value.id);
+      // task_complete.started_at marks the turn's START, never the freshness
+      // of its completed answer. Without an outer completion timestamp its
+      // completion time is unknown, even when a start time is available.
       const timestamp =
-        timestampFrom(entry.value.timestamp) ??
-        codexTimestamp(payload.timestamp) ??
-        codexTimestamp(payload.started_at);
+        payloadType === "task_complete"
+          ? timestampFrom(entry.value.timestamp)
+          : (timestampFrom(entry.value.timestamp) ??
+            codexTimestamp(payload.timestamp) ??
+            codexTimestamp(payload.started_at));
       const refValue = messageRef(path, id ?? undefined, entry.line);
 
       if (type === "event_msg") {
@@ -107,11 +112,7 @@ export class CodexHistoryReader implements AgentHistoryReader {
     const path = ref.path ?? ref.value;
     const entries = await readJsonl(path);
     if (!matchesSession(ref, entries)) return compactFromMessages(ref, []);
-    return compactFromMessages(
-      ref,
-      await this.read(ref),
-      projectCodexContextHealth(path, entries),
-    );
+    return compactFromMessages(ref, await this.read(ref), projectCodexContextHealth(path, entries));
   }
 }
 
@@ -124,7 +125,10 @@ function codexTimestamp(value: unknown): string | null {
   return Number.isFinite(date.getTime()) ? date.toISOString() : null;
 }
 
-function matchesSession(ref: AgentHistoryRef, entries: Awaited<ReturnType<typeof readJsonl>>): boolean {
+function matchesSession(
+  ref: AgentHistoryRef,
+  entries: Awaited<ReturnType<typeof readJsonl>>,
+): boolean {
   if (ref.kind !== "agent_session" || ref.value === (ref.path ?? ref.value)) return true;
   const ids = entries
     .filter((entry) => entry.value.type === "session_meta")

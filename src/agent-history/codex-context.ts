@@ -1,4 +1,4 @@
-import type { AgentHistoryRef, ContextHealth } from "@/observability/contracts.js";
+import type { ContextHealth } from "@/observability/contracts.js";
 import type { JsonlEntry } from "./readers.js";
 import { messageRef, timestampFrom } from "./text.js";
 
@@ -21,16 +21,14 @@ function isoTimestamp(value: unknown): string | null {
 /** Codex's last_token_usage.input_tokens includes cached_input_tokens. The latter
  * is a subset, not an additional occupancy charge. total_token_usage is lifetime
  * billing, never a context fill reading. */
-export function projectCodexContextHealth(
-  path: string,
-  entries: JsonlEntry[],
-): ContextHealth {
+export function projectCodexContextHealth(path: string, entries: JsonlEntry[]): ContextHealth {
   let sessionId: string | null = null;
   let conflictingSessions = false;
   let modelId: string | null = null;
   let changedAt: string | null = null;
   let sourceUpdatedAt: string | null = null;
-  let reading: { tokens: number; window: number; model: string; at: string; ref: string } | null = null;
+  let reading: { tokens: number; window: number; model: string; at: string; ref: string } | null =
+    null;
   let reason = "no_usage_recorded";
   let laterTurn = false;
 
@@ -63,10 +61,22 @@ export function projectCodexContextHealth(
     const tokens = count(usage?.input_tokens);
     const cached = count(usage?.cached_input_tokens);
     const window = count(info?.model_context_window);
-    if (tokens === null || window === null || window === 0 ||
-        (cached !== null && cached > tokens) || !timestamp || !modelId || !sessionId || conflictingSessions) continue;
+    if (
+      tokens === null ||
+      window === null ||
+      window === 0 ||
+      (cached !== null && cached > tokens) ||
+      !timestamp ||
+      !modelId ||
+      !sessionId ||
+      conflictingSessions
+    )
+      continue;
     reading = {
-      tokens, window, model: modelId, at: timestamp,
+      tokens,
+      window,
+      model: modelId,
+      at: timestamp,
       ref: messageRef(path, undefined, entry.line),
     };
   }
@@ -80,24 +90,33 @@ export function projectCodexContextHealth(
     sessionId: conflictingSessions ? null : sessionId,
     source: "codex-jsonl",
     sourceUpdatedAt,
-    usage: valid && reading ? {
-      current: true,
-      kind: "last_reported",
-      percent: (reading.tokens / reading.window) * 100,
-      reason: null,
-      ref: reading.ref,
-      reportedAt: reading.at,
-      tokens: reading.tokens,
-      window: reading.window,
-    } : {
-      current: false,
-      kind: "unavailable",
-      percent: null,
-      reason: conflictingSessions ? "session_id_varies" : reading ? (laterTurn ? "later_turn_without_usage" : "model_changed_since_reading") : reason,
-      ref: null,
-      reportedAt: null,
-      tokens: null,
-      window: null,
-    },
+    usage:
+      valid && reading
+        ? {
+            current: true,
+            kind: "last_reported",
+            percent: (reading.tokens / reading.window) * 100,
+            reason: null,
+            ref: reading.ref,
+            reportedAt: reading.at,
+            tokens: reading.tokens,
+            window: reading.window,
+          }
+        : {
+            current: false,
+            kind: "unavailable",
+            percent: null,
+            reason: conflictingSessions
+              ? "session_id_varies"
+              : reading
+                ? laterTurn
+                  ? "later_turn_without_usage"
+                  : "model_changed_since_reading"
+                : reason,
+            ref: null,
+            reportedAt: null,
+            tokens: null,
+            window: null,
+          },
   };
 }
