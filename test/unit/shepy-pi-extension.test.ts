@@ -4,6 +4,17 @@ import type {
   AgentWorkspaceContextSnapshot,
   DaemonStreamMessage,
 } from "../../packages/shepy-pi/src/daemon-client.js";
+import {
+  type BuildStampFixture,
+  installAmbientBuildStampSandbox,
+} from "./helpers/build-info-sandbox.js";
+
+// The build stamp is gitignored machine-local checkout state (the SHEPY_PROFILE
+// leak class): a built tree carries a real commit SHA, an unbuilt tree none.
+// Production forwarding of that identity is correct, so the suite sandboxes the
+// ambient stamp to the unstamped identity before any extension import; the
+// controls below re-inject fixtures deliberately and restore the default.
+installAmbientBuildStampSandbox();
 
 const extensionModuleUrl = new URL("../../packages/shepy-pi/src/index.ts", import.meta.url).href;
 
@@ -2663,4 +2674,64 @@ describe("shepy-pi profile-owner bridge (Phase 4)", () => {
     }
     return { client, ctx, pi };
   }
+});
+
+describe("shepy-pi orchestrator bridge build-stamp sandbox controls", () => {
+  const controlSha = "a".repeat(40);
+
+  /** Run one 500 ms wake under a specific stamp fixture, then restore the
+   * default sandbox so later imports observe the unstamped identity. */
+  async function wakeUnderBuildStampSandbox(fixture: BuildStampFixture): Promise<FakePi> {
+    installAmbientBuildStampSandbox(fixture);
+    vi.resetModules();
+    try {
+      vi.useFakeTimers();
+      const client = createWakeClient();
+      const pi = createFakePi();
+      const ctx = fakeCtx({ idle: true });
+      const previous = withHerdrEnv();
+      try {
+        await startExtension(client, pi, ctx);
+        client.emitStream({
+          method: "agent.event",
+          params: { event: event(77, "term_agent") },
+        });
+        await vi.advanceTimersByTimeAsync(500);
+        return pi;
+      } finally {
+        vi.clearAllTimers();
+        vi.useRealTimers();
+        restoreEnv(previous);
+      }
+    } finally {
+      installAmbientBuildStampSandbox();
+      vi.resetModules();
+    }
+  }
+
+  function wakeBuild(pi: FakePi): { gitSha: string | null; pkgVersion: string } | undefined {
+    const wake = pi.customMessages.find(([message]) => message.customType === "shepy-wake");
+    const details = wake?.[0].details as { build?: { gitSha: string | null; pkgVersion: string } };
+    return details.build;
+  }
+
+  test("unstamped positive: the default sandbox behaves as an unbuilt checkout and the wake still delivers", async () => {
+    const pi = await wakeUnderBuildStampSandbox({ kind: "unstamped" });
+    expect(wakeBuild(pi)).toEqual({ pkgVersion: "0.5.0", gitSha: null });
+    const details = pi.customMessages[0]?.[0].details as { eventIds?: number[] } | undefined;
+    expect(details?.eventIds).toEqual([77]);
+  });
+
+  test("stamped isolated positive: a deliberately injected stamp rides the wake path verbatim", async () => {
+    const pi = await wakeUnderBuildStampSandbox({ kind: "stamped", gitSha: controlSha });
+    expect(wakeBuild(pi)).toEqual({ pkgVersion: "0.5.0", gitSha: controlSha });
+  });
+
+  test("mutation control: a corrupted stamp degrades to UNKNOWN on the wake path, never silently adopted", async () => {
+    const pi = await wakeUnderBuildStampSandbox({
+      kind: "corrupted",
+      raw: '{"gitSha":"not-a-commit"}',
+    });
+    expect(wakeBuild(pi)).toEqual({ pkgVersion: "0.5.0", gitSha: null });
+  });
 });
