@@ -16,8 +16,17 @@ export type LifecycleEvent = {
   detail?: string;
 };
 
+export type PromptEvidence = {
+  agent: string;
+  agentSession: string | null;
+  terminalId: string | null;
+  stateChangeSeq: number | null;
+  completionSeq: number | null;
+};
+
 export type SubmitPromptResult = {
   requestId: string;
+  evidence?: PromptEvidence;
 };
 
 export type HerdrOrchestrationTransport = {
@@ -29,7 +38,7 @@ export type HerdrOrchestrationTransport = {
   waitForLifecycle(
     operationId: string,
     target: HerdrTargetIdentity,
-    options?: { signal?: AbortSignal; timeoutMs?: number },
+    options?: { evidence?: PromptEvidence; signal?: AbortSignal; timeoutMs?: number },
   ): Promise<LifecycleEvent>;
 };
 

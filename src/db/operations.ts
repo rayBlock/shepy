@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import type { PromptEvidence } from "@/herdr/orchestration-transport.js";
 
 export const PROMPT_EXCERPT_MAX_CHARS = 400;
 
@@ -65,6 +66,11 @@ type OperationRow = {
   profile_id: string;
   prompt_excerpt: string;
   prompt_sha256: string;
+  receipt_agent: string | null;
+  receipt_agent_session: string | null;
+  receipt_terminal_id: string | null;
+  receipt_state_change_seq: number | null;
+  receipt_completion_seq: number | null;
   settled_at: number | null;
   state: string;
   target_json: string;
@@ -146,6 +152,7 @@ export class OperationStore {
     operationId: string;
     requestId: string;
     submittedAt: Date;
+    evidence?: PromptEvidence;
   }): OperationRecord {
     return this.#transition(input.operationId, (row) => {
       if (row.state !== "pending_submission") {
@@ -156,11 +163,50 @@ export class OperationStore {
       this.#sqlite
         .prepare(
           `update orchestration_operations
-             set state = 'submitted', transport_request_id = ?, updated_at = ?
+             set state = 'submitted', transport_request_id = ?, updated_at = ?,
+                 receipt_agent = ?, receipt_agent_session = ?, receipt_terminal_id = ?,
+                 receipt_state_change_seq = ?, receipt_completion_seq = ?
            where id = ?`,
         )
-        .run(input.requestId, input.submittedAt.getTime(), input.operationId);
+        .run(
+          input.requestId,
+          input.submittedAt.getTime(),
+          input.evidence?.agent ?? null,
+          input.evidence?.agentSession ?? null,
+          input.evidence?.terminalId ?? null,
+          input.evidence?.stateChangeSeq ?? null,
+          input.evidence?.completionSeq ?? null,
+          input.operationId,
+        );
     });
+  }
+
+  /** Private dispatch receipt: never projected into the public operation record. */
+  promptEvidence(operationId: string): PromptEvidence | undefined {
+    const row = this.#sqlite
+      .prepare(
+        `select receipt_agent, receipt_agent_session, receipt_terminal_id,
+              receipt_state_change_seq, receipt_completion_seq
+         from orchestration_operations where id = ?`,
+      )
+      .get(operationId) as
+      | Pick<
+          OperationRow,
+          | "receipt_agent"
+          | "receipt_agent_session"
+          | "receipt_terminal_id"
+          | "receipt_state_change_seq"
+          | "receipt_completion_seq"
+        >
+      | undefined;
+    if (!row?.receipt_agent) return undefined;
+    return {
+      agent: row.receipt_agent,
+      agentSession: row.receipt_agent_session,
+      terminalId: row.receipt_terminal_id,
+      stateChangeSeq: row.receipt_state_change_seq,
+      completionSeq: row.receipt_completion_seq,
+    };
   }
 
   markSubmissionUnknown(input: { operationId: string; reason: string }): OperationRecord {

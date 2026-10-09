@@ -1,0 +1,10 @@
+{
+  "schema": "codexwait.source-pins.v1",
+  "row": "15.259",
+  "sources": [
+    { "kind": "hang-receipt", "sha256": "1b96701db605b3e44e03df89dcfa25cbdb194723615fa6e79d188122aa4915ea", "operationId": "op_416c1f1728bf3d06ed070bde", "completionSeq": 1034 },
+    { "kind": "late-settlement-receipt", "sha256": "45eca5cb2733f55e78fdee1b4ad8f7be2a40d989f6921f9b88708a7dd5b70726", "operationId": "op_416c1f1728bf3d06ed070bde" },
+    { "kind": "historical-counterexamples", "sha256": "b6dca7a6a7f3502d9f5203777d4a097cee46c50f42a64d1f1ea7a055c6454af8" }
+  ],
+  "limitation": "The source files contain transcript excerpts; only source hashes and identifiers are published here. Original files remain at their cited read-only locations in the correction report."
+}
