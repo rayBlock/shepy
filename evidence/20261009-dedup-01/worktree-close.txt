@@ -1,0 +1,5 @@
+Custody-scoped close completed after merge acceptance.
+- Candidate worktree: /Users/ray/dev/shepy-wt/dedup-01, HEAD b015799c5ecfb8fd5fbf45a8e1596940bca98481; removed with ordinary `git worktree remove`.
+- Local branch spawn/dedup-01 deleted with ordinary `git branch -d` after ancestry proof (merged to shepy at 9bf18cfc6d49cc7c592a4f29d04e18fe1cc69ba5).
+- Only untracked item was `node_modules`, verified as a symlink to `/Users/ray/dev/shepy/node_modules`; removed the link, not its target, before worktree removal.
+- Other Shepy worktrees were not touched.

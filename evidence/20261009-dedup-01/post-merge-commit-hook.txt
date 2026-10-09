@@ -1,0 +1,5 @@
+Post-merge evidence-commit hook attempt, 2026-10-09 (UTC, before 18:17:55Z): `git commit -m 'Record ROW 15.215 landing evidence'` exited 1; evidence files remain staged and no commit was created. Hook printed `.husky/pre-commit: line 1: mise: command not found`, then ran its package checks and full `vitest run` from `/Users/ray/dev/shepy`.
+
+That extra, unnamed hook run reported 715/723 passed and 8 failed in `test/unit/shepy-pi-extension.test.ts`: the five reconnect/ownership-loss tests already classified by engine, plus three additional failures not yet classified: `wakes once at 500 ms for agent.done`, `wakes once at 500 ms for agent.idle`, and `blocked bypasses the routine 500 ms batch without bypassing the delivery/ack path`. For those three, expected `gitSha: null`, received `gitSha: 52718df459816a2b3a4e9c2e4cd1090f2ed95cec`.
+
+This is a summary of the hook output; the hook stdout was not redirected to a file. No hook bypass, retry, or push was performed. Await engine classification before proceeding to push.
