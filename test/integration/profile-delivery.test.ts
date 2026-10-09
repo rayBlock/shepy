@@ -345,6 +345,13 @@ describe("delivered final replay dedup", () => {
       built.delivery
         .inboxList({ profileId: "driffs", limit: 100 })
         .map((row) => row.agentEventId)
+        // This describe only ever projects agent events (never demand
+        // obligations), so a null agentEventId here means the fixture is
+        // broken — fail loudly rather than silently skip or coerce.
+        .map((id) => {
+          if (id === null) throw new Error("fixture: demand obligation in driffs inbox");
+          return id;
+        })
         .sort((a, b) => a - b);
     return {
       append,
@@ -523,6 +530,44 @@ describe("OpenCode source-entry projection", () => {
     });
     expect(retry.obligations.map((row) => row.id)).toContain(retryId);
     reopened.sqlite.close();
+    built.sqlite.close();
+  });
+
+  test("fail-first: a crash between the stamp write and the obligation write survives neither; the next attempt delivers exactly once", () => {
+    const built = fixture();
+    const input = {
+      agentEventId: 4207,
+      contentSha256: "a".repeat(64),
+      profileId: "driffs",
+      sourceEntryId: "prt_crash_window",
+      subscriptionId: 7,
+    };
+    // Inject the crash at the exact window: after the stamp insert, before
+    // the obligation write commits. The stamp must not outlive its
+    // obligation — a half-applied pair would silently swallow every retry.
+    const project = vi.spyOn(built.obligations, "project").mockImplementationOnce(() => {
+      throw new Error("injected: crash after stamp write");
+    });
+    expect(() => built.obligations.projectSourceEntry(input)).toThrow(
+      "injected: crash after stamp write",
+    );
+    project.mockRestore();
+    expect(built.sqlite.prepare("select count(*) as n from source_entry_deliveries").get()).toEqual(
+      { n: 0 },
+    );
+    expect(built.sqlite.prepare("select count(*) as n from delivery_obligations").get()).toEqual({
+      n: 0,
+    });
+    // Retry-safety: the next attempt applies stamp + obligation together,
+    // and a further attempt with the same entry+content is a refusal.
+    expect(built.obligations.projectSourceEntry(input)).toBe(true);
+    expect(built.obligations.projectSourceEntry(input)).toBe(false);
+    expect(built.sqlite.prepare("select count(*) as n from source_entry_deliveries").get()).toEqual(
+      { n: 1 },
+    );
+    expect(built.sqlite.prepare("select count(*) as n from delivery_obligations").get()).toEqual({
+      n: 1,
+    });
     built.sqlite.close();
   });
 });
