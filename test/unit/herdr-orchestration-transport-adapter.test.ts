@@ -43,6 +43,83 @@ describe("HerdrOrchestrationTransportAdapter", () => {
     );
   });
 
+  test("captures the native Codex prompt receipt identity and sequence at accept", async () => {
+    const promptAgent = vi.fn().mockResolvedValue({
+      requestId: "shepy-1",
+      result: {
+        type: "agent_prompted",
+        agent: {
+          agent: "codex",
+          agent_session: { agent: "codex", kind: "id", source: "herdr:codex", value: "native-1" },
+          agent_status: "idle",
+          pane_id: "w1:p2",
+          terminal_id: "term-2",
+          workspace_id: "w1",
+          state_change_seq: 838,
+          completion_seq: 836,
+        },
+      },
+    });
+    const adapter = new HerdrOrchestrationTransportAdapter({ promptAgent, waitForAgent: vi.fn() });
+    expect(await adapter.submitPrompt(target, "review once")).toEqual({
+      requestId: "shepy-1",
+      evidence: {
+        agent: "codex",
+        agentSession: "native-1",
+        terminalId: "term-2",
+        stateChangeSeq: 838,
+        completionSeq: 836,
+      },
+    });
+    expect(promptAgent).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([
+    ["represented idle completion", 1034, "native-1", "term-2", "idle"],
+    ["old-turn done state", 836, "native-1", "term-2", "done"],
+    ["later distinct turn done", 1100, "native-1", "term-2", "done"],
+    ["replacement session", 1100, "native-2", "term-2", "idle"],
+    ["replacement terminal", 1100, "native-1", "term-3", "idle"],
+  ])("Codex %s never settles from pane state alone", async (_, completionSeq, native, terminal, status) => {
+    const evidence = {
+      agent: "codex",
+      agentSession: "native-1",
+      terminalId: "term-2",
+      stateChangeSeq: 838,
+      completionSeq: 836,
+    };
+    const waitForAgent = vi.fn().mockResolvedValue({
+      requestId: "wait-1",
+      result: {
+        type: "agent_info",
+        agent: {
+          agent: "codex",
+          agent_session: { agent: "codex", kind: "id", source: "herdr:codex", value: native },
+          agent_status: status,
+          completion_seq: completionSeq,
+          state_change_seq: completionSeq,
+          pane_id: "w1:p2",
+          terminal_id: terminal,
+          workspace_id: "w1",
+        },
+      },
+    });
+    const adapter = new HerdrOrchestrationTransportAdapter({ promptAgent: vi.fn(), waitForAgent });
+    const event = await adapter.waitForLifecycle(
+      "op-1",
+      { ...target, agentSession: "native-1" },
+      { evidence },
+    );
+    expect(event.kind).toBe("transport_unknown");
+    expect(event.detail).toContain(
+      native !== "native-1" || terminal !== "term-2" ? "identity" : "represented-turn proof",
+    );
+    expect(waitForAgent).toHaveBeenCalledWith(
+      { target: "w1:p2", until: ["idle", "done", "blocked"] },
+      { evidence },
+    );
+  });
+
   test("rejects unstable targets before calling Herdr", async () => {
     const promptAgent = vi.fn();
     const adapter = new HerdrOrchestrationTransportAdapter({
@@ -89,6 +166,29 @@ describe("HerdrOrchestrationTransportAdapter", () => {
       { target: "w1:p2", timeout_ms: 5000, until: ["done", "blocked"] },
       { timeoutMs: 5000 },
     );
+  });
+
+  test("Pi receipt evidence preserves the original done/blocked wire filter and settlement", async () => {
+    const waitForAgent = vi.fn().mockResolvedValue({
+      requestId: "wait-pi",
+      result: agentInfoWait("done"),
+    });
+    const adapter = new HerdrOrchestrationTransportAdapter({ promptAgent: vi.fn(), waitForAgent });
+    const evidence = {
+      agent: "pi",
+      agentSession: "pi-session",
+      terminalId: "term-2",
+      stateChangeSeq: 40,
+      completionSeq: 38,
+    };
+    expect(await adapter.waitForLifecycle("op-pi", target, { evidence })).toMatchObject({
+      kind: "settled",
+      operationId: "op-pi",
+    });
+    expect(waitForAgent.mock.calls[0]?.[0]).toEqual({
+      target: "w1:p2",
+      until: ["done", "blocked"],
+    });
   });
 
   test("reads the live Herdr 0.8.x agent_info shape (status at result.agent.agent_status)", async () => {

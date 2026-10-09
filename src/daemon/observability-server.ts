@@ -476,7 +476,9 @@ export class ObservabilityRpcServer {
         }
 
         try {
+          const evidence = store.promptEvidence(operation.id);
           const event = await transport.waitForLifecycle(operation.id, operation.target, {
+            ...(evidence ? { evidence } : {}),
             ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
           });
           const outcome = wait.applyLifecycle(operation.id, event);

@@ -3,6 +3,7 @@ import type {
   HerdrTargetIdentity,
   LifecycleEvent,
   LifecycleKind,
+  PromptEvidence,
   SubmitPromptResult,
 } from "@/herdr/orchestration-transport.js";
 import { HerdrRequestError, type HerdrSocketClient } from "@/herdr/socket-client.js";
@@ -42,13 +43,28 @@ export class HerdrOrchestrationTransportAdapter implements HerdrOrchestrationTra
       { target: target.paneId, text: prompt },
       options,
     );
-    return { requestId: receipt.requestId };
+    const agent = asRecord(asRecord(receipt.result)?.agent);
+    const session = asRecord(agent?.agent_session);
+    return {
+      requestId: receipt.requestId,
+      ...(typeof agent?.agent === "string"
+        ? {
+            evidence: {
+              agent: agent.agent,
+              agentSession: stringValue(session?.value) ?? null,
+              terminalId: stringValue(agent.terminal_id) ?? null,
+              stateChangeSeq: sequence(agent.state_change_seq),
+              completionSeq: sequence(agent.completion_seq),
+            },
+          }
+        : {}),
+    };
   }
 
   async waitForLifecycle(
     operationId: string,
     target: HerdrTargetIdentity,
-    options: { signal?: AbortSignal; timeoutMs?: number } = {},
+    options: { evidence?: PromptEvidence; signal?: AbortSignal; timeoutMs?: number } = {},
   ): Promise<LifecycleEvent> {
     validateTarget(target);
     let receipt: { requestId: string; result: unknown };
@@ -57,7 +73,11 @@ export class HerdrOrchestrationTransportAdapter implements HerdrOrchestrationTra
         {
           target: target.paneId,
           ...(options.timeoutMs === undefined ? {} : { timeout_ms: options.timeoutMs }),
-          until: ["done", "blocked"],
+          // Pi's wire contract is unchanged. Codex can finish idle when its
+          // tab was seen; only a dispatch carrying native receipt evidence
+          // enables this broader observation (not automatic settlement).
+          until:
+            options.evidence?.agent === "codex" ? ["idle", "done", "blocked"] : ["done", "blocked"],
         },
         options,
       );
@@ -68,6 +88,35 @@ export class HerdrOrchestrationTransportAdapter implements HerdrOrchestrationTra
       throw error;
     }
     const outcome = lifecycleOutcome(receipt.result);
+    if (
+      (options.evidence?.agent === "codex" ||
+        asRecord(asRecord(receipt.result)?.agent)?.agent === "codex") &&
+      outcome.kind !== "transport_unknown"
+    ) {
+      const live = asRecord(asRecord(receipt.result)?.agent);
+      const session = asRecord(live?.agent_session);
+      const expected = options.evidence;
+      // Herdr wait reports a pane's *current* state, not the prompted turn.
+      // Even a newer completion sequence may belong to another queued prompt.
+      // Identity mismatch or absence cannot be turned into requested identity.
+      const sameIdentity =
+        live?.agent === "codex" &&
+        expected !== undefined &&
+        stringValue(session?.value) === expected.agentSession &&
+        expected.agentSession === target.agentSession &&
+        stringValue(live?.terminal_id) === expected.terminalId &&
+        expected.terminalId === target.terminalId &&
+        stringValue(live?.pane_id) === target.paneId &&
+        stringValue(live?.workspace_id) === target.workspaceId;
+      return {
+        kind: "transport_unknown",
+        operationId,
+        target,
+        detail: sameIdentity
+          ? "codex wait observed the target, but Herdr supplies no represented-turn proof"
+          : "codex wait identity unavailable or differs from dispatch receipt",
+      };
+    }
     return {
       kind: outcome.kind,
       operationId,
@@ -135,6 +184,10 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null
     ? (value as Record<string, unknown>)
     : undefined;
+}
+
+function sequence(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
 function stringValue(value: unknown): string | undefined {

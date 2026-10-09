@@ -60,6 +60,7 @@ export class OperationDispatchService {
         operationId: operation.id,
         requestId: receipt.requestId,
         submittedAt: new Date(),
+        ...(receipt.evidence ? { evidence: receipt.evidence } : {}),
       });
       return { kind: "accepted", operationId: submitted.id, requestId: receipt.requestId };
     } catch (error) {

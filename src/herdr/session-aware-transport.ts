@@ -2,6 +2,7 @@ import type { HerdrSessionStore } from "@/db/herdr-sessions.js";
 import type {
   HerdrOrchestrationTransport,
   HerdrTargetIdentity,
+  PromptEvidence,
   SubmitPromptResult,
 } from "@/herdr/orchestration-transport.js";
 import { HerdrOrchestrationTransportAdapter } from "@/herdr/orchestration-transport-adapter.js";
@@ -44,7 +45,7 @@ export class SessionAwareOrchestrationTransport implements HerdrOrchestrationTra
   async waitForLifecycle(
     operationId: string,
     target: HerdrTargetIdentity,
-    options: { signal?: AbortSignal; timeoutMs?: number } = {},
+    options: { evidence?: PromptEvidence; signal?: AbortSignal; timeoutMs?: number } = {},
   ) {
     const socketPath = this.#socketPathFor(target);
     const client = this.#clientFactory({ socketPath });

@@ -1,8 +1,7 @@
-import { existsSync, mkdtempSync, rmSync, unlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import type { AgentHistoryService } from "@/agent-history/service.js";
 import { createAgentHistoryService } from "@/agent-history/service.js";
 import { ObservabilityRpcServer } from "@/daemon/observability-server.js";
 import { OperationStore } from "@/db/operations.js";
@@ -15,6 +14,7 @@ import {
 import { HerdrRequestTimeoutError } from "@/herdr/socket-client.js";
 import { AgentContextService } from "@/observability/agent-context-service.js";
 import { AgentOrchestratorService } from "@/observability/agent-orchestrator-service.js";
+import { OperationDispatchService } from "@/observability/operation-dispatch-service.js";
 import { OperationWaitService } from "@/observability/operation-wait-service.js";
 import {
   cleanupTempDirs,
@@ -36,6 +36,7 @@ const servers: ObservabilityRpcServer[] = [];
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.stop()));
   cleanupTempDirs();
+  vi.unstubAllEnvs();
 });
 
 function fixture(waitForLifecycle: HerdrOrchestrationTransport["waitForLifecycle"]) {
@@ -160,6 +161,103 @@ describe("operation.wait — Herdr 0.8.x wait shapes at the RPC boundary", () =>
       expect(stored?.lifecycle).toBeNull();
       expect(stored?.settledAt).toBeNull();
       expect(stored?.errorSummary).toBe(result.outcome.detail);
+    } finally {
+      client.close();
+    }
+  });
+});
+
+describe("operation.wait — native Codex attempt safety", () => {
+  test("one dispatch, observed working, report returned: wait cannot settle from a later turn on the same identity", async () => {
+    const native = "01a12097-477f-7512-afa3-507b2dbd76db";
+    const terminal = "term_65d66cec9374d41";
+    const agent = (status: string, seq: number) => ({
+      agent: "codex",
+      agent_session: { agent: "codex", kind: "id", source: "herdr:codex", value: native },
+      agent_status: status,
+      completion_seq: seq,
+      state_change_seq: seq,
+      pane_id: "w3P:p6",
+      terminal_id: terminal,
+      workspace_id: "w3P",
+    });
+    const promptAgent = vi.fn().mockResolvedValue({
+      requestId: "shepy-1",
+      result: {
+        type: "agent_prompted",
+        agent: agent("idle", 837),
+      },
+    });
+    const waitForAgent = vi.fn().mockResolvedValue({
+      requestId: "wait-1",
+      result: {
+        type: "agent_info",
+        agent: agent("idle", 1100),
+      },
+    });
+    const adapter = new HerdrOrchestrationTransportAdapter({ promptAgent, waitForAgent });
+    const { dir, harness, operations, server, socketPath } = fixture(
+      adapter.waitForLifecycle.bind(adapter),
+    );
+    // A separate isolated operation is dispatched exactly once; the fixture's
+    // unrelated initial operation is not the one under test.
+    vi.stubEnv("SHEPY_HOME", dir);
+    const dispatch = new OperationDispatchService({
+      operations,
+      resolve: () => ({
+        kind: "ok",
+        target: {
+          agentSession: native,
+          herdrSessionName: "default",
+          paneId: "w3P:p6",
+          terminalId: terminal,
+          workspaceId: "w3P",
+        },
+      }),
+      transport: adapter,
+    });
+    const submitted = await dispatch.dispatch({
+      profileId: "driffs",
+      prompt: "review revision3 once",
+    });
+    expect(submitted.kind).toBe("accepted");
+    if (submitted.kind !== "accepted") throw new Error("dispatch not accepted");
+    expect(promptAgent).toHaveBeenCalledTimes(1);
+    expect(new OperationStore(harness.sqlite).promptEvidence(submitted.operationId)).toMatchObject({
+      agent: "codex",
+      agentSession: native,
+      terminalId: terminal,
+      stateChangeSeq: 837,
+    });
+    // Simulated Herdr working observation and exact report/sentinel receipt.
+    const working = agent("working", 839);
+    expect(working.agent_status).toBe("working");
+    writeFileSync(
+      join(dir, "revision3-report.json"),
+      JSON.stringify({ sentinel: "revision3-returned" }),
+    );
+    expect(JSON.parse(readFileSync(join(dir, "revision3-report.json"), "utf8"))).toEqual({
+      sentinel: "revision3-returned",
+    });
+    await server.start();
+    const client = await connected(socketPath);
+    try {
+      const result = (await client.request("operation.wait", {
+        operationId: submitted.operationId,
+        timeoutMs: 1000,
+      })) as { outcome: { kind: string; detail: string } };
+      expect(result.outcome.kind).toBe("transport_unknown");
+      expect(result.outcome.detail).toContain("represented-turn proof");
+      expect(operations.get(submitted.operationId)).toMatchObject({
+        state: "submitted",
+        lifecycle: null,
+        settledAt: null,
+      });
+      expect(waitForAgent).toHaveBeenCalledTimes(1);
+      expect(waitForAgent.mock.calls[0]?.[0]).toMatchObject({
+        target: "w3P:p6",
+        until: ["idle", "done", "blocked"],
+      });
     } finally {
       client.close();
     }
