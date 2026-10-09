@@ -107,6 +107,42 @@ export class DeliveryObligationStore {
     return this.byProfileEvent(input.profileId, input.agentEventId);
   }
 
+  /** Atomic OpenCode source-entry/content stamp + obligation. Identical
+   * content cannot mint another event obligation across daemon restarts. */
+  projectSourceEntry(input: {
+    agentEventId: number;
+    profileId: string;
+    sourceEntryId: string;
+    contentSha256: string;
+    subscriptionId: number;
+  }): boolean {
+    this.#sqlite.exec("begin");
+    try {
+      const stamp = this.#sqlite
+        .prepare(
+          `insert into source_entry_deliveries (source_entry_id, content_sha256, profile_id, agent_event_id, created_at)
+         values (?, ?, ?, ?, ?) on conflict(profile_id, source_entry_id, content_sha256) do nothing`,
+        )
+        .run(
+          input.sourceEntryId,
+          input.contentSha256,
+          input.profileId,
+          input.agentEventId,
+          Date.now(),
+        );
+      if (stamp.changes === 0) {
+        this.#sqlite.exec("commit");
+        return false;
+      }
+      this.project(input);
+      this.#sqlite.exec("commit");
+      return true;
+    } catch (error) {
+      this.#sqlite.exec("rollback");
+      throw error;
+    }
+  }
+
   byProfileEvent(profileId: string, agentEventId: number): Obligation | undefined {
     const row = this.#sqlite
       .prepare("select * from delivery_obligations where profile_id = ? and agent_event_id = ?")

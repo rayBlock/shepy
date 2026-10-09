@@ -26,7 +26,13 @@ describe("SQLite migrations", () => {
     tempDirs.push(dir);
     const { sqlite } = openSqlite(join(dir, "old.sqlite"));
     const migrations = readMigrationFiles({ migrationsFolder: "drizzle" });
-    for (const migration of migrations.slice(0, -1)) {
+    // The delivery_seq/kind backfill is the R1 recovery migration (0009,
+    // journal when=1791562425121 — the same pin apply-migrations.ts keeps).
+    // The graph may grow past it; anchor to that migration, not to "last".
+    const upgrade = migrations.find((m) => m.folderMillis === 1791562425121);
+    if (!upgrade) throw new Error("R1 recovery migration missing");
+    for (const migration of migrations) {
+      if (migration.folderMillis >= upgrade.folderMillis) break;
       for (const statement of migration.sql) sqlite.exec(statement);
     }
     sqlite
@@ -39,11 +45,11 @@ describe("SQLite migrations", () => {
         "insert into delivery_obligations(id, profile_id, subscription_id, agent_event_id, state, attempt_count, created_at) values ('ob-2', 'engine', 1, 2, 'pending', 0, 2), ('ob-1', 'engine', 1, 1, 'acked', 1, 1)",
       )
       .run();
-    const upgrade = migrations.at(-1);
-    if (!upgrade) throw new Error("demand migration missing");
+    const upgradeSql = upgrade.sql;
+    if (!upgradeSql) throw new Error("demand migration missing");
     sqlite.exec("begin");
     try {
-      for (const statement of upgrade.sql) sqlite.exec(statement);
+      for (const statement of upgradeSql) sqlite.exec(statement);
       sqlite.exec("commit");
     } catch (error) {
       sqlite.exec("rollback");
@@ -79,7 +85,13 @@ describe("SQLite migrations", () => {
     const prior = join(dir, "prior");
     mkdirSync(join(prior, "meta"), { recursive: true });
     const journal = JSON.parse(readFileSync("drizzle/meta/_journal.json", "utf8"));
-    journal.entries = journal.entries.slice(0, -1);
+    // "Prior" is the receipt-era graph: everything BEFORE the R1 recovery
+    // migration (0009_neat_namor) — never "everything but the last entry".
+    // The graph grows past 0009 (e.g. 0010) and those entries stay on the
+    // current side of the boundary, out of `prior` entirely.
+    const r1 = journal.entries.findIndex((entry: { tag: string }) => entry.tag.startsWith("0009_"));
+    if (r1 < 0) throw new Error("R1 recovery migration missing from journal");
+    journal.entries = journal.entries.slice(0, r1);
     writeFileSync(join(prior, "meta/_journal.json"), JSON.stringify(journal));
     for (const name of readdirSync("drizzle").filter((n) => /^000[0-8]_.*\.sql$/.test(n))) {
       if (name === "0008_left_omega_red.sql") continue;
@@ -128,12 +140,13 @@ describe("SQLite migrations", () => {
     expect(sqlite.prepare("select count(*) as n from profile_demand_events").get()).toEqual({
       n: 0,
     });
+    // 0000-0010: the full folder incl. the R1 recovery and the dedup stamp.
     expect(sqlite.prepare("select count(*) as n from __drizzle_migrations").get()).toEqual({
-      n: 10,
+      n: 11,
     });
     applyMigrations(sqlite, { migrationsFolder: "drizzle" });
     expect(sqlite.prepare("select count(*) as n from __drizzle_migrations").get()).toEqual({
-      n: 10,
+      n: 11,
     });
     sqlite.close();
 
@@ -173,6 +186,7 @@ describe("SQLite migrations", () => {
       "profile_demand_events",
       "profile_owners",
       "profile_subscriptions",
+      "source_entry_deliveries",
     ]);
     expect(tables).not.toContain("observed_workspaces");
     const scopeColumns = sqlite

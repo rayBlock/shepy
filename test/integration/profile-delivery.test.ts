@@ -43,6 +43,7 @@ import { RpcTestClient } from "./rpc-test-client.js";
 const tempDirs: string[] = [];
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const dir of tempDirs.splice(0)) rmSync(dir, { force: true, recursive: true });
 });
 
@@ -437,6 +438,92 @@ describe("delivered final replay dedup", () => {
     expect(ids()).toEqual([first]);
     const after = append("final X");
     expect(ids()).toEqual([first, after]);
+  });
+});
+
+describe("OpenCode source-entry projection", () => {
+  test("four idle flaps with the same source entry yield one obligation, persisted across service restart; pi remains event-based", () => {
+    const built = fixture();
+    vi.stubEnv("SHEPY_HOME", dirname(built.path));
+    built.profiles.addSubscription({
+      agentSelectorJson: JSON.stringify({ kind: "name", value: "driffs-worker" }),
+      herdrSessionName: "default",
+      profileId: "other",
+      workspaceSelectorJson: JSON.stringify({ herdrSession: "default", workspaceId: "wA" }),
+    });
+    const worker = built.agents.list().find((row) => row.name === "driffs-worker");
+    if (!worker) throw new Error("fixture worker missing");
+    const entry = "prt_10094bc4b0012sSQGiygvMwZWq";
+    const emit = (seq: number, source: string, ref: string | null, text = "final") => {
+      const stored = built.agentEvents.append({
+        agentId: worker.id,
+        compactHistory: {
+          contextHealth: null,
+          historyRef: null,
+          lastAssistantMessage: ref ? { ref, text, timestamp: null } : null,
+          lastToolResult: null,
+          lastUserMessage: null,
+          messageCount: 1,
+          source,
+          updatedAt: null,
+        },
+        herdrSessionName: "default",
+        idempotencyKey: `flap-${seq}`,
+        paneId: "wA:p1",
+        payload: { from: "working", to: "done" },
+        type: "agent.done",
+        workspaceId: "wA",
+      });
+      built.delivery.projectAgentEvent(stored);
+      return stored.id;
+    };
+    const ref = `/tmp/opencode.db#entry=${entry}`;
+    const first = emit(55381, "opencode-sqlite", ref);
+    for (const seq of [55416, 55521, 55648]) emit(seq, "opencode-sqlite", ref);
+    expect(
+      built.delivery.inboxList({ profileId: "driffs" }).map((row) => row.agentEventId),
+    ).toEqual([first]);
+    expect(built.delivery.inboxList({ profileId: "other" }).map((row) => row.agentEventId)).toEqual(
+      [first],
+    );
+    for (const [seq, badRef] of [
+      [55649, null],
+      [55650, "/tmp/opencode.db#entry=bad"],
+      [55651, "/tmp/opencode.db#entry="],
+    ] as const) {
+      emit(seq, "opencode-sqlite", badRef);
+    }
+    expect(built.delivery.inboxList({ profileId: "driffs" })).toHaveLength(1);
+    // Same entry with new content is a new outcome, not a flap.
+    emit(55652, "opencode-sqlite", ref, "revised final");
+    expect(built.delivery.inboxList({ profileId: "driffs" })).toHaveLength(2);
+    emit(55655, "opencode-sqlite", ref, "revised final");
+    expect(built.delivery.inboxList({ profileId: "driffs" })).toHaveLength(2);
+    emit(55656, "opencode-sqlite", "/tmp/opencode.db#entry=prt_other", "final");
+    expect(built.delivery.inboxList({ profileId: "driffs" })).toHaveLength(3);
+    emit(55657, "pi-jsonl", "/tmp/pi.jsonl#entry=prt_10094bc4b0012sSQGiygvMwZWq");
+    emit(55653, "pi-jsonl", "/tmp/pi.jsonl#entry=prt_10094bc4b0012sSQGiygvMwZWq");
+    expect(built.delivery.inboxList({ profileId: "driffs" })).toHaveLength(5);
+    const reopened = build(built.path);
+    emit(55654, "opencode-sqlite", ref);
+    expect(reopened.delivery.inboxList({ profileId: "driffs" })).toHaveLength(5);
+    const owner = reopened.delivery.claim(CLAIM_PANE_X);
+    if (owner.kind !== "claimed") throw new Error("fixture: owner claim rejected");
+    const firstLease = reopened.delivery.inboxLease({
+      profileId: "driffs",
+      leaseToken: owner.leaseToken,
+    });
+    expect(firstLease.obligations).toHaveLength(5);
+    const retryId = firstLease.obligations[0]?.id;
+    if (!retryId) throw new Error("fixture: missing obligation");
+    reopened.delivery.inboxDefer({ ids: [retryId], leaseToken: owner.leaseToken });
+    const retry = reopened.delivery.inboxLease({
+      profileId: "driffs",
+      leaseToken: owner.leaseToken,
+    });
+    expect(retry.obligations.map((row) => row.id)).toContain(retryId);
+    reopened.sqlite.close();
+    built.sqlite.close();
   });
 });
 
