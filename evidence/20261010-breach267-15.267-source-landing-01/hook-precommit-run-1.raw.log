@@ -1,0 +1,111 @@
+Already up to date
+Done in 220ms using pnpm v11.9.0
+Already up to date
+Done in 146ms using pnpm v11.9.0
+→ lint-staged could not find any staged files matching configured tasks.
+Already up to date
+Done in 146ms using pnpm v11.9.0
+$ tsc --noEmit -p tsconfig.json
+Already up to date
+Done in 146ms using pnpm v11.9.0
+$ vitest run
+
+ RUN  v4.1.9 /Users/ray/dev/shepy-wt/breach-adapter
+
+npm warn Unknown env config "manage-package-manager-versions". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+
+ Test Files  67 passed (67)
+      Tests  783 passed (783)
+   Start at  20:17:57
+   Duration  9.46s (transform 10.62s, setup 0ms, import 16.77s, tests 30.36s, environment 3ms)
+
+Already up to date
+Done in 146ms using pnpm v11.9.0
+$ biome check .
+src/observability/profile-selector-scope.ts:7:3 lint/correctness/noUnusedImports  FIXABLE  ━━━━━━━━━━
+
+  ! Several of these imports are unused.
+  
+    5 │   type AgentSelector,
+    6 │   resolveAgentSelector,
+  > 7 │   type SelectableAgent,
+      │   ^^^^^^^^^^^^^^^^^^^^
+    8 │   selectableFromRow,
+    9 │   type WorkspaceSelector,
+  
+  i Unused imports might be the result of an incomplete refactoring.
+  
+  i Unsafe fix: Remove the unused imports.
+  
+     5  5 │     type AgentSelector,
+     6  6 │     resolveAgentSelector,
+     7    │ - ··type·SelectableAgent,
+     8  7 │     selectableFromRow,
+     9  8 │     type WorkspaceSelector,
+  
+
+Checked 148 files in 80ms. No fixes applied.
+Found 1 warning.
+Already up to date
+Done in 154ms using pnpm v11.9.0
+$ biome format .
+Checked 148 files in 25ms. No fixes applied.
+Already up to date
+Done in 151ms using pnpm v11.9.0
+$ drizzle-kit check --config drizzle.config.ts
+Reading config file '/Users/ray/dev/shepy-wt/breach-adapter/drizzle.config.ts'
+Everything's fine 🐶🔥
+[shepy b950021] Record ROW 15.267 source landing evidence
+ 52 files changed, 756 insertions(+)
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/alternate-worktree-hook-setup-disposition.txt
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/alternate-worktree-hook-setup.exit
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/alternate-worktree-hook-setup.raw.log
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/candidate-custody.txt
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/destination-closeout-pins.sha256
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/engine-standing-pair-packet.txt.raw
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/evidence-packaging-diff-check.exit
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/evidence-packaging-diff-check.raw.log
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/evidence-packaging-note.txt
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/gate-commands.txt
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/gate-db-check.exit
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/gate-db-check.raw.log
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/gate-demand-integration.exit
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/gate-demand-integration.raw.log
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/gate-exits.tsv
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/gate-format-check.exit
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/gate-format-check.raw.log
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/gate-full-suite-corrected.command.txt
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/gate-full-suite-corrected.exit
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/gate-full-suite-corrected.raw.log
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/gate-full-suite-first-attempt.exit
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/gate-full-suite-first-attempt.raw.log
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/gate-ingress-wake-family.exit
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/gate-ingress-wake-family.raw.log
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/gate-lint.exit
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/gate-lint.raw.log
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/gate-pi-package-typecheck.exit
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/gate-pi-package-typecheck.raw.log
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/gate-promise-breach-unit.exit
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/gate-promise-breach-unit.raw.log
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/gate-root-typecheck.exit
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/gate-root-typecheck.raw.log
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/gate-source-family-34.command.txt
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/gate-source-family-34.exit
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/gate-source-family-34.raw.log
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/hook-discovery.txt
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/landing-worktree-add.raw.log
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/merge-content-proof.txt
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/merge.exit
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/merge.raw.log
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/path-intersection.txt
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/pre-merge-preflight.txt
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/push-scope.txt
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/receipt.md
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/root-correction-authority-review.json.raw
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/root-correction-gate-receipt.json.raw
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/root-hostile-1.md.raw
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/root-hostile-2.md.raw
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/root-source-acceptance-receipt.json.raw
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/root-source-artifact-pins.sha256
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/root-source-landing-disposition.json.raw
+ create mode 100644 evidence/20261010-breach267-15.267-source-landing-01/source-pins.sha256

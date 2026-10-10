@@ -1,0 +1,4 @@
+Evidence commit: b950021a8eb2da9a08ee7c95e84deec9019c02bf
+Parent: dcdccfaa8a543344d228b5b0110babac22d79440
+Commit hook: normal Husky pre-commit, exit 0. Raw output and child-exit summary are in hook-precommit-run-1.raw.log and hook-precommit-run-1-exits.tsv.
+Hook runtime: mise Node 24.18.0 / pnpm 11.9.0; short physical TMPDIR=/private/tmp/b267-59.

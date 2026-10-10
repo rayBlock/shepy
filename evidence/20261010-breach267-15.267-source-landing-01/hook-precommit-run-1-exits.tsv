@@ -1,0 +1,8 @@
+child	command-exit	observation
+lint-staged	0	No configured tasks matched staged raw evidence files
+root-typecheck	0	pnpm typecheck completed and subsequent test command ran
+full-suite	0	67 files, 783 tests passed
+lint	0	1 warning, no fixes; subsequent format check ran
+format-check	0	Completed; DB check ran
+DB-check	0	Drizzle check Everything's fine
+Git pre-commit hook	0	Evidence commit b950021a8eb2da9a08ee7c95e84deec9019c02bf succeeded

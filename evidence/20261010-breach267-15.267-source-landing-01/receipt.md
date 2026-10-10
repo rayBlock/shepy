@@ -18,7 +18,7 @@
 
 ## Fresh gates and exits
 
-All required gates were run against the frozen candidate before merge; the normal Git pre-commit hook is to run on the evidence commit in the merged landing worktree. Raw outputs and exit files are preserved here.
+All required gates were run against the frozen candidate before merge. The normal Git pre-commit hook ran on the first evidence commit in the merged landing worktree and exited 0; it ran under mise Node 24.18.0 / pnpm 11.9.0 and reported 783/783 full-suite tests. Raw outputs and exit files are preserved here.
 
 - Exact root-reviewed source family: `test/unit/demand-eligibility-promise-breach.test.ts` + `test/integration/profile-demand.test.ts` — **34/34 passed**, exit 0 (`--no-cache`).
 - Supplemental ingress/wake family — **31 passed**, exit 0.
