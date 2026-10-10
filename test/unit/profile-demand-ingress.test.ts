@@ -123,3 +123,126 @@ describe("demand publish admission", () => {
     ));
   it("accepts a verified source", () => expect(validate(request()).episodeId).toBe(episodeId));
 });
+
+describe("promise-breach publish admission", () => {
+  const breachRoot = realpathSync(mkdtempSync(join(tmpdir(), "shepy-breach-ingress-")));
+  afterAll(() => rmSync(breachRoot, { recursive: true, force: true }));
+  const breachEpisode = "c".repeat(64);
+  const snapshot = join(breachRoot, "receipt-pr-1.json");
+  writeFileSync(
+    snapshot,
+    JSON.stringify({ schema: "factory.promise-breach.receipt.v1", incidentId: "promise:pr-1" }),
+  );
+  const snapshotRef = {
+    path: snapshot,
+    sha256: createHash("sha256")
+      .update(
+        JSON.stringify({ schema: "factory.promise-breach.receipt.v1", incidentId: "promise:pr-1" }),
+      )
+      .digest("hex"),
+    selector: "root",
+  };
+  // Citations must live inside THIS source's evidence roots.
+  writeFileSync(join(breachRoot, "duty.json"), "{}\n");
+  const breachRef = {
+    path: join(breachRoot, "duty.json"),
+    sha256: createHash("sha256").update("{}\n").digest("hex"),
+    selector: "root",
+  };
+  const breachAllowlist = join(breachRoot, "breach-allowlist.json");
+  writeFileSync(
+    breachAllowlist,
+    JSON.stringify({
+      schema: "shepy.ingress-allowlist.v1",
+      sources: {
+        "factory-promise-scan": {
+          profiles: ["engine-coordinator"],
+          kinds: ["promise-breach"],
+          duty_paths: [breachRef.path],
+          grant_hashes: [hash],
+          evidence_roots: [breachRoot],
+          max_expiry_minutes: 60,
+          promise_adoption_since: "2026-10-01T00:00:00.000Z",
+        },
+      },
+    }),
+  );
+  const breachRequest = () => ({
+    schema: "factory.demand.v1",
+    sourceId: "factory-promise-scan",
+    profileId: "engine-coordinator",
+    kind: "promise-breach",
+    idempotencyKey: `${breachEpisode}/promise-breach/1`,
+    episodeId: breachEpisode,
+    actionFingerprint: "d".repeat(64),
+    activationRevision: 1,
+    seatId: "engine-coordinator",
+    ownerGeneration: {
+      herdrSession: "default",
+      workspaceId: "w3J",
+      paneId: "w3J:pEB",
+      terminalId: "t1",
+      nativeSessionRef: "local",
+    },
+    dutyRef: breachRef,
+    grantRef: breachRef,
+    snapshotRef,
+    markerRef: breachRef,
+    observedAt: "2026-10-08T14:00:00.000Z",
+    expiresAt: "2026-10-08T14:30:00.000Z",
+    reasonCode: "expired-immutable-deadline",
+  });
+  const validateBreach = (value: unknown, path = breachAllowlist) =>
+    validateDemandRequest(value, {
+      allowlistPath: path,
+      now: Date.parse("2026-10-08T14:15:00.000Z"),
+    });
+
+  it("admits a promise-breach request and derives its key route", () => {
+    expect(validateBreach(breachRequest()).idempotencyKey).toBe(
+      `${breachEpisode}/promise-breach/1`,
+    );
+  });
+  it("keeps the reason code pinned to the kind", () => {
+    expect(() =>
+      validateBreach({ ...breachRequest(), reasonCode: "owned-ready-capacity" }),
+    ).toThrow("demand:invalid-reason");
+    expect(() => validateBreach({ ...breachRequest(), reasonCode: "no-response" })).toThrow(
+      "demand:invalid-reason",
+    );
+  });
+  it("refuses a source whose operator allowlist does not carry the kind", () => {
+    const queueOnly = join(breachRoot, "queue-only-allowlist.json");
+    writeFileSync(
+      queueOnly,
+      JSON.stringify({
+        schema: "shepy.ingress-allowlist.v1",
+        sources: {
+          "factory-promise-scan": {
+            profiles: ["engine-coordinator"],
+            kinds: ["queue-claimable"],
+            duty_paths: [breachRef.path],
+            grant_hashes: [hash],
+            evidence_roots: [breachRoot],
+            max_expiry_minutes: 60,
+          },
+        },
+      }),
+    );
+    expect(() => validateBreach(breachRequest(), queueOnly)).toThrow("demand:source-not-allowed");
+  });
+  it("binds the demand to the profile's own seat", () => {
+    expect(() => validateBreach({ ...breachRequest(), seatId: "other-seat" })).toThrow(
+      "demand:owner-mismatch",
+    );
+  });
+  it("derives the key for a revision escalation; the revision gate lives in eligibility", () => {
+    expect(() =>
+      validateBreach({
+        ...breachRequest(),
+        activationRevision: 2,
+        idempotencyKey: `${breachEpisode}/promise-breach/2`,
+      }),
+    ).not.toThrow();
+  });
+});

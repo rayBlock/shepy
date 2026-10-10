@@ -138,7 +138,7 @@ export type DemandSnapshot = {
   schema: "factory.demand.v1";
   episodeId: string;
   activationRevision: number;
-  kind: "queue-claimable" | "continuation-missing" | "successor-escalation";
+  kind: "queue-claimable" | "continuation-missing" | "successor-escalation" | "promise-breach";
   reasonCode: string;
   snapshotRef: { path: string; sha256: string; selector: string };
   markerRef: { path: string; sha256: string; selector: string };
@@ -158,12 +158,37 @@ export function isDemandSnapshot(value: unknown): value is DemandSnapshot {
   return item.schema === "factory.demand.v1" && typeof item.episodeId === "string" &&
     /^[0-9a-f]{64}$/.test(item.episodeId) && Number.isSafeInteger(item.activationRevision) &&
     typeof item.activationRevision === "number" && item.activationRevision > 0 &&
-    typeof item.kind === "string" && ["queue-claimable", "continuation-missing", "successor-escalation"].includes(item.kind) &&
+    typeof item.kind === "string" &&
+    ["queue-claimable", "continuation-missing", "successor-escalation", "promise-breach"].includes(item.kind) &&
     typeof item.reasonCode === "string" && ref(item.snapshotRef) && ref(item.markerRef) &&
     ref(item.dutyRef) && ref(item.grantRef);
 }
 
 export type DemandObligationUpdate = { obligationId: string; demandEventId: string; demand: DemandSnapshot };
+
+/**
+ * Consumption witness for a profile-demand wake batch, matched by obligation
+ * ids. Extracted verbatim from the owner pump's context hook: a batch is
+ * witnessed only when the run's context contains the shepy-wake-context
+ * message carrying exactly this batch's obligation ids — that is the only
+ * state a settlement ACK may be built on. A foreign or partial id set never
+ * witnesses.
+ */
+export function wakeContextWitnessed(
+  messages: ReadonlyArray<unknown>,
+  obligationIds: readonly string[],
+): boolean {
+  return messages.some((value) => {
+    const message = asRecord(value);
+    if (message.customType !== "shepy-wake-context" || message.role !== "custom") return false;
+    const details = asRecord(message.details);
+    if (!Array.isArray(details.obligationIds)) return false;
+    const ids = details.obligationIds as unknown[];
+    return (
+      ids.length === obligationIds.length && obligationIds.every((id) => ids.includes(id))
+    );
+  });
+}
 
 /** Demand citations are pointers to untrusted evidence, not instructions or agent excerpts. */
 export function formatDemandObligationUpdates(updates: DemandObligationUpdate[]): string {

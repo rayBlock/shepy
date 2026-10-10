@@ -33,6 +33,7 @@ export const demandRequestSchema = Type.Object(
       Type.Literal("queue-claimable"),
       Type.Literal("continuation-missing"),
       Type.Literal("successor-escalation"),
+      Type.Literal("promise-breach"),
     ]),
     idempotencyKey: Type.String({ maxLength: 192, pattern: "^[\\x21-\\x7e]+/[^/]+/[1-9][0-9]*$" }),
     episodeId: hex,
@@ -51,11 +52,15 @@ export const demandRequestSchema = Type.Object(
       Type.Literal("missing-disposition"),
       Type.Literal("two-defers"),
       Type.Literal("no-response"),
+      Type.Literal("expired-immutable-deadline"),
     ]),
   },
   { additionalProperties: false },
 );
 export type DemandRequest = Static<typeof demandRequestSchema>;
+const utcStamp = Type.String({
+  pattern: "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z$",
+});
 const sourceSchema = Type.Object(
   {
     profiles: Type.Array(Type.String()),
@@ -65,6 +70,10 @@ const sourceSchema = Type.Object(
     evidence_roots: Type.Array(Type.String()),
     max_expiry_minutes: Type.Number({ exclusiveMinimum: 0, maximum: 60 }),
     seat_state_path: Type.Optional(Type.String({ minLength: 1 })),
+    // Operator-pinned promise-breach adoption cutoff (aware UTC): derived-wait
+    // incidents due before it are old debt — reported upstream, never woken.
+    // Absent means the source may not carry promise-breach at all.
+    promise_adoption_since: Type.Optional(utcStamp),
   },
   { additionalProperties: false },
 );
@@ -146,6 +155,7 @@ export function validateDemandRequest(
     "queue-claimable": ["owned-ready-capacity"],
     "continuation-missing": ["missing-disposition"],
     "successor-escalation": ["two-defers", "no-response"],
+    "promise-breach": ["expired-immutable-deadline"],
   }[request.kind];
   if (!reason.includes(request.reasonCode)) throw new Error("demand:invalid-reason");
   const route = request.kind === "successor-escalation" ? "successor" : request.kind;
