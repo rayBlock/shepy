@@ -8,7 +8,7 @@
 - Local destination before merge: `shepy` at `d602a030ea7540668d9c61edb391db107e834b3a`.
 - Remote `origin/shepy` before landing: `22594646ca33f805e091128674602373d8bb5361`.
 - Landing worktree: `/Users/ray/dev/shepy-wt/breach-adapter`, branch `shepy`.
-- No `origin/main` or upstream push is authorized. The only authorized push is `shepy -> origin/shepy`; it is pending at this evidence checkpoint.
+- No `origin/main` or upstream push is authorized. The only authorized push is `shepy -> origin/shepy`. The first push of evidence tip `b2ff7a9b5d60da8b9a76e09af34876f3ea82b7cb` succeeded (exit 0); live and tracking `origin/shepy` both verified at that SHA. The supplemental push-result evidence commit will go only to the same ref; final live tip is to be verified before the engine row close.
 
 ## Merge and identity proof
 

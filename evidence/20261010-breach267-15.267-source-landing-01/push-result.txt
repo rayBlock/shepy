@@ -1,0 +1,10 @@
+Initial authorized source/evidence push:
+  command: git push --porcelain origin refs/heads/shepy:refs/heads/shepy
+  exit: 0
+  prior remote origin/shepy: 22594646ca33f805e091128674602373d8bb5361
+  pushed local shepy evidence tip: b2ff7a9b5d60da8b9a76e09af34876f3ea82b7cb
+  live origin/shepy after push: b2ff7a9b5d60da8b9a76e09af34876f3ea82b7cb
+  local refs/remotes/origin/shepy after push: b2ff7a9b5d60da8b9a76e09af34876f3ea82b7cb
+  origin/main read-only check before/after: 2da8e3bc9704e591d3849a3f60867138fa26cfca
+
+The evidence-only follow-up commit containing this push receipt will be pushed only to the same authorized origin/shepy ref. Its final live tip will be checked and recorded before the engine queue row is closed.
