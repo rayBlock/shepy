@@ -7,6 +7,7 @@ import {
   isDemandSnapshot,
   projectAgentOutcomes,
   WAKE_SETTLE_MS,
+  wakeContextWitnessed,
 } from "../../packages/shepy-pi/src/wake.js";
 
 function event(
@@ -181,4 +182,55 @@ test("demand wake renders episode and cited pointers without an invented agent e
   expect(rendered).not.toContain("shepy agent read unknown");
   expect(rendered).not.toContain("snapshot\nspoof");
   expect(isDemandSnapshot({ schema: "factory.demand.v1", episodeId: "b".repeat(64) })).toBe(false);
+});
+
+describe("promise-breach consumer wiring", () => {
+  const ref = { path: "/private/tmp/receipt.json", sha256: "a".repeat(64), selector: "root" };
+  const breachSnapshot = {
+    schema: "factory.demand.v1" as const,
+    episodeId: "c".repeat(64),
+    activationRevision: 1,
+    kind: "promise-breach" as const,
+    reasonCode: "expired-immutable-deadline",
+    snapshotRef: ref,
+    markerRef: ref,
+    dutyRef: ref,
+    grantRef: ref,
+  };
+
+  test("leases a promise-breach snapshot through the demand gate", () => {
+    expect(isDemandSnapshot(breachSnapshot)).toBe(true);
+    expect(isDemandSnapshot({ ...breachSnapshot, kind: "driver-dead" })).toBe(false);
+    expect(isDemandSnapshot({ ...breachSnapshot, episodeId: "short" })).toBe(false);
+  });
+
+  test("renders the breach kind, reason and cited receipts without agent excerpts", () => {
+    const rendered = formatDemandObligationUpdates([
+      { obligationId: "obligation-2", demandEventId: "demand-2", demand: breachSnapshot },
+    ]);
+    expect(rendered).toContain("promise-breach");
+    expect(rendered).toContain("expired-immutable-deadline");
+    expect(rendered).toContain("receipt.json");
+    expect(rendered).not.toContain("shepy agent read unknown");
+  });
+
+  test("witnesses only the exact obligation-id batch in the run context", () => {
+    const ids = ["obligation-2"];
+    const wakeMessage = {
+      customType: "shepy-wake-context",
+      details: { obligationIds: ids },
+      role: "custom",
+    };
+    expect(wakeContextWitnessed([wakeMessage], ids)).toBe(true);
+    // A foreign batch, a partial id set and a wrong message type never witness.
+    expect(wakeContextWitnessed([wakeMessage], ["other-obligation"])).toBe(false);
+    expect(wakeContextWitnessed([{ ...wakeMessage, customType: "user" }], ids)).toBe(false);
+    expect(wakeContextWitnessed([], ids)).toBe(false);
+    expect(
+      wakeContextWitnessed(
+        [{ customType: "shepy-wake-context", details: { obligationIds: [] }, role: "custom" }],
+        [],
+      ),
+    ).toBe(true);
+  });
 });

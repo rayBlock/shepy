@@ -1,5 +1,12 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
@@ -23,6 +30,11 @@ import { AgentOrchestratorService } from "@/observability/agent-orchestrator-ser
 import { DemandEligibilityProvider } from "@/observability/demand-eligibility.js";
 import { ProfileDeliveryService } from "@/observability/profile-delivery-service.js";
 import { ProfileDemandService } from "@/observability/profile-demand-service.js";
+import {
+  formatDemandObligationUpdates,
+  isDemandSnapshot,
+  wakeContextWitnessed,
+} from "../../packages/shepy-pi/src/wake.js";
 import { RpcTestClient } from "./rpc-test-client.js";
 
 const dirs: string[] = [];
@@ -679,4 +691,615 @@ test("a neutral owner fails the host-tuple demand fence", () => {
     refusal = (error as Error).message;
   }
   expect(refusal).toBe("demand:owner-generation-mismatch");
+});
+
+// ---------------------------------------------------------------------------
+// promise-breach adapter (factory.demand.v1 kind "promise-breach") — isolated
+// source candidate: actual registered publication through inbox.publishDemand
+// semantics, lease eligibility, the Pi consumer witness predicates and the
+// settlement ACK, one incident, temp DB + temp allowlist only.
+// ---------------------------------------------------------------------------
+
+const BREACH_NOW = Date.parse("2026-10-10T12:00:00.000Z");
+const BREACH_ADOPTION_SINCE = "2026-10-01T00:00:00.000Z";
+
+function breachHarness() {
+  const base = fixture();
+  const { dir, sqlite, ref } = base;
+  const generation = {
+    herdrSession: "default",
+    workspaceId: "w3J",
+    paneId: "w3J:pEB",
+    terminalId: "term-1",
+    nativeSessionRef: "/tmp/owner.jsonl",
+  };
+  // The mutable multi-incident promise ledger upstream tools write. Nothing in
+  // the demand path ever cites it — incidents cite owned snapshot files.
+  const ledgerLine = `${JSON.stringify({
+    promiseId: "pr-1",
+    armedAt: "2026-10-09T08:00:00.000Z",
+    deadline: "2026-10-10T10:00:00.000Z",
+    status: "open",
+  })}\n`;
+  const ledgerPath = join(dir, "promises-ledger.jsonl");
+  writeFileSync(ledgerPath, ledgerLine);
+  // Owned per-incident immutable snapshot of the exact source record.
+  const sourceRecordRef = ref("record-pr-1.json", ledgerLine);
+  const dueAt = "2026-10-10T10:00:00.000Z";
+  const receiptFor = (episodeId: string, overrides: Record<string, unknown> = {}) => {
+    const value = {
+      schema: "factory.promise-breach.receipt.v1",
+      incidentId: `promise:pr-1:${episodeId.slice(0, 8)}`,
+      episodeId,
+      basis: "armed-promise",
+      sourceRecordRef,
+      promise: { recordId: "pr-1", status: "open", dueAt },
+      classifier: null,
+      ...overrides,
+    };
+    const snapshotRef = ref(`receipt-${episodeId.slice(0, 8)}.json`, JSON.stringify(value));
+    return { value, snapshotRef };
+  };
+  const grantRef = ref("grant.json", "grant");
+  const observationRef = ref(
+    "capacity.json",
+    JSON.stringify({
+      observedAt: "2026-10-10T11:59:59.000Z",
+      seatGeneration: generation,
+      activeInvocationIds: [],
+      occupiedSlots: 0,
+      availableSlots: 1,
+      scopeRef: grantRef,
+    }),
+  );
+  const stopPath = join(dir, "STOP");
+  const seatStatePath = join(dir, "seat-state.json");
+  const writeSeatState = () =>
+    writeFileSync(
+      seatStatePath,
+      JSON.stringify({
+        schema: "factory.seat-state.v1",
+        seat: "engine-coordinator",
+        ts: "2026-10-10T11:59:59.000Z",
+        ctxPct: 40,
+        zone: "amber",
+        unknown: [],
+      }),
+    );
+  writeSeatState();
+  const duty = (
+    generationOverride: Record<string, unknown> = {},
+    mode = "on-duty",
+    window = { startsAt: "2026-10-10T11:00:00.000Z", endsAt: "2026-10-10T13:00:00.000Z" },
+  ) => ({
+    schema: "factory.duty.v1",
+    seatId: "engine-coordinator",
+    profileId: "engine-coordinator",
+    ownerGeneration: { ...generation, ...generationOverride },
+    grantRef,
+    mode,
+    window: { ...window, timezone: "UTC" },
+    queues: [
+      {
+        root: dir,
+        queuePath: join(dir, "queue.json"),
+        ownership: [
+          {
+            rowId: "15.267",
+            packetId: "BREACH-ADAPTER",
+            actionClass: "execute",
+            packetRef: sourceRecordRef,
+            grantRef,
+          },
+        ],
+      },
+    ],
+    capacity: { maxInFlight: 1, observationRef, maxAgeSeconds: 30 },
+    stopPaths: [stopPath],
+    nextDecision: { reasonRef: grantRef, eventRef: null, revisitAt: "2026-10-10T12:30:00.000Z" },
+    successor: { profileId: "successor", routeRef: grantRef, ownerGeneration: null },
+    policy: {
+      idleGraceSeconds: 60,
+      cooldownSeconds: 1200,
+      maxWakesPerHour: 3,
+      maxReminderCount: 1,
+      defaultRevisitSeconds: 1200,
+    },
+  });
+  const dutyRef = ref("duty.json", JSON.stringify(duty()));
+  // A duty whose window is already fully in the past: a lapsed owner pin.
+  const lapsedDutyRef = ref(
+    "duty-lapsed.json",
+    JSON.stringify(
+      duty({}, "on-duty", {
+        startsAt: "2026-10-10T09:00:00.000Z",
+        endsAt: "2026-10-10T10:00:00.000Z",
+      }),
+    ),
+  );
+  const allowlistWithKinds = (kinds: string[]) => {
+    const path = join(dir, `allowlist-${kinds.join("-").replace(/[^a-z-]/g, "")}.json`);
+    writeFileSync(
+      path,
+      JSON.stringify({
+        schema: "shepy.ingress-allowlist.v1",
+        sources: {
+          "factory-promise-scan": {
+            profiles: ["engine-coordinator"],
+            kinds,
+            duty_paths: [dutyRef.path, lapsedDutyRef.path],
+            grant_hashes: [grantRef.sha256],
+            evidence_roots: [dir],
+            max_expiry_minutes: 60,
+            seat_state_path: seatStatePath,
+            promise_adoption_since: BREACH_ADOPTION_SINCE,
+          },
+        },
+      }),
+    );
+    return path;
+  };
+  const allowlistPath = allowlistWithKinds(["promise-breach"]);
+  const provider = new DemandEligibilityProvider({
+    allowlistPath,
+    now: () => BREACH_NOW,
+    requiredStopPath: stopPath,
+  });
+  const owners = new ProfileOwnerStore({ sqlite, now: () => BREACH_NOW });
+  const service = new ProfileDemandService(base.store, owners, provider, {
+    allowlistPath,
+    now: () => BREACH_NOW,
+  });
+  const episode = (seed: string) => seed.repeat(64);
+  const breachRequest = (episodeId: string, overrides: Record<string, unknown> = {}) => {
+    const { snapshotRef } = receiptFor(
+      episodeId,
+      (overrides.receiptOverrides as Record<string, unknown>) ?? {},
+    );
+    const { receiptOverrides: _ignored, ...rest } = overrides;
+    void _ignored;
+    return {
+      schema: "factory.demand.v1",
+      sourceId: "factory-promise-scan",
+      profileId: "engine-coordinator",
+      kind: "promise-breach",
+      idempotencyKey: `${episodeId}/promise-breach/1`,
+      episodeId,
+      actionFingerprint: "b".repeat(64),
+      activationRevision: 1,
+      seatId: "engine-coordinator",
+      ownerGeneration: { ...generation },
+      dutyRef,
+      grantRef,
+      snapshotRef,
+      markerRef: grantRef,
+      observedAt: "2026-10-10T11:30:00.000Z",
+      expiresAt: "2026-10-10T12:30:00.000Z",
+      reasonCode: "expired-immutable-deadline",
+      ...rest,
+    };
+  };
+  return {
+    ...base,
+    generation,
+    ledgerPath,
+    dueAt,
+    receiptFor,
+    duty,
+    dutyRef,
+    lapsedDutyRef,
+    grantRef,
+    stopPath,
+    writeSeatState,
+    allowlistPath,
+    allowlistWithKinds,
+    provider,
+    owners,
+    service,
+    episode,
+    breachRequest,
+  };
+}
+
+test("promise-breach: one incident publishes durably, leases to the hosted Pi owner, witnesses and settles", () => {
+  const h = breachHarness();
+  const { sqlite, store, owners, service, episode, breachRequest } = h;
+  const episodeId = episode("f");
+  // The owner is hosted (full Herdr session/workspace/pane/terminal + native
+  // session ref) and has adopted the profile-demand source capability.
+  const firstClaim = owners.claim({
+    profileId: "engine-coordinator",
+    subscriberId: "owner-pi",
+    harnessKind: "pi",
+    harnessSessionRefJson: JSON.stringify({ kind: "path", value: h.generation.nativeSessionRef }),
+    herdrSessionName: h.generation.herdrSession,
+    workspaceId: h.generation.workspaceId,
+    paneId: h.generation.paneId,
+    terminalId: h.generation.terminalId,
+  });
+  if (firstClaim.kind === "rejected") throw new Error("claim refused");
+  const adopted = owners.claim({
+    profileId: "engine-coordinator",
+    currentLeaseToken: firstClaim.leaseToken,
+    subscriberId: "owner-pi",
+    harnessKind: "pi",
+    acceptedSourceKinds: ["agent", "profile-demand"],
+    harnessSessionRefJson: JSON.stringify({ kind: "path", value: h.generation.nativeSessionRef }),
+    herdrSessionName: h.generation.herdrSession,
+    workspaceId: h.generation.workspaceId,
+    paneId: h.generation.paneId,
+    terminalId: h.generation.terminalId,
+  });
+  if (adopted.kind === "rejected") throw new Error("adoption refused");
+
+  // Publication through the EXISTING registered service path.
+  const published = service.publishDemand(breachRequest(episodeId));
+  expect(published.disposition).toBe("created");
+  // The scanner re-observing the same incident is idempotent: same event,
+  // same obligation, no duplicate row.
+  const replay = service.publishDemand(breachRequest(episodeId));
+  expect(replay).toEqual({ ...published, disposition: "existing" });
+  expect(
+    sqlite
+      .prepare("select count(*) as n from profile_demand_events where idempotency_key = ?")
+      .get(`${episodeId}/promise-breach/1`),
+  ).toEqual({ n: 1 });
+  // A changed duplicate payload under the same key is a hard refusal.
+  expect(() =>
+    service.publishDemand({ ...breachRequest(episodeId), expiresAt: "2026-10-10T12:20:00.000Z" }),
+  ).toThrow("demand:idempotency-conflict");
+
+  // A later, unrelated append to the mutable source ledger must not
+  // invalidate the incident: the demand cites its OWNED per-incident receipt
+  // snapshot, whole-file hashed, not a selector into this ledger.
+  appendFileSync(h.ledgerPath, `${JSON.stringify({ promiseId: "pr-2", unrelated: true })}\n`);
+
+  const delivery = new ProfileDeliveryService({
+    agents: new AgentStore(sqlite),
+    obligations: new DeliveryObligationStore(sqlite),
+    owners,
+    profiles: new OrchestratorProfileStore(sqlite),
+    demands: service,
+    now: () => BREACH_NOW,
+  });
+  const leased = delivery.inboxLease({
+    profileId: "engine-coordinator",
+    leaseToken: adopted.leaseToken,
+    sourceKinds: ["agent", "profile-demand"],
+  }).obligations;
+  expect(leased).toHaveLength(1);
+  const obligation = leased[0];
+  if (!obligation || !("demand" in obligation) || !obligation.demand) {
+    throw new Error("expected the breach obligation to lease with its demand snapshot");
+  }
+  expect(obligation).toMatchObject({
+    id: published.obligationId,
+    sourceKind: "profile-demand",
+    demand: {
+      episodeId,
+      kind: "promise-breach",
+      reasonCode: "expired-immutable-deadline",
+      activationRevision: 1,
+    },
+  });
+  expect(isDemandSnapshot(obligation.demand)).toBe(true);
+
+  // The Pi owner pump builds the wake content from the LEASED snapshot; the
+  // context hook then witnesses exactly this batch by obligation ids before
+  // any settlement ACK.
+  const content = formatDemandObligationUpdates([
+    {
+      obligationId: obligation.id,
+      demandEventId: obligation.profileDemandEventId as string,
+      demand: obligation.demand,
+    },
+  ]);
+  expect(content).toContain("promise-breach");
+  expect(content).toContain(`obligation: ${published.obligationId}`);
+  const witnessed = wakeContextWitnessed(
+    [
+      {
+        customType: "shepy-wake-context",
+        details: { obligationIds: [obligation.id] },
+        role: "custom",
+      },
+    ],
+    [obligation.id],
+  );
+  expect(witnessed).toBe(true);
+  expect(
+    wakeContextWitnessed(
+      [
+        {
+          customType: "shepy-wake-context",
+          details: { obligationIds: [obligation.id] },
+          role: "custom",
+        },
+      ],
+      ["foreign-id"],
+    ),
+  ).toBe(false);
+
+  // Settlement ACK: consumption witnessed + successful final, else the batch
+  // stays unackable. The daemon-side ACK is the final stage of this slice.
+  delivery.inboxAck({
+    ids: [published.obligationId],
+    leaseToken: adopted.leaseToken,
+    profileId: "engine-coordinator",
+  });
+  expect(
+    sqlite
+      .prepare("select state from delivery_obligations where id = ?")
+      .get(published.obligationId),
+  ).toEqual({ state: "acked" });
+  expect(
+    store.lookup({
+      profileId: "engine-coordinator",
+      sourceId: "factory-promise-scan",
+      idempotencyKey: `${episodeId}/promise-breach/1`,
+    }),
+  ).toMatchObject({ found: true, demandEventId: published.demandEventId, state: "acked" });
+});
+
+test("promise-breach: the publish refusal family stays shut", () => {
+  const h = breachHarness();
+  const { sqlite, store, service, episode, breachRequest, allowlistWithKinds, dutyRef } = h;
+  const publishRefused = (request: Record<string, unknown>, message: string) =>
+    expect(() => service.publishDemand(request)).toThrow(message);
+  const keyFor = (seed: string) => `${episode(seed)}/promise-breach/1`;
+
+  // Absent authority: an unknown source id.
+  publishRefused(
+    { ...breachRequest(episode("a")), sourceId: "no-such-source", idempotencyKey: keyFor("a") },
+    "demand:source-not-allowed",
+  );
+  // Wrong kind authority: the operator allowlist does not carry promise-breach.
+  const queueOnlyPath = allowlistWithKinds(["queue-claimable"]);
+  const queueOnlyService = new ProfileDemandService(
+    store,
+    new ProfileOwnerStore({ sqlite, now: () => BREACH_NOW }),
+    new DemandEligibilityProvider({
+      allowlistPath: queueOnlyPath,
+      now: () => BREACH_NOW,
+      requiredStopPath: h.stopPath,
+    }),
+    { allowlistPath: queueOnlyPath, now: () => BREACH_NOW },
+  );
+  expect(() => queueOnlyService.publishDemand(breachRequest(episode("b")))).toThrow(
+    "demand:source-not-allowed",
+  );
+  // Wrong profile: not in the source's profile set.
+  publishRefused(
+    { ...breachRequest(episode("c")), profileId: "other-profile", idempotencyKey: keyFor("c") },
+    "demand:source-not-allowed",
+  );
+  // Wrong grant: hash not pinned by the operator.
+  publishRefused(
+    {
+      ...breachRequest(episode("d")),
+      grantRef: { ...h.grantRef, sha256: "9".repeat(64) },
+      idempotencyKey: keyFor("d"),
+    },
+    "demand:grant-not-allowed",
+  );
+  // Forged owner: the request's owner generation does not match the pinned duty.
+  publishRefused(
+    {
+      ...breachRequest(episode("e")),
+      ownerGeneration: { ...h.generation, paneId: "w3J:evil" },
+      idempotencyKey: keyFor("e"),
+    },
+    "demand:duty-generation-mismatch",
+  );
+  // Partial owner: a hosted generation missing a field is not a wake target.
+  const partial = { ...breachRequest(episode("2")), idempotencyKey: keyFor("2") };
+  const partialGeneration = (partial as { ownerGeneration?: Record<string, unknown> })
+    .ownerGeneration;
+  if (!partialGeneration) throw new Error("expected a hosted owner generation");
+  delete partialGeneration.terminalId;
+  publishRefused(partial, "demand:invalid-schema");
+  // Lapsed owner: the pinned duty window is already fully closed.
+  const lapsedRequest = {
+    ...breachRequest(episode("3")),
+    dutyRef: h.lapsedDutyRef,
+    idempotencyKey: keyFor("3"),
+  };
+  publishRefused(lapsedRequest, "demand:duty-window-closed");
+  void dutyRef;
+  // Bad ref: the cited receipt does not hash to the pinned value.
+  publishRefused(
+    {
+      ...breachRequest(episode("4")),
+      snapshotRef: { ...h.receiptFor(episode("4")).snapshotRef, sha256: "8".repeat(64) },
+      idempotencyKey: keyFor("4"),
+    },
+    "demand:ref-sha-mismatch",
+  );
+  // Expired window: the demand expired before now.
+  publishRefused(
+    {
+      ...breachRequest(episode("5")),
+      observedAt: "2026-10-10T10:00:00.000Z",
+      expiresAt: "2026-10-10T11:30:00.000Z",
+      idempotencyKey: keyFor("5"),
+    },
+    "demand:expired-or-invalid-window",
+  );
+  // A revision escalation of the same incident is not a caller authority.
+  publishRefused(
+    {
+      ...breachRequest(episode("6")),
+      activationRevision: 2,
+      idempotencyKey: `${episode("6")}/promise-breach/2`,
+    },
+    "demand:continuation-proof-unavailable",
+  );
+  // None of the refusals persisted anything.
+  expect(sqlite.prepare("select count(*) as n from profile_demand_events").get()).toEqual({ n: 0 });
+  expect(sqlite.prepare("select count(*) as n from delivery_obligations").get()).toEqual({ n: 0 });
+});
+
+test("promise-breach: capability, durability, ambiguity resolution and post-publication identity changes", () => {
+  const h = breachHarness();
+  const { sqlite, store, owners, service, episode, breachRequest } = h;
+  const delivery = () =>
+    new ProfileDeliveryService({
+      agents: new AgentStore(sqlite),
+      obligations: new DeliveryObligationStore(sqlite),
+      owners,
+      profiles: new OrchestratorProfileStore(sqlite),
+      demands: service,
+      now: () => BREACH_NOW,
+    });
+  // The owner claimed WITHOUT the profile-demand capability: publication is
+  // durable but withheld, and the demand rows are not leasable.
+  const bare = owners.claim({
+    profileId: "engine-coordinator",
+    subscriberId: "owner-pi",
+    harnessKind: "pi",
+    harnessSessionRefJson: JSON.stringify({ kind: "path", value: h.generation.nativeSessionRef }),
+    herdrSessionName: h.generation.herdrSession,
+    workspaceId: h.generation.workspaceId,
+    paneId: h.generation.paneId,
+    terminalId: h.generation.terminalId,
+  });
+  if (bare.kind === "rejected") throw new Error("claim refused");
+  const capEpisode = episode("a");
+  const withheld = service.publishDemand(breachRequest(capEpisode));
+  expect(withheld.disposition).toBe("created");
+  expect(
+    store.lookup({
+      profileId: "engine-coordinator",
+      sourceId: "factory-promise-scan",
+      idempotencyKey: `${capEpisode}/promise-breach/1`,
+    }),
+  ).toMatchObject({
+    found: true,
+    state: "pending",
+    withheldReason: "demand:owner-capability-unknown",
+  });
+  expect(() =>
+    delivery().inboxLease({
+      profileId: "engine-coordinator",
+      leaseToken: bare.leaseToken,
+      sourceKinds: ["agent", "profile-demand"],
+    }),
+  ).toThrow("source capability not claimed");
+
+  // Durability failure: an injected obligation-insert failure rolls back the
+  // whole publication — no event, no obligation, no half state.
+  sqlite.exec(`create trigger refuse_breach_obligation before insert on delivery_obligations
+    when new.kind = 'demand' begin select raise(abort, 'injected-breach-obligation-failure'); end`);
+  expect(() => service.publishDemand(breachRequest(episode("b")))).toThrow(
+    "injected-breach-obligation-failure",
+  );
+  expect(sqlite.prepare("select count(*) as n from profile_demand_events").get()).toEqual({ n: 1 });
+  expect(sqlite.prepare("select count(*) as n from delivery_obligations").get()).toEqual({ n: 1 });
+  // Ambiguous publication resolves through lookup: the aborted attempt left
+  // nothing; a retry lands exactly one durable row for its own key.
+  sqlite.exec("drop trigger refuse_breach_obligation");
+  const resolved = service.publishDemand(breachRequest(episode("b")));
+  expect(resolved.disposition).toBe("created");
+  expect(
+    sqlite
+      .prepare("select count(*) as n from profile_demand_events where idempotency_key = ?")
+      .get(`${episode("b")}/promise-breach/1`),
+  ).toEqual({ n: 1 });
+
+  // Adopt the capability and lease the withheld incident (the withhold mark
+  // clears when lease eligibility passes).
+  const adopted = owners.claim({
+    profileId: "engine-coordinator",
+    currentLeaseToken: bare.leaseToken,
+    subscriberId: "owner-pi",
+    harnessKind: "pi",
+    acceptedSourceKinds: ["agent", "profile-demand"],
+    harnessSessionRefJson: JSON.stringify({ kind: "path", value: h.generation.nativeSessionRef }),
+    herdrSessionName: h.generation.herdrSession,
+    workspaceId: h.generation.workspaceId,
+    paneId: h.generation.paneId,
+    terminalId: h.generation.terminalId,
+  });
+  if (adopted.kind === "rejected") throw new Error("adoption refused");
+  const firstBatch = delivery().inboxLease({
+    profileId: "engine-coordinator",
+    leaseToken: adopted.leaseToken,
+    sourceKinds: ["agent", "profile-demand"],
+  }).obligations;
+  expect(firstBatch).toHaveLength(1);
+  // Settle the leased incidents so later lease attempts are not masked by
+  // the single-wake capacity rule.
+  delivery().inboxAck({
+    ids: [withheld.obligationId],
+    leaseToken: adopted.leaseToken,
+    profileId: "engine-coordinator",
+  });
+  const secondBatch = delivery().inboxLease({
+    profileId: "engine-coordinator",
+    leaseToken: adopted.leaseToken,
+    sourceKinds: ["agent", "profile-demand"],
+  }).obligations;
+  const secondLeased = secondBatch[0];
+  if (!secondLeased) throw new Error("expected the second demand to lease");
+  delivery().inboxAck({
+    ids: [secondLeased.id],
+    leaseToken: adopted.leaseToken,
+    profileId: "engine-coordinator",
+  });
+
+  // Post-publication identity change of the EVIDENCE: mutating the cited
+  // receipt breaks the whole-file hash at lease re-validation, so the batch
+  // is withheld — the stored demand never silently re-binds. The preserved
+  // refusal reason for re-validation failure is the existing invalid-event.
+  const mutationEpisode = episode("c");
+  service.publishDemand(breachRequest(mutationEpisode));
+  const mutated = h.receiptFor(mutationEpisode);
+  writeFileSync(mutated.snapshotRef.path, JSON.stringify({ ...mutated.value, tampered: true }));
+  expect(
+    delivery().inboxLease({
+      profileId: "engine-coordinator",
+      leaseToken: adopted.leaseToken,
+      sourceKinds: ["agent", "profile-demand"],
+    }).obligations,
+  ).toEqual([]);
+  expect(
+    store.lookup({
+      profileId: "engine-coordinator",
+      sourceId: "factory-promise-scan",
+      idempotencyKey: `${mutationEpisode}/promise-breach/1`,
+    }),
+  ).toMatchObject({ state: "pending", withheldReason: "demand:invalid-event" });
+
+  // Post-publication identity change of the OWNER: a pane change after
+  // publication fails lease eligibility — the wake targets the observed
+  // generation, never a moved identity.
+  const movedEpisode = episode("d");
+  service.publishDemand(breachRequest(movedEpisode));
+  const moved = owners.claim({
+    profileId: "engine-coordinator",
+    currentLeaseToken: adopted.leaseToken,
+    subscriberId: "owner-pi",
+    harnessKind: "pi",
+    acceptedSourceKinds: ["agent", "profile-demand"],
+    harnessSessionRefJson: JSON.stringify({ kind: "path", value: h.generation.nativeSessionRef }),
+    herdrSessionName: h.generation.herdrSession,
+    workspaceId: h.generation.workspaceId,
+    paneId: "w3J:moved",
+    terminalId: h.generation.terminalId,
+  });
+  if (moved.kind === "rejected") throw new Error("move refused");
+  expect(
+    delivery().inboxLease({
+      profileId: "engine-coordinator",
+      leaseToken: moved.leaseToken,
+      sourceKinds: ["agent", "profile-demand"],
+    }).obligations,
+  ).toEqual([]);
+  expect(
+    store.lookup({
+      profileId: "engine-coordinator",
+      sourceId: "factory-promise-scan",
+      idempotencyKey: `${movedEpisode}/promise-breach/1`,
+    }),
+  ).toMatchObject({ state: "pending", withheldReason: "demand:owner-generation-mismatch" });
 });

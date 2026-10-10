@@ -28,6 +28,7 @@ import {
   isDemandSnapshot,
   type DemandSnapshot,
 	type ProfileObligationOutcome,
+  wakeContextWitnessed,
 } from "./wake.js";
 
 type PiAgentMessage = {
@@ -1339,19 +1340,11 @@ export function createShepyPiExtension(options: ExtensionOptions = {}) {
       // a witnessed batch may be acknowledged at settle.
       const batch = state.profileBatch;
       if (batch && !batch.wakeConsumed) {
-        const witnessed = event.messages.some((message) => {
-          if (message.customType !== "shepy-wake-context" || message.role !== "custom") {
-            return false;
-          }
-          const details = message.details as { obligationIds?: unknown } | undefined;
-          if (!Array.isArray(details?.obligationIds)) return false;
-          const ids = details.obligationIds as unknown[];
-          return (
-            ids.length === batch.obligationIds.length &&
-            batch.obligationIds.every((id) => ids.includes(id))
-          );
-        });
-        if (witnessed) batch.wakeConsumed = true;
+        // Consumption witness (fires before EVERY LLM call): if this run's
+        // context contains our profile wake message — matched by obligation
+        // ids — the batch's content provably reached a model call. Only such
+        // a witnessed batch may be acknowledged at settle.
+        if (wakeContextWitnessed(event.messages, batch.obligationIds)) batch.wakeConsumed = true;
       }
       const messages = event.messages.filter((message) => !isNormalShepyContext(message));
       const snapshot = state.pinnedContext;
