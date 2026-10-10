@@ -713,13 +713,20 @@ function breachHarness() {
     terminalId: "term-1",
     nativeSessionRef: "/tmp/owner.jsonl",
   };
-  // The mutable multi-incident promise ledger upstream tools write. Nothing in
-  // the demand path ever cites it — incidents cite owned snapshot files.
+  // The mutable multi-incident promise ledger upstream tools write (the
+  // canonical v1 line shape from tools/promises/ledger.ts). Nothing in the
+  // demand path ever cites it — incidents cite owned snapshot files.
   const ledgerLine = `${JSON.stringify({
-    promiseId: "pr-1",
-    armedAt: "2026-10-09T08:00:00.000Z",
-    deadline: "2026-10-10T10:00:00.000Z",
+    v: 1,
+    id: "p1",
+    at: "2026-10-09T08:00:00+02:00",
+    seat: "engine-coordinator",
+    kind: "context-budget",
+    promise: "hold the breach-adapter fence",
+    due: "2026-10-10T10:00:00Z",
     status: "open",
+    evidence: null,
+    closed_at: null,
   })}\n`;
   const ledgerPath = join(dir, "promises-ledger.jsonl");
   writeFileSync(ledgerPath, ledgerLine);
@@ -729,11 +736,16 @@ function breachHarness() {
   const receiptFor = (episodeId: string, overrides: Record<string, unknown> = {}) => {
     const value = {
       schema: "factory.promise-breach.receipt.v1",
-      incidentId: `promise:pr-1:${episodeId.slice(0, 8)}`,
+      incidentId: `promise:p1:${episodeId.slice(0, 8)}`,
       episodeId,
       basis: "armed-promise",
       sourceRecordRef,
-      promise: { recordId: "pr-1", status: "open", dueAt },
+      promise: {
+        recordId: "p1",
+        status: "open",
+        dueAt,
+        owner: { seat: "engine-coordinator" },
+      },
       classifier: null,
       ...overrides,
     };
