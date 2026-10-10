@@ -1,0 +1,6 @@
+Frozen original: b63d40f4d5fda2a67bbd9d1858728f5679a4ede1, preserved by tag ocv2-original (verified).
+Rebased frozen candidate: 471516dbbc9a896e0659cc79f98a91088a306642, parent beb71fdd435e5b4b81f50075e5e20f2118db79b9.
+`git range-diff 07e3d6afa8b812b25789e2dea3e6f565e79b6e77..b63d40f4d5fda2a67bbd9d1858728f5679a4ede1 beb71fdd435e5b4b81f50075e5e20f2118db79b9..471516dbbc9a896e0659cc79f98a91088a306642`: 1: b63d40f = 1: 471516d.
+Stable patch-id for both old and rebased diff: c7ad7e812e2a5cd421caa030140ee08ca0eeb835.
+Both direct parent-to-candidate diffs: 8 files, +266/-32. Hostile approval stands on identical patch content at /private/tmp/ocv2/out/hostile-1.md.
+Dependency setup was engine-owned: pnpm 11.9.0, CI=1 pnpm install --frozen-lockfile --ignore-scripts; packet reports EXIT=0, no lockfile/config edits. Pre-gate inspection verified node_modules is a real directory, not a shared-checkout symlink. Direct tsc then ran and passed (see tsc.log).

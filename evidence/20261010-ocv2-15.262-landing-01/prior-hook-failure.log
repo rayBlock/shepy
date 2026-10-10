@@ -1,0 +1,8 @@
+Already up to date
+Done in 163ms using pnpm v11.9.0
+Already up to date
+Done in 160ms using pnpm v11.9.0
+undefined
+[ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL] Command "lint-staged" not found
+husky - pre-commit script failed (code 1)
+EXIT=1

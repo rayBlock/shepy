@@ -1,0 +1,6 @@
+Target branch shepy was clean, non-bare, and at beb71fdd435e5b4b81f50075e5e20f2118db79b9; live origin/shepy matched before merge.
+Command: `env -u SHEPY_PROFILE git -C /Users/ray/dev/shepy merge --no-ff --no-edit 471516dbbc9a896e0659cc79f98a91088a306642` (real hooks; no --no-verify).
+Resulting HEAD: 8850339da79da2b6a01f091d23dfb7667868842d.
+Parents: beb71fdd435e5b4b81f50075e5e20f2118db79b9 and 471516dbbc9a896e0659cc79f98a91088a306642.
+`git merge-base --is-ancestor 471516dbbc9a896e0659cc79f98a91088a306642 HEAD`: EXIT=0.
+No push or queue mutation recorded in this file; evidence commit precedes row CAS.
