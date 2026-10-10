@@ -401,19 +401,20 @@ describe("OpenCodeHistoryReader", () => {
     expect(messages[2]).toMatchObject({ role: "assistant", text: "done" });
   });
 
-  test("returns empty history when the OpenCode DB schema is unreadable", async () => {
+  test("rejects unreadable OpenCode DB schema rather than reporting empty history", async () => {
     const homeDir = await tempHome("shepy-opencode-bad-db-");
     const dbPath = join(homeDir, "opencode.db");
     const sqlite = new DatabaseSync(dbPath);
     sqlite.exec("create table unrelated (id text primary key)");
     sqlite.close();
 
+    // Old contract silently returned []; malformed storage is UNKNOWN, not empty.
     await expect(
       new OpenCodeHistoryReader().read(
         { kind: "discovered_file", path: dbPath, source: "opencode-sqlite", value: "s1" },
         { limit: 10 },
       ),
-    ).resolves.toEqual([]);
+    ).rejects.toThrow("exact session");
   });
 });
 

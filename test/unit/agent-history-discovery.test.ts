@@ -231,7 +231,7 @@ describe("agent history discovery", () => {
     });
   });
 
-  test("discovers OpenCode DB session by cwd", async () => {
+  test("refuses OpenCode cwd-latest and resolves only an exact V1 ID", async () => {
     const homeDir = await tempHome("shepy-opencode-home-");
     const dbPath = join(homeDir, ".local", "share", "opencode", "opencode.db");
     await mkdir(join(homeDir, ".local", "share", "opencode"), { recursive: true });
@@ -247,6 +247,7 @@ describe("agent history discovery", () => {
       .run("s_new", "/repo", 2);
     sqlite.close();
 
+    // Old contract expected cwd-latest s_new; that is not native identity.
     await expect(
       discoverAgentHistory({
         agent: "opencode",
@@ -255,8 +256,17 @@ describe("agent history discovery", () => {
         foregroundCwd: null,
         homeDir,
       }),
+    ).resolves.toBeNull();
+    await expect(
+      discoverAgentHistory({
+        agent: "opencode",
+        agentSession: { agent: "opencode", kind: "id", source: "herdr:opencode", value: "s_new" },
+        cwd: "/repo",
+        foregroundCwd: null,
+        homeDir,
+      }),
     ).resolves.toMatchObject({
-      kind: "discovered_file",
+      kind: "agent_session",
       path: dbPath,
       source: "opencode-sqlite",
       value: "s_new",

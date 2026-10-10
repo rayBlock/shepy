@@ -90,6 +90,32 @@ function service(input: {
 }
 
 describe("agent history service", () => {
+  test("a cached OpenCode cwd hint cannot bypass refusal without native identity", async () => {
+    const path = await sourceFile("opencode.db");
+    const cached: AgentHistoryRef = {
+      kind: "discovered_file",
+      path,
+      source: "opencode-sqlite",
+      value: "stale",
+    };
+    const input: AgentHistoryLookupInput = {
+      agent: "opencode",
+      agentSession: null,
+      cwd: "/repo",
+      foregroundCwd: null,
+    };
+    const harness = service({ discovered: null });
+    // Before the exact-identity contract, preferredRef bypassed discovery.
+    expect(
+      (await harness.service.read(input, { limit: 5, preferredRef: cached })).historyRef,
+    ).toBeNull();
+    expect(
+      (await harness.service.resolveCompactHistory(input, { preferredRef: cached })).historyRef,
+    ).toBeNull();
+    expect(harness.discoveries()).toBe(2);
+    expect(harness.reader.readRefs).toEqual([]);
+    expect(harness.reader.compactRefs).toEqual([]);
+  });
   test("an exact session path overrides another same-cwd agent's cached history", async () => {
     const ownerPath = await sourceFile("owner.jsonl");
     const workerPath = await sourceFile("worker.jsonl");

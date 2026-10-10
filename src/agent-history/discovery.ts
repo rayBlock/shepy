@@ -51,7 +51,7 @@ export async function discoverAgentHistory(
   if (input.agentSession?.kind === "id") {
     const source = historySourceFromSessionRef(input.agentSession);
     if (source === "opencode-sqlite") {
-      const ref = discoverOpenCodeSession({ cwd, homeDir, sessionId: input.agentSession.value });
+      const ref = discoverOpenCodeSession({ homeDir, sessionId: input.agentSession.value });
       return ref ? { ...ref, kind: "agent_session" } : null;
     }
     if (source === "hermes-sqlite") {
@@ -75,8 +75,9 @@ export async function discoverAgentHistory(
     candidates.push(...(await scanGeminiRoot(join(homeDir, ".gemini", "tmp"))));
   }
   if (agent === "opencode") {
-    const ref = discoverOpenCodeSession({ cwd, homeDir, sessionId: null });
-    if (ref) return ref;
+    // A directory can hold many sessions. Only a native exact ID is a binding;
+    // the agent process's environment is not the Shepy process environment.
+    return null;
   }
   if (input.agentSession?.kind === "id") {
     const session = input.agentSession;
@@ -268,30 +269,31 @@ async function listGeminiSessionFiles(chatsDir: string): Promise<string[]> {
 }
 
 function discoverOpenCodeSession(input: {
-  cwd: string | null;
   homeDir: string;
-  sessionId: string | null;
+  sessionId: string;
 }): AgentHistoryRef | null {
+  if (!input.sessionId) return null;
   const dbPath = resolveOpenCodeDbPath(input.homeDir);
   if (!existsSync(dbPath)) return null;
   let sqlite: DatabaseSync | null = null;
   try {
     sqlite = new DatabaseSync(dbPath, { readOnly: true });
-    if (input.sessionId) {
+    // Probe both families by exact ID. An absent table is normal during a
+    // version transition; a broken present table is not a successful lookup.
+    const tables = sqlite
+      .prepare(
+        "select name from sqlite_master where type = 'table' and name in ('session', 'session_v2')",
+      )
+      .all() as { name: string }[];
+    for (const table of ["session_v2", "session"]) {
+      if (!tables.some((row) => row.name === table)) continue;
       const row = sqlite
-        .prepare("select id from session where id = ? limit 1")
+        .prepare(`select id from ${table} where id = ? limit 1`)
         .get(input.sessionId) as { id: string } | undefined;
-      return row
-        ? { kind: "discovered_file", path: dbPath, source: "opencode-sqlite", value: row.id }
-        : null;
+      if (row?.id)
+        return { kind: "agent_session", path: dbPath, source: "opencode-sqlite", value: row.id };
     }
-    if (!input.cwd) return null;
-    const row = sqlite
-      .prepare("select id from session where directory = ? order by time_updated desc limit 1")
-      .get(input.cwd) as { id: string } | undefined;
-    return row
-      ? { kind: "discovered_file", path: dbPath, source: "opencode-sqlite", value: row.id }
-      : null;
+    return null;
   } catch {
     return null;
   } finally {
@@ -371,7 +373,6 @@ export async function hintMatchesAgentSession(input: {
   if (input.hint.value !== input.session.value) return false;
   if (source === "opencode-sqlite") {
     const ref = discoverOpenCodeSession({
-      cwd: null,
       homeDir: input.homeDir,
       sessionId: input.session.value,
     });

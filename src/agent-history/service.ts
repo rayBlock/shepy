@@ -162,7 +162,10 @@ export function createAgentHistoryService(
     input: AgentHistoryLookupInput,
     hint: AgentHistoryRef,
   ): Promise<boolean> {
-    if (!input.agentSession) return true;
+    // A cached cwd-discovered OpenCode ref cannot supply missing native identity.
+    // Both read and compact paths must go through discovery's exact-ID refusal.
+    if (!input.agentSession)
+      return input.agent?.toLowerCase() !== "opencode" && hint.source !== "opencode-sqlite";
     return hintMatchesAgentSession({
       hint,
       homeDir: input.homeDir ?? options.homeDir ?? process.env.HOME ?? "",
