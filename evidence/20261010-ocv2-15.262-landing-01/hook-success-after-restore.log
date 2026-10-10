@@ -1,0 +1,85 @@
+✓ Lockfile passes supply-chain policies (verified 28d ago)
+. pnpm:devPreinstall$ husky
+. pnpm:devPreinstall: Done
+Lockfile is up to date, resolution step is skipped
+Already up to date
+
+Done in 644ms using pnpm v11.9.0
+Already up to date
+Done in 162ms using pnpm v11.9.0
+→ lint-staged could not find any staged files matching configured tasks.
+Already up to date
+Done in 168ms using pnpm v11.9.0
+$ tsc --noEmit -p tsconfig.json
+Already up to date
+Done in 171ms using pnpm v11.9.0
+$ vitest run
+
+ RUN  v4.1.9 /Users/ray/dev/shepy
+
+npm warn Unknown env config "manage-package-manager-versions". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+
+ Test Files  66 passed (66)
+      Tests  746 passed (746)
+   Start at  02:25:14
+   Duration  10.15s (transform 10.08s, setup 0ms, import 14.38s, tests 43.93s, environment 3ms)
+
+Already up to date
+Done in 162ms using pnpm v11.9.0
+$ biome check .
+src/observability/profile-selector-scope.ts:7:3 lint/correctness/noUnusedImports  FIXABLE  ━━━━━━━━━━
+
+  ! Several of these imports are unused.
+  
+    5 │   type AgentSelector,
+    6 │   resolveAgentSelector,
+  > 7 │   type SelectableAgent,
+      │   ^^^^^^^^^^^^^^^^^^^^
+    8 │   selectableFromRow,
+    9 │   type WorkspaceSelector,
+  
+  i Unused imports might be the result of an incomplete refactoring.
+  
+  i Unsafe fix: Remove the unused imports.
+  
+     5  5 │     type AgentSelector,
+     6  6 │     resolveAgentSelector,
+     7    │ - ··type·SelectableAgent,
+     8  7 │     selectableFromRow,
+     9  8 │     type WorkspaceSelector,
+  
+
+Checked 147 files in 78ms. No fixes applied.
+Found 1 warning.
+Already up to date
+Done in 161ms using pnpm v11.9.0
+$ biome format .
+Checked 147 files in 29ms. No fixes applied.
+Already up to date
+Done in 164ms using pnpm v11.9.0
+$ drizzle-kit check --config drizzle.config.ts
+Reading config file '/Users/ray/dev/shepy/drizzle.config.ts'
+Everything's fine 🐶🔥
+[shepy 2259464] Record ROW 15.262 OpenCode V2 landing evidence
+ 20 files changed, 215 insertions(+)
+ create mode 100644 evidence/20261010-ocv2-15.262-landing-01/canonical-repair-before.txt
+ create mode 100644 evidence/20261010-ocv2-15.262-landing-01/canonical-repair-full.log
+ create mode 100644 evidence/20261010-ocv2-15.262-landing-01/destination-extension-ambient.log
+ create mode 100644 evidence/20261010-ocv2-15.262-landing-01/destination-extension-unset.log
+ create mode 100644 evidence/20261010-ocv2-15.262-landing-01/destination-paired-vitest.log
+ create mode 100644 evidence/20261010-ocv2-15.262-landing-01/destination-tsc.log
+ create mode 100644 evidence/20261010-ocv2-15.262-landing-01/extension-ambient.log
+ create mode 100644 evidence/20261010-ocv2-15.262-landing-01/extension-unset.log
+ create mode 100644 evidence/20261010-ocv2-15.262-landing-01/hostile-1.md
+ create mode 100644 evidence/20261010-ocv2-15.262-landing-01/merge-proof.txt
+ create mode 100644 evidence/20261010-ocv2-15.262-landing-01/owner-tsc.log
+ create mode 100644 evidence/20261010-ocv2-15.262-landing-01/owner-two-suite-vitest.log
+ create mode 100644 evidence/20261010-ocv2-15.262-landing-01/paired-vitest.log
+ create mode 100644 evidence/20261010-ocv2-15.262-landing-01/prior-hook-failure.log
+ create mode 100644 evidence/20261010-ocv2-15.262-landing-01/prior-pnpm-bootstrap-stop.log
+ create mode 100644 evidence/20261010-ocv2-15.262-landing-01/rebase-proof.txt
+ create mode 100644 evidence/20261010-ocv2-15.262-landing-01/receipt.md
+ create mode 100644 evidence/20261010-ocv2-15.262-landing-01/sha256.txt
+ create mode 100644 evidence/20261010-ocv2-15.262-landing-01/tsc.log
+ create mode 100644 evidence/20261010-ocv2-15.262-landing-01/versions.log
+EXIT=0

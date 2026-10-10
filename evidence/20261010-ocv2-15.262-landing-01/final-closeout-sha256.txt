@@ -1,0 +1,5 @@
+40d75aef508dfca01746f7dde7c5c6a3d6946e5794d0a5eb57b08d1b53399993  /Users/ray/dev/shepy/evidence/20261010-ocv2-15.262-landing-01/final-closeout.md
+fee34164f1367617380b832bc8249ed1310e7f5f9310d7a873fcccaa2ea9e24a  /Users/ray/dev/shepy/evidence/20261010-ocv2-15.262-landing-01/hook-attempt-before-restore.log
+8663dda6feb6530e9c5dd00bdb3e92a288c86364358cfa9a3e55101e44b4d352  /Users/ray/dev/shepy/evidence/20261010-ocv2-15.262-landing-01/hook-success-after-restore.log
+c09cefd29de74675cd6111c6e01932428bd9ecd475e1d0ea6a4adfa5dac40e63  /Users/ray/dev/shepy/evidence/20261010-ocv2-15.262-landing-01/queue-cas.log
+cd60ae84028f5064e2e0842f7fffaf87eb5b793c98fd21eacf718456328f4339  /Users/ray/dev/shepy/evidence/20261010-ocv2-15.262-landing-01/landing-push.log
