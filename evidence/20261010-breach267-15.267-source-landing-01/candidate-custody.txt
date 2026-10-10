@@ -1,0 +1,10 @@
+Candidate worktree gate-time custody:
+  path: /Users/ray/dev/shepy-wt/breach-adapter
+  branch: spawn/breach-adapter
+  HEAD: 9bfad159cd2c33ad5a46e745ea29ee28745b0760
+  tracked status: clean before and after fresh gates
+  node_modules: physical existing directory; no install performed during candidate gates
+
+The worktree was then switched without changing refs to local branch shepy at d602a030ea7540668d9c61edb391db107e834b3a and used as the owned landing worktree. The accepted candidate remains pinned at refs/heads/spawn/breach-adapter = 9bfad159cd2c33ad5a46e745ea29ee28745b0760; it is the merge's exact second parent.
+
+A separate setup-only worktree at /Users/ray/dev/shepy-wt/breach-adapter-land remains detached at d602a030ea7540668d9c61edb391db107e834b3a with only an owned node_modules symlink to the landing path. It is preserved for the post-green custody-scoped sweep; it was not used for gates, merge, or commits.

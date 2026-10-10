@@ -1,0 +1,16 @@
+evidence/20261010-breach267-15.267-source-landing-01/gate-demand-integration.raw.log:13: new blank line at EOF.
+evidence/20261010-breach267-15.267-source-landing-01/gate-full-suite-corrected.raw.log:13: new blank line at EOF.
+evidence/20261010-breach267-15.267-source-landing-01/gate-ingress-wake-family.raw.log:27: new blank line at EOF.
+evidence/20261010-breach267-15.267-source-landing-01/gate-lint.raw.log:7: trailing whitespace.
++  
+evidence/20261010-breach267-15.267-source-landing-01/gate-lint.raw.log:14: trailing whitespace.
++  
+evidence/20261010-breach267-15.267-source-landing-01/gate-lint.raw.log:16: trailing whitespace.
++  
+evidence/20261010-breach267-15.267-source-landing-01/gate-lint.raw.log:18: trailing whitespace.
++  
+evidence/20261010-breach267-15.267-source-landing-01/gate-lint.raw.log:24: trailing whitespace.
++  
+evidence/20261010-breach267-15.267-source-landing-01/gate-promise-breach-unit.raw.log:13: new blank line at EOF.
+evidence/20261010-breach267-15.267-source-landing-01/gate-source-family-34.raw.log:13: new blank line at EOF.
+evidence/20261010-breach267-15.267-source-landing-01/pre-merge-preflight.txt:60: new blank line at EOF.

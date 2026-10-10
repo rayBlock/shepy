@@ -1,0 +1,3 @@
+Authorized push ref only: refs/heads/shepy -> refs/heads/shepy on origin.
+No origin/main, upstream, product, engine-queue, or other ref push is authorized/performed by this packet.
+Push is pending at this evidence checkpoint; final live remote verification will be recorded before the engine queue row close.

@@ -1,0 +1,54 @@
+IDENTITY provider=qwen-cloud model=deepseek-v4-flash-0731 thinking=high
+# HOSTILE (flash, tight) — 15.267 correction hostile-2.md
+Reviewer: flash-lens (dispatch 28b1836d6170b336, pane w3J:pTH). Worktree /Users/ray/dev/shepy-wt/breach-adapter, READ-ONLY.
+Candidate: HEAD `9bfad159cd2c33ad5a46e745ea29ee28745b0760` (correction commit "Bind promise-breach claims to cited evidence bytes"); predecessor `68f95e18aa2e9e85d5bc19445c7bf965e526664b` preserved unamended beneath (git log linear, no rebase/amend).
+Spec: engine-breach267-authority-correction.txt + luna supplemental (breach267-root-source-authority-review.json REVISE at 07:05:58Z). Builder report: /private/tmp/breach267/out/build-2.md. Ingress/wake/consumer/witness surfaces frozen at 68f95e1 in hostile-1 — spot-checked here.
+All runs by me, raw unpiped, exit codes captured.
+
+## Verification BY NUMBER
+
+### (1) PROBE 1 closed — one claim, four contradictions, all REFUSE — PASS
+Re-ran Luna's BA-1 contradiction fixture against the REAL `DemandEligibilityProvider` at HEAD: receipt claims stay "open, expired pr-1, due 2026-10-10T10:00:00.000Z" while the cited sourceRecordRef bytes (whole-file hash-valid, in roots) contradict them:
+- bytes resolve to a DIFFERENT id (p2) ⇒ `demand:breach-record-mismatch`
+- bytes resolve to a FUTURE deadline (15:00) ⇒ `demand:breach-deadline-mismatch`
+- bytes resolve to CLOSED status (kept) ⇒ `demand:breach-status-mismatch`
+- arbitrary NON-JSON bytes ⇒ `demand:breach-record-unknown`
+Claims are now DERIVED from the bytes: `derivePromiseRecord` (demand-eligibility.ts:172-228) parses the record and `evaluate()` binds `recordId`/`dueAt`-instant/`status`/ownership (lines 719-733); the deadline gate still cannot admit because binding runs after it. No receipt assertion is ever accepted "beside the bytes". Non-canonical shapes and unparseable dues are UNKNOWN by name (`breach-record-unknown`), never "due passed" (F4). The invented claim-shape (Luna's and the old fixture's `promiseId/deadline` literals) is now itself refused as `breach-record-unknown` (unit test "refuses non-JSON record bytes and unsupported record shapes as UNKNOWN"). Claim-equals-bytes-but-future still refuses `deadline-not-expired`; an impossible claimed due refuses `demand:invalid-utc` (strict parser untouched, BA-3). Ownership is bound exactly to what the record carries (`breach-ownership-mismatch` for absent/other/overclaim); v2 fold law verified (keep/breach/void events fold; `breach-status-mismatch` for lie, `promise-already-resolved` for honest kept/breached/voided — recorded debt never re-wakes). My probe: 26/26 green, all codes exact.
+
+### (2) PROBE 2 closed — census lacking the row cannot breach — PASS
+Re-ran Luna's BA-2 fixture against the real provider. Census bytes must BE an actual `reconcile --json` ReconcileResult (exact key sets; I verified shape + `deadline`-window law + the exact debt reason literal `deadline-passed, no closure` against engine tools/waits/reconcile.ts + defs.ts read-only — the reimplementation is faithful). With hash-valid census bytes and the claim naming w9:
+- census with NO matching row ⇒ `demand:waits-row-absent`
+- wrong-id row / two rows ⇒ `waits-row-absent` / `waits-row-ambiguous`
+- future/live row (incl. matching id, live class) ⇒ `waits-row-not-debt`
+- complete-uncollected ⇒ `waits-row-reason-unknown`; closure-without-citation ⇒ `waits-row-reason-unknown` (canonical literal ONLY)
+- paired row ⇒ `waits-row-paired`; non-ReconcileResult bytes ⇒ `waits-census-unknown`; due outside resolved window / window not entirely past ⇒ `breach-deadline-mismatch` / `waits-row-not-debt`; non-open status claim ⇒ `breach-status-mismatch`.
+The semantic authority is the census row (id/deadline/class/reason/unpaired); classifier identity/classifiedAt are documented provenance assertions (the real output carries neither — confirmed in engine source). `classification: live-past-due` no longer exists anywhere (removed from schema; an old receipt carrying it fails `breach-receipt-unknown` via additionalProperties:false).
+
+### (3) Strict used clocks intact — PASS
+Original positive paths pass unbroken: valid expired open v1 record with faithful claim ⇒ eligible; bare v2 arm and v2 {arm,events} positives; post-adoption deadline-passed unpaired census row with in-window due ⇒ eligible (my probe positives green). Exact-due-instant and observation-predating-deadline refuse `deadline-not-expired` (unit "refuses an unexpired deadline, the exact due instant, and an observation predating it"). strictUtc `instant()` unchanged (BA-3 no rewrite). Full suite: `pnpm test` (raw, exit 0) → **783/783 passed (67 files, 8.6s)**, including the integration positive chain lease→wake→witness→ACK.
+
+### (4) Reconciliation lives in ingress/eligibility land — PASS
+All derivation + binding code is inside `DemandEligibilityProvider.evaluate` in src/observability/demand-eligibility.ts (the eligibility layer; no wrapper, no validation skip). Ingress `profile-demand-ingress.ts` was NOT touched — its hash is byte-identical to the hostile-1 frozen value (62c8bf43a3…), and it performs the same whole-file hash/root-containment, plus the receipt shape/schema check still runs for every promise-breach request at publish AND lease (validateDemandRequest → eligibility → byte binding). No engine import anywhere in shipped source (grep: only comments reference tools/promises|waits; zero `agent-factory`/absolute-path imports in src/ or packages/). `tsc --noEmit` exit 0. The reimplemented canonical laws are byte-faithful mirrors: DUE_RE + calendar/leap table identical to tools/promises/ledger.ts; v1 line field set identical; STAMP_RE + window math identical to tools/waits/defs.ts stampWindow (the one intentional divergence — the adapter uses the correct 12-entry calendar table where defs.ts has an 11-entry typo — resolves UNKNOWN/fail-closed per the contract's own note; never an admission beyond the trusted census row).
+
+### (5) Hostile-1 proven surfaces unchanged — PASS (spot-check)
+Frozen-hash non-correction files byte-identical: index.ts 99a2f9b7…, wake.ts 61b74ceb…, profile-demand-ingress.ts 62c8bf43…, profile-demand-ingress+shepy-pi-wake tests 0d96e480…/4b206729… (all match hostile-1's recorded values). Snapshot stability: whole-file hash revalidation at publish AND lease; later-unrelated-append to the mutable ledger still stable (integration positive chain, green); post-publication mutation of the cited receipt ⇒ lease withheld `demand:invalid-event` (integration, green). Refusal family still shuts: source-not-allowed, grant-not-allowed, duty-generation-mismatch, invalid-schema, duty-window-closed, ref-sha-mismatch, expired-or-invalid-window, continuation-proof-unavailable, owner-capability-unknown, owner-generation-mismatch (pane move), classifier-not-admitted, waits provenance refusals — all present and green in the suite. Stages still separate (publish≠lease≠wake≠ACK; isDemandSnapshot/witness extraction untouched).
+
+### (6) Full suite raw unpiped; diff scope; frozen hashes — PASS
+`pnpm test` exit 0, 783/783 (I ran it, output captured at /private/tmp/breach267/out/hostile2-full-suite.stdout). Working tree clean at HEAD. Correction diff is EXACTLY the 3 granted files (git diff 68f95e1 HEAD --name-status): src/observability/demand-eligibility.ts (350/25), test/integration/profile-demand.test.ts (19/7), test/unit/demand-eligibility-promise-breach.test.ts (474/107); numstat matches. profile-demand-ingress.ts, wake.ts, index.ts and the two other test files untouched (hashes above). Frozen hashes at HEAD 9bfad15:
+- 179c2d98d0484bb52659a2589e71651c1ba9008a76f6d3e0600b25d99789c0f2  src/observability/demand-eligibility.ts
+- 7ff427efbf81913fa56fe1a2b18c4442f7fb07d43f999a281aaaaf493b8eee60  test/integration/profile-demand.test.ts
+- aa9ea6f3ee3be8dfce422aa3dd0d42bdcefb7f23797bdd76f1d5fd8e03eeab6d  test/unit/demand-eligibility-promise-breach.test.ts
+- (5 remaining files byte-identical to hostile-1's frozen list, values above)
+
+## Hostile probes and evidence retained (my runs)
+/private/tmp/breach267-h2-probe/hostile2-probe.test.ts + vitest.config.ts — 26 tests against the real provider at HEAD: Luna's exact BA-1 four-contradiction shapes, claim-vs-bytes future, impossible-claim (invalid-utc) and impossible-record-due (breach-record-unknown), ownership family, armed-with-classifier, ten BA-2 shapes incl. wrong-id/ambiguous/future-live/paired/not-reconcile-output, due-outside-window, window-not-past, non-open-status, census + record hash tamper, and two strict-clock positives. Run: exit 0, 26/26 passed (h2-run.stdout/stderr). One initial probe mis-expectation was mine (impossible claimed due → strict parser `invalid-utc` fires before record binding; corrected and re-run green) — not a candidate defect.
+
+## Honest limits
+1. The engine's calendar-table typo in tools/waits/defs.ts (11 entries) means the adapter's stamp window can resolve a December (or May-31/Aug-31) deadline the real classifier would call PENDING-unresolvable; admission still requires the census ROW itself to carry debt/deadline-passed — inside the allowlisted receipt writer's trust boundary, exactly as documented in the correction contract; no counterexample shape admits.
+2. The upstream receipt/census WRITER is still a separate row (hostile-1 limit #2 unchanged); the producer contract is pinned but not yet produced.
+3. Settlement-to-completion end-to-end turn remains outside this suite's boundary (same as the pre-existing suite; witness extraction is verbatim-identical).
+4. Witness of the nine frozen red-probe shapes uses the builder's pinned run logs (red-results.txt) plus my own equivalent 26-case probe run — the admission/refusal semantics are the question, and I re-verified them live against the real provider.
+
+## VERDICT: SURVIVES
+Scope: ROW 15.267 correction commit 9bfad15 over frozen 68f95e1 (3 files, +843/−139). Evidence: my 26/26 live provider probes (Luna's BA-1/BA-2 contradiction fixtures refuse with exact named codes — PROBES 1 and 2 closed); full suite 783/783 raw unpiped exit 0; tsc exit 0; no engine imports in shipped source; reconciliation lives in demand-eligibility.ts (ingress untouched, hash frozen-identical); hostile-1 surfaces (append stability, receipt-mutation invalid-event, refusal family, owner-generation-mismatch, stage separation) spot-verified green; diff scope exact, working tree clean, predecessor preserved, both review-required hashes intact; no live ledger/daemon/socket/install, no push, no main merge, no adoption/activation.
+Next owner/consumer: row owner for adjudication; boundaries per packet (0 main merge, 0 public-API adoption, no activation — Ray load word separate); upstream receipt writer remains its own row.

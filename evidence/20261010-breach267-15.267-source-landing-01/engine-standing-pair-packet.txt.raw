@@ -1,0 +1,11 @@
+```agent: engine-coordinator
+LAND 15.267's accepted SOURCE through the standing bailiff shepy pair. Exact disposition: /Users/ray/dev/factory-driffs/docs/seat/lens-reports-20261009/codex-big-picture-20261009/breach267-root-source-landing-disposition.json. Accepted candidate 9bfad159cd2c33ad5a46e745ea29ee28745b0760; Root checked all eight Git/working-file hashes and the clean candidate.
+
+Important graph correction: origin/shepy is 22594646ca33f805e091128674602373d8bb5361, but local refs/heads/shepy is d602a030ea7540668d9c61edb391db107e834b3a, carrying six source-disjoint 15.262 closeout evidence files. Preserve that local history. The claimed unchanged remote base is accurate; it is not the whole local destination. Use an owned landing worktree, fresh actual ref and custody checks, and the normal single-writer procedure. A clean reconciliation preserving the unchanged approved source and both histories is authorized. Source conflict or changed delta needs exact re-review; do not reset, rewrite or omit the closeout commit.
+
+Run the real required landing gates and hooks, including the promise-breach unit and demand-integration files, with actual child exits. The qualification's 11-test demand/history selection is narrower than the previously reviewed 34-test source family; it is not a substitute for the landing gate. Reuse the existing bailiff only after its current identity/context preconditions are satisfied; no duplicate worker or automatic fold retry.
+
+Target is the source branch shepy, not origin/main or upstream. Existing standing source-push authority applies only if it explicitly covers shepy -> origin/shepy; this grants no broader push. No runtime/API rollout, live demand, daemon/profile, DB migration, receipt producer or native/private execution. The missing upstream receipt writer remains a runtime prerequisite.
+
+Return the bailiff's actual destination and evidence receipt before row close. Record SOURCE LANDED separately from the held operational adoption; do not call the complete promise-breach feature live or finished from this source result.
+```

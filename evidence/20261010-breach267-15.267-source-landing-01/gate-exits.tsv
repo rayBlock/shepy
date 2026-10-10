@@ -1,0 +1,14 @@
+name	command-exit	result
+source-family-34	0	2 files, 34 passed; exact root-reviewed pair
+supplemental-ingress-wake-family	0	2 files, 31 passed
+promise-breach-unit	0	1 file, 26 passed
+demand-integration-plus-ingress	0	2 files, 21 passed
+full-suite-first-attempt	1	environmental EINVAL/socket-path + timeout with overly long TMPDIR; raw retained
+full-suite-corrected	0	67 files, 783 passed; short physical TMPDIR
+root-typecheck	0	pnpm typecheck
+pi-package-typecheck	0	pnpm --dir packages/shepy-pi typecheck
+lint	0	1 warning reported; no fixes applied
+format-check	0	pnpm format:check
+db-check	0	pnpm db:check
+alternate-worktree-hook-setup	1	pnpm attempted install and aborted no-TTY before removal; no install completed; alternate worktree preserved
+merge	0	--no-ff, parents d602a03 and approved candidate 9bfad15

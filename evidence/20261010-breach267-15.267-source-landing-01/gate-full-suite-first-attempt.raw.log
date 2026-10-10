@@ -1,0 +1,48 @@
+Already up to date
+Done in 272ms using pnpm v11.9.0
+$ vitest run
+
+ RUN  v4.1.9 /Users/ray/dev/shepy-wt/breach-adapter
+
+ ❯ test/integration/agent-context-health-rpc.test.ts (2 tests | 1 failed) 110ms
+     × a branch_summary followed by a user append reads stale over agent.get (P1) 16ms
+npm warn Unknown env config "manage-package-manager-versions". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+ ❯ test/integration/herdr-orchestration-transport.test.ts (1 test | 1 failed) 5004ms
+     × sends exact agent.prompt and agent.wait payloads over a real Unix socket 5003ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/integration/agent-context-health-rpc.test.ts > agent context health over RPC > a branch_summary followed by a user append reads stale over agent.get (P1)
+Error: listen EINVAL: invalid argument /private/tmp/shepy-breach267-bailiff/attempt-1/tmp-full-suite/shepy-ctx-health-rpc-branch-nOMkp4/rpc.sock
+ ❯ src/daemon/observability-server.ts:235:20
+    233|     await new Promise<void>((resolve, reject) => {
+    234|       this.#server.once("error", reject);
+    235|       this.#server.listen(this.#socketPath, () => {
+       |                    ^
+    236|         this.#server.off("error", reject);
+    237|         resolve();
+ ❯ ObservabilityRpcServer.start src/daemon/observability-server.ts:233:11
+ ❯ test/integration/agent-context-health-rpc.test.ts:364:18
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  test/integration/herdr-orchestration-transport.test.ts > Herdr orchestration socket methods > sends exact agent.prompt and agent.wait payloads over a real Unix socket
+Error: Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ ❯ test/integration/herdr-orchestration-transport.test.ts:51:3
+     49|
+     50| describe("Herdr orchestration socket methods", () => {
+     51|   test("sends exact agent.prompt and agent.wait payloads over a real U…
+       |   ^
+     52|     const { requests, socketPath } = await startFakeHerdr();
+     53|     const client = new HerdrSocketClient({ socketPath });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  2 failed | 65 passed (67)
+      Tests  2 failed | 781 passed (783)
+   Start at  19:59:41
+   Duration  10.54s (transform 9.93s, setup 0ms, import 15.04s, tests 37.41s, environment 3ms)
+
+[ELIFECYCLE] Test failed. See above for more details.

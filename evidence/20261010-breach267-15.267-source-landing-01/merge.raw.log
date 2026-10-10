@@ -1,0 +1,11 @@
+Merge made by the 'ort' strategy.
+ packages/shepy-pi/src/index.ts                     |  19 +-
+ packages/shepy-pi/src/wake.ts                      |  29 +-
+ src/observability/demand-eligibility.ts            | 442 ++++++++++++-
+ src/observability/profile-demand-ingress.ts        |  10 +
+ test/integration/profile-demand.test.ts            | 637 +++++++++++++++++-
+ .../unit/demand-eligibility-promise-breach.test.ts | 726 +++++++++++++++++++++
+ test/unit/profile-demand-ingress.test.ts           | 123 ++++
+ test/unit/shepy-pi-wake.test.ts                    |  52 ++
+ 8 files changed, 2021 insertions(+), 17 deletions(-)
+ create mode 100644 test/unit/demand-eligibility-promise-breach.test.ts

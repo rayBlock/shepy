@@ -1,0 +1,1 @@
+COMMAND: TMPDIR=/private/tmp/b267-59 pnpm vitest run test/unit/demand-eligibility-promise-breach.test.ts test/integration/profile-demand.test.ts --no-cache

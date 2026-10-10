@@ -1,0 +1,60 @@
+remote origin/shepy=22594646ca33f805e091128674602373d8bb5361
+tracking origin/shepy=22594646ca33f805e091128674602373d8bb5361
+local shepy=d602a030ea7540668d9c61edb391db107e834b3a
+candidate=9bfad159cd2c33ad5a46e745ea29ee28745b0760
+landing_worktree=/Users/ray/dev/shepy-wt/breach-adapter
+landing_branch=shepy
+landing_HEAD=d602a030ea7540668d9c61edb391db107e834b3a
+hook_path=.husky/_
+pre_commit_executable=yes
+worktree /Users/ray/dev/shepy
+bare
+
+worktree /Users/ray/dev/shepy-wt/b-hardening
+HEAD 959f186ae26fcaf5a5681199041e96c7eeb07deb
+branch refs/heads/spawn/fd-delivery-stall
+
+worktree /Users/ray/dev/shepy-wt/b-schedfix
+HEAD dd66f377424a0543591bb983521e86dd41721a3f
+branch refs/heads/seat/b-schedfix
+
+worktree /Users/ray/dev/shepy-wt/breach-adapter
+HEAD d602a030ea7540668d9c61edb391db107e834b3a
+branch refs/heads/shepy
+
+worktree /Users/ray/dev/shepy-wt/breach-adapter-land
+HEAD d602a030ea7540668d9c61edb391db107e834b3a
+detached
+
+worktree /Users/ray/dev/shepy-wt/docs-restore
+HEAD 55fc1c6af27848f759f3fc6c7948f0d997d22bc6
+branch refs/heads/spawn/docs-restore
+
+worktree /Users/ray/dev/shepy-wt/identity-guard
+HEAD 65c4d4f3fcd8864b1be4303050f2551faf933475
+branch refs/heads/pilot/identity-guard
+
+worktree /Users/ray/dev/shepy-wt/migrec-01
+HEAD 7f6551f4bc2af1c06a8ff7fa6ea0daa923bb0a54
+branch refs/heads/spawn/migrec-01
+
+worktree /Users/ray/dev/shepy-wt/native-provision
+HEAD 14cda6ae7b3dda329307e7374299bc0c9b443a60
+detached
+
+worktree /Users/ray/dev/shepy-wt/r1-ingress
+HEAD 1a9f7a6574acef87af3c272194172ba6faf88441
+branch refs/heads/spawn/r1-ingress
+
+worktree /Users/ray/dev/shepy-wt/recovery
+HEAD 047339ff4caad30f8e87a70182195ff2a1adff9a
+branch refs/heads/seat/recovery
+
+worktree /Users/ray/dev/shepy-wt/waitfix
+HEAD 37c9b0ba54d30295ad5479bf6e4041be51bc6726
+branch refs/heads/pilot/wait-idle-settle
+
+worktree /Users/ray/dev/shepy-wt/wake-exc
+HEAD b6f507d9a00547248c81e35d602d246f5123f917
+branch refs/heads/spawn/wake-exc
+

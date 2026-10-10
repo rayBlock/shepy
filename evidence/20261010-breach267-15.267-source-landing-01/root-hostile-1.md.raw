@@ -1,0 +1,74 @@
+IDENTITY provider=qwen-cloud model=deepseek-v4-flash-0731 thinking=high
+# HOSTILE (flash, tight) — ROW 15.267 promise-breach adapter candidate — hostile-1.md
+Reviewer: flash-lens (dispatch e9b603e307b3c2ea, pane w3J:pTF). Worktree /Users/ray/dev/shepy-wt/breach-adapter.
+Candidate: HEAD `68f95e18aa2e9e85d5bc19445c7bf965e526664b` = "Add promise-breach demand kind with per-incident receipt evidence (ROW 15.267)"; parent `22594646ca33f805e091128674602373d8bb5361` (origin/shepy); single commit over base, branch spawn/breach-adapter, `git status --porcelain` empty (frozen).
+
+Spec: engine-promise-breach-adapter-source-candidate.txt + typed-notification-actual-receiver-audit.json. Builder report: /private/tmp/breach267/out/build-1.md. All 772 tests + typecheck/lint/format/db checks re-run by me, independently: 772/772 pass (18.2s); `tsc --noEmit` exit 0; biome lint/format clean (1 pre-existing warning in `src/observability/profile-selector-scope.ts`, untouched by the candidate — verified present at base 2259464); `drizzle-kit check` clean.
+
+---
+
+## Verification BY NUMBER
+
+### (1) Registration additive — PASS
+`factory.demand.v1` (`demandRequestSchema`, src/observability/profile-demand-ingress.ts) kind union extended by ONE literal `promise-breach`; reason union by ONE literal `expired-immutable-deadline`; kind→reason map gains `"promise-breach": ["expired-immutable-deadline"]`. Source allowlist schema gains ONLY optional `promise_adoption_since` (aware-UTC regex, absent ⇒ source may not carry promise-breach — enforced at eligibility as `adoption-cutoff-missing`). The `inbox.publishDemand` RPC registration (src/daemon/observability-server.ts:596-600 → ProfileDemandService.publishDemand) is unchanged.
+- Diff is purely additive: the ONLY modified existing line in ingress logic is the kind–reason map entry insertion; no union member, refusal or route removed.
+- Legacy refusals verified still firing: `continuation-missing` ⇒ `route-proof-unavailable` (pre-existing test test/integration/profile-demand.test.ts:270-274 still green in my run); `successor-escalation` ⇒ `route-proof-unavailable`; `queue-claimable` still admitted; revision>1 ⇒ `continuation-proof-unavailable` (unit + integration both green).
+- Demand still binds seatId===profileId (`owner-mismatch`), key route patterns unchanged.
+
+### (2) Per-incident hashed IMMUTABLE receipt snapshots — PASS (experiment re-run)
+`verifyDemandRef` (ingress) hashes the WHOLE FILE: `createHash("sha256").update(readFileSync(path)).digest("hex")` — the `selector` field never participates in the hash, so a selector cannot make a mutable ledger line immutable. demand-eligibility additionally REFUSES any non-single-receipt content at the same snapshotRef (`breach-receipt-unknown`), structurally foreclosing ledger/JSONL citations; `sourceRecordRef` (owned per-record snapshot) and (for derived waits) `censusRef` are each whole-file hash-verified against evidence roots.
+- Header-file hash of the receipt == the snapshotRef.sha256 the demand carries; re-verified at publish AND lease (validateDemandRequest runs in both `publishDemand` and `evaluateLease`).
+- **Append-stability experiment (mine, through the real provider + real receipt files):** receipt evaluated eligible → later unrelated append to the mutable source ledger (`promiseId: pr-next`) changes the ledger sha256 but leaves the receipt file BYTES UNCHANGED, file hash unchanged, and re-validation still eligible. The repo's own integration test does the same in-flow: append to `promises-ledger.jsonl` after publish, then lease succeeds. PASS.
+- Post-publication mutation of the receipt itself breaks the whole-file hash at lease re-validation → `demand:invalid-event`, never silent re-binding (integration test, green).
+
+### (3) Predicates — PASS
+- Breach gate is ONLY: promise.status === "open" AND dueAt fully expired at observation AND now (`due < now && due < observedAt`). Closed/voided ⇒ `promise-already-resolved`; unexpired/exact-instant ⇒ `deadline-not-expired`; observation predating deadline ⇒ `deadline-not-expired`. (3 unit tests, green.)
+- Derived waits ride ONLY the EXISTING read-only classifier, pinned by exact identity `factory.waits.reconcile@read-only-census` (exported constant), classification literal `live-past-due`, classifiedAt ≤ observedAt, censusRef hash-pinned inside evidence roots, and `due ≥ promise_adoption_since` (pre-adoption debt ⇒ `pre-adoption-debt`). Missing/foreign/stale classifier, census hash break, missing cutoff ⇒ refused. Armed promises must carry classifier null (`classifier-not-admitted`).
+- NO dead-PID-only breach — unit test "never lets a dead PID found a breach": dead PID + UNEXPIRED deadline ⇒ `deadline-not-expired` (refused); dead PID + expired deadline ⇒ eligible (deadline alone gates). `liveness` is optional schema metadata, never consulted by any predicate.
+- NO quiet/capacity inference — hostile probe against the REAL `DemandEligibilityProvider` (my probe, /private/tmp/breach267/out/probe-quiet-capacity.test.ts, 4/4 green):
+  - quiet:true + unexpired deadline ⇒ `demand:breach-receipt-unknown` (quiet is not even representable in the receipt schema, additionalProperties:false)
+  - capacityObserved {occupiedSlots:1, availableSlots:0} + unexpired deadline ⇒ `demand:breach-receipt-unknown`
+  - bare quiet/capacity-only evidence ⇒ `demand:breach-receipt-unknown`
+  Exact codes captured from the run: `quiet=demand:breach-receipt-unknown`, `capacity=demand:breach-receipt-unknown`, `bare=demand:breach-receipt-unknown`.
+
+### (4) Consumer chain — PASS
+- Consumer is exclusively the EXISTING hosted-Pi owner pump (packages/shepy-pi index.ts 1069-1129/694-723 owner pump + profile-demand capability gate untouched; only two hunks: an import and the verbatim extraction of the witness predicate as `wakeContextWitnessed`). `wake.ts` gains ONLY: `promise-breach`/`expired-immutable-deadline` in the DemandSnapshot kind union + `isDemandSnapshot` gate (additive). `formatDemandObligationUpdates` unchanged — renders kind/episode/revision + cited path#sha256(selector) pointers only, no instructions, no agent excerpts, no invented pane.
+- The extraction is BYTE-SEMANTICS-IDENTICAL to the original inline closure (I diffed both: same customType/role gate, same length+includes obligation-id batch match, `asRecord(undefined)`⇒`{}` behaves like `details?.obligationIds`); a foreign/partial/wrong-type message never witnesses (3 unit tests green).
+- No invented event receiver, no pane.report_agent forging, no self-subscription: no new receiver, no Herdr state report, no subscription code anywhere in the diff.
+- ownerGeneration fully observed: 5-field generation schema (herdrSession/workspaceId/paneId/terminalId/nativeSessionRef), `duty-generation-mismatch` for forged, `owner-generation-mismatch` at lease for a pane move (integration test: moved pane ⇒ lease withheld + withheldReason). duty/grant/expiry/activation revision: `grant-not-pinned`/`grant-mismatch`, `expired-or-invalid-window`, `continuation-proof-unavailable` for revision>1; duty window lapsed ⇒ `duty-window-closed` (integration test).
+- Stages SEPARATE, no collapsed booleans: publication (`publishDemand` created/existing/idempotency-conflict) ≠ lease eligibility (`inboxLease`, whole-file re-validation) ≠ queued/delivered ≠ wake render+context witness (`formatDemandObligationUpdates` + `wakeContextWitnessed`, exact obligation-id batch) ≠ settlement ACK (`inboxAck`⇒state acked) ≠ task completion (explicitly outside, same boundary as the existing suite; index.ts settle path still gates ACK on witness + successful final + valid owner state).
+
+### (5) Suite run — PASS (re-run by me, 772/772)
+- Positive ONE-incident flow (integration, green): claim+adopt Pi owner with profile-demand capability → ACTUAL registered service path `ProfileDemandService.publishDemand` (the exact method the `inbox.publishDemand` RPC dispatches to) → created → idempotent replay (same event/obligation, 1 row) → changed-duplicate-payload ⇒ `demand:idempotency-conflict` → later-unrelated-append stability → `inboxLease` to the hosted Pi owner (kind promise-breach/reason/rev 1 on the leased snapshot; `isDemandSnapshot` true) → wake render + witness true/false → `inboxAck` ⇒ state acked + lookup found.
+- Refusal family, each firing (integration + unit, green): absent authority (source-not-allowed), wrong kind (queue-only allowlist), wrong profile, wrong grant, forged owner, partial owner (schema), lapsed owner (duty-window-closed), missing capability (created+withheld `owner-capability-unknown`, lease throws "source capability not claimed"), bad ref sha, expired window, revision escalation, durability failure (trigger rollback: nothing persists), ambiguity resolution (aborted attempt leaves 0 rows, retry lands exactly 1), post-publication identity change of evidence (receipt mutation ⇒ `demand:invalid-event` withheld) and of owner (pane move ⇒ `owner-generation-mismatch`).
+- Unit: armed-promise + derived-wait positives; closed/voided; unexpired/exact-instant; predating observation; ledger/JSONL-as-snapshot; episode mismatch; classifier missing/foreign/stale; censusRef hash; pre-adoption debt; armed-with-classifier; cutoff-missing; dead-PID shapes; source-record hash/outside-roots. 46/46 run by me.
+
+### (6) No live anything — PASS
+All tests use temp dirs (`mkdtemp` under tmpdir), temp sqlite (applyMigrations), and written file fixtures; no daemon, no real publication, no prompt, no credential/allowlist read/change, no process actions. The one RPC socket test in the integration file is pre-existing (queue-claimable) and binds an in-process `ObservabilityRpcServer` to a temp-dir socket — no candidate test opens a socket or reaches a live daemon. Raw unpiped `pnpm test` exit 0.
+
+### (7) Diff scope + frozen hashes — PASS
+Exactly the 8 proposed files, +1317/−17 (numstat confirms): packages/shepy-pi/src/index.ts (6/13), wake.ts (27/2), src/observability/demand-eligibility.ts (116/1), profile-demand-ingress.ts (10/0), test/integration/profile-demand.test.ts (624/1), test/unit/demand-eligibility-promise-breach.test.ts (359/0), test/unit/profile-demand-ingress.test.ts (123/0), test/unit/shepy-pi-wake.test.ts (52/0). Nothing outside ingress/eligibility/wake/tests touched. Working tree clean, single commit over base, branch spawn/breach-adapter, no push.
+Frozen file hashes (sha256, at HEAD 68f95e18aa2e9e85d5bc19445c7bf965e526664b):
+- 99a2f9b79fd999c14e0226deef910ca260ebdc614e09e10272c045023a9ab5d7  packages/shepy-pi/src/index.ts
+- 61b74ceb32b0956221e804a641d9f62a5753dfe4177377ea2fefb3b6392624d6  packages/shepy-pi/src/wake.ts
+- 6b67952aacb52dbaadce8ad8463f41e22ddd88f184ed24a5976c5be99f0831df  src/observability/demand-eligibility.ts
+- 62c8bf43a39253fb34b37b91d4a09c1d495b074be034fea6fb576d156a4a0454  src/observability/profile-demand-ingress.ts
+- 8d3fc7759f2183c694d6dad2fc2052963ab5547214ed212ab6bd279a09a7c465  test/integration/profile-demand.test.ts
+- e39f1d13edf0aba7529c715b40ad34a000ee82183888c68d976ceaa6e8f54a18  test/unit/demand-eligibility-promise-breach.test.ts
+- 0d96e480295ed4f6f612becc6f6d77caa9283924a8671b8849ef52d886f5a2cd  test/unit/profile-demand-ingress.test.ts
+- 4b2067296b7f5cbfc94e1d7508e61012fb7bb697834186cdcca0978ec4c50c49  test/unit/shepy-pi-wake.test.ts
+
+---
+
+## Non-killing observations (honest limits, all in-packet)
+1. Settlement ACK in the integration test calls `delivery.inboxAck` directly; the full witness→settle path inside the Pi extension (index.ts) is not exercised end-to-end through a live pi-runtime turn — identical boundary to the pre-existing suite, and the extraction is verbatim (zero behavior delta).
+2. The per-incident receipt WRITER (driffs-side scanner producing owned snapshot files + source-record snapshots) is a separate row, not built here — the source candidate is producer-ready but not yet producible.
+3. `promise_adoption_since` presence is enforced for ALL promise-breach sources, but its value is parsed only in the derived-wait branch (as spec'd: the cutoff governs adoption debt of waits); a regex-passing-but-unparseable operator value fails safely (`demand:invalid-utc`) in that path. Matches the base's own utcStamp-then-`utc()` convention; operator-owned trusted config, not attacker input.
+4. 15.266 durable pre-send reservation NOT built (packet: after 15.263); publish idempotency is not a pre-send receipt — correctly not claimed. Neutral/native Codex demand support remains outside the slice.
+
+## Hostile probes retained
+/private/tmp/breach267/out/probe-quiet-capacity.test.ts + vitest-hostile.config.ts + refusal-codes.log + probe-run.log (4/4 green; exact refusal codes captured).
+
+## VERDICT: SURVIVES
+Scope: ROW 15.267 promise-breach adapter candidate 68f95e1 (8 files, +1317/−17). Evidence: 772/772 tests re-run green; typecheck/lint/format/drizzle clean; additive ingress diff verified; whole-file-hash immutability proven by append experiment (repo suite + independent probe); dead-PID and quiet/capacity negative shapes probed against the real provider with exact refusal codes; consumer chain is the verbatim-extracted existing witness + untouched owner pump/ACK; stages separate; diff scope + frozen hashes exact; no live anything.
+Limitations: settlement-to-completion end-to-end turn lives outside the test boundary (same as existing suite); upstream receipt writer is a separate row. Next owner/consumer: row owner for adjudication of adoption/activation packet (per packet, no main merge, no public-API adoption, no activation — Ray load word separate).

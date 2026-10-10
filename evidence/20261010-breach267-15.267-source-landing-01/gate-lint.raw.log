@@ -1,0 +1,27 @@
+Already up to date
+Done in 251ms using pnpm v11.9.0
+$ biome check .
+src/observability/profile-selector-scope.ts:7:3 lint/correctness/noUnusedImports  FIXABLE  ━━━━━━━━━━
+
+  ! Several of these imports are unused.
+  
+    5 │   type AgentSelector,
+    6 │   resolveAgentSelector,
+  > 7 │   type SelectableAgent,
+      │   ^^^^^^^^^^^^^^^^^^^^
+    8 │   selectableFromRow,
+    9 │   type WorkspaceSelector,
+  
+  i Unused imports might be the result of an incomplete refactoring.
+  
+  i Unsafe fix: Remove the unused imports.
+  
+     5  5 │     type AgentSelector,
+     6  6 │     resolveAgentSelector,
+     7    │ - ··type·SelectableAgent,
+     8  7 │     selectableFromRow,
+     9  8 │     type WorkspaceSelector,
+  
+
+Checked 148 files in 83ms. No fixes applied.
+Found 1 warning.

@@ -1,0 +1,40 @@
+{
+  "issued_utc": "2026-10-10T17:48:45.688659+00:00",
+  "decision": "LAND-SOURCE-ONLY through standing bailiff shepy pair",
+  "row": "15.267",
+  "accepted_candidate": "9bfad159cd2c33ad5a46e745ea29ee28745b0760",
+  "accepted_source_receipt": "/Users/ray/dev/factory-driffs/evidence/20261010-breach267-source/receipt.json",
+  "source_review": "/Users/ray/dev/factory-driffs/docs/seat/lens-reports-20261009/codex-big-picture-20261009/breach267-root-correction-authority-review.json",
+  "observed_remote_ref": "origin/shepy",
+  "observed_remote_sha": "22594646ca33f805e091128674602373d8bb5361",
+  "observed_local_ref": "refs/heads/shepy",
+  "observed_local_sha": "d602a030ea7540668d9c61edb391db107e834b3a",
+  "local_advance": "Six source-disjoint 15.262 closeout evidence paths; preserve this history during landing; no reset/amend/rewrite",
+  "source_paths_and_hashes": {
+    "packages/shepy-pi/src/index.ts": "99a2f9b79fd999c14e0226deef910ca260ebdc614e09e10272c045023a9ab5d7",
+    "packages/shepy-pi/src/wake.ts": "61b74ceb32b0956221e804a641d9f62a5753dfe4177377ea2fefb3b6392624d6",
+    "src/observability/demand-eligibility.ts": "179c2d98d0484bb52659a2589e71651c1ba9008a76f6d3e0600b25d99789c0f2",
+    "src/observability/profile-demand-ingress.ts": "62c8bf43a39253fb34b37b91d4a09c1d495b074be034fea6fb576d156a4a0454",
+    "test/integration/profile-demand.test.ts": "7ff427efbf81913fa56fe1a2b18c4442f7fb07d43f999a281aaaaf493b8eee60",
+    "test/unit/demand-eligibility-promise-breach.test.ts": "aa9ea6f3ee3be8dfce422aa3dd0d42bdcefb7f23797bdd76f1d5fd8e03eeab6d",
+    "test/unit/profile-demand-ingress.test.ts": "0d96e480295ed4f6f612becc6f6d77caa9283924a8671b8849ef52d886f5a2cd",
+    "test/unit/shepy-pi-wake.test.ts": "4b2067296b7f5cbfc94e1d7508e61012fb7bb697834186cdcca0978ec4c50c49"
+  },
+  "destination_closeout_paths": [
+    "evidence/20261010-ocv2-15.262-landing-01/final-closeout-sha256.txt",
+    "evidence/20261010-ocv2-15.262-landing-01/final-closeout.md",
+    "evidence/20261010-ocv2-15.262-landing-01/hook-attempt-before-restore.log",
+    "evidence/20261010-ocv2-15.262-landing-01/hook-success-after-restore.log",
+    "evidence/20261010-ocv2-15.262-landing-01/landing-push.log",
+    "evidence/20261010-ocv2-15.262-landing-01/queue-cas.log"
+  ],
+  "fresh_qualification": {
+    "tsc_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "suite_log_sha256": "a098d387961eef2dc72758acc263039bda8b24d27ecfe363e272b7509d5807ae",
+    "observed_suite_summary": "2 files, 11 tests passed",
+    "raw_exits": "Engine native command printed TSC-RAW0 and SUITE-RAW0; no separate exit file supplied; bailiff actual landing gates remain required"
+  },
+  "conditions": "Fresh actual branch/ref/custody/context checks, single writer, preserve both source and evidence ancestry, unchanged approved source hashes and diff, real normal hooks and existing required gates. Source conflict or changed delta returns for exact review.",
+  "authority_boundary": "Source branch landing only; existing standing source push authority applies only to exact shepy -> origin/shepy pair if its packet grants it. No origin/main or upstream push, public API rollout, daemon/profile/demand/receipt-writer activation, migration or private/native execution. Upstream receipt writer remains absent and unqualified.",
+  "next": "Bailiff receipt naming actual source/evidence destination, observed gates and pending runtime disposition before row closure"
+}

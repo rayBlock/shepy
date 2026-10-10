@@ -1,0 +1,17 @@
+{
+  "at": "2026-10-10T07:53:42.002027+00:00",
+  "candidate": "9bfad159cd2c33ad5a46e745ea29ee28745b0760",
+  "command": [
+    "/opt/homebrew/opt/node@24/bin/node",
+    "/Users/ray/dev/shepy-wt/breach-adapter/node_modules/vitest/vitest.mjs",
+    "run",
+    "test/unit/demand-eligibility-promise-breach.test.ts",
+    "--no-cache",
+    "-t",
+    "admits a post-adoption|refuses a record whose bytes|refuses when the census lacks|refuses complete-uncollected"
+  ],
+  "raw_exit": 0,
+  "stdout_sha256": "5dec4a579af78fc324b3a066fafaf9453bbd0423100d25d22c6968e37ef2df67",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "scope": "Root narrow actual-provider positive and refusal gate; no wrapper provisioning, no live state"
+}

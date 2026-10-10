@@ -1,0 +1,9 @@
+TMPDIR=/private/tmp/shepy-breach267-bailiff/attempt-1/tmp-source-family pnpm vitest run test/unit/profile-demand-ingress.test.ts test/unit/shepy-pi-wake.test.ts
+TMPDIR=/private/tmp/shepy-breach267-bailiff/attempt-1/tmp-breach-unit pnpm vitest run test/unit/demand-eligibility-promise-breach.test.ts
+TMPDIR=/private/tmp/shepy-breach267-bailiff/attempt-1/tmp-demand-integration pnpm vitest run test/integration/profile-demand.test.ts test/unit/profile-demand-ingress.test.ts
+TMPDIR=/private/tmp/shepy-breach267-bailiff/attempt-1/tmp-full-suite pnpm test
+TMPDIR=/private/tmp/shepy-breach267-bailiff/attempt-1/tmp-root-tsc pnpm typecheck
+TMPDIR=/private/tmp/shepy-breach267-bailiff/attempt-1/tmp-pi-tsc pnpm --dir packages/shepy-pi typecheck
+TMPDIR=/private/tmp/shepy-breach267-bailiff/attempt-1/tmp-lint pnpm lint
+TMPDIR=/private/tmp/shepy-breach267-bailiff/attempt-1/tmp-format pnpm format:check
+TMPDIR=/private/tmp/shepy-breach267-bailiff/attempt-1/tmp-db pnpm db:check

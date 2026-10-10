@@ -1,0 +1,5 @@
+Already up to date
+Done in 249ms using pnpm v11.9.0
+$ drizzle-kit check --config drizzle.config.ts
+Reading config file '/Users/ray/dev/shepy-wt/breach-adapter/drizzle.config.ts'
+Everything's fine 🐶🔥

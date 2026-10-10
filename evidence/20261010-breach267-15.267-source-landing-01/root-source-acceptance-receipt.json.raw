@@ -1,0 +1,41 @@
+{
+  "at": "2026-10-10T07:54:49Z",
+  "row": "15.267",
+  "scope": "Isolated source component only",
+  "decision": "ACCEPT-SOURCE",
+  "candidate": "9bfad159cd2c33ad5a46e745ea29ee28745b0760",
+  "predecessor": "68f95e18aa2e9e85d5bc19445c7bf965e526664b",
+  "source_hashes": [
+    {
+      "path": "src/observability/demand-eligibility.ts",
+      "sha256": "179c2d98d0484bb52659a2589e71651c1ba9008a76f6d3e0600b25d99789c0f2"
+    },
+    {
+      "path": "test/integration/profile-demand.test.ts",
+      "sha256": "7ff427efbf81913fa56fe1a2b18c4442f7fb07d43f999a281aaaaf493b8eee60"
+    },
+    {
+      "path": "test/unit/demand-eligibility-promise-breach.test.ts",
+      "sha256": "aa9ea6f3ee3be8dfce422aa3dd0d42bdcefb7f23797bdd76f1d5fd8e03eeab6d"
+    }
+  ],
+  "review": "docs/seat/lens-reports-20261009/codex-big-picture-20261009/breach267-root-correction-authority-review.json",
+  "review_sha256": "6c6e2e6d389fd5e65c60268cc720789d4f789d8141ec3237105f062f28fd0dc1",
+  "original_hostile": "/private/tmp/breach267/out/hostile-1.md",
+  "corrected_hostile": "/private/tmp/breach267/out/hostile-2.md",
+  "root_gate": "docs/seat/lens-reports-20261009/codex-big-picture-20261009/breach267-correction-root-gate/receipt.json",
+  "root_gate_result": "4 passed,22 deliberately skipped by targeted name filter; raw exit0, actual provider",
+  "qualified": [
+    "Receipt claims derived from canonical source bytes",
+    "Waits claim binds to unique actual overdue unpaired deadline-passed row",
+    "Contradiction, closure debt, future and hash-tamper refusals",
+    "Strict used clocks preserved; record-binding mutant independently killed"
+  ],
+  "limits": [
+    "Upstream receipt writer absent and unqualified",
+    "No production provenance or live consumption proof",
+    "No main merge, push, public API/schema adoption, allowlist activation or runtime grant",
+    "Engine queue invalid; status recovery is separate, no direct queue edit"
+  ],
+  "next": "Guarded engine queue repair; source candidate frozen until separately reviewed adoption packet"
+}

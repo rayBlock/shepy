@@ -1,0 +1,8 @@
+Landing worktree: /Users/ray/dev/shepy-wt/breach-adapter
+Landing branch/HEAD before merge: shepy / d602a030ea7540668d9c61edb391db107e834b3a
+Configured hooksPath: .husky/_ (repository config)
+Generated pre-commit wrapper: executable at .husky/_/pre-commit in this landing worktree
+Tracked hook source: .husky/pre-commit
+Hook script: pnpm lint-staged; pnpm typecheck; pnpm test; pnpm lint; pnpm format:check; pnpm db:check
+The hook prepends mise Node 24.18.0 and pnpm 11.9.0; landing uses the physical node_modules tree at this same worktree path.
+Normal git commit is used; no HUSKY=0/--no-verify bypass.

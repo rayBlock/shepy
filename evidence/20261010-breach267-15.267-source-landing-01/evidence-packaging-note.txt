@@ -1,0 +1,1 @@
+The source-range and merge-range `git diff --check` commands passed. `git diff --cached --check` over the evidence-only staged directory reports trailing whitespace/blank terminal lines in verbatim raw logs, including the lint output. These are preserved unchanged as raw evidence; no source file or receipt was normalized. This packaging-only result is not a product gate.

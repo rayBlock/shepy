@@ -1,0 +1,83 @@
+{
+  "review": "15.267 correction authority recheck",
+  "candidate": "9bfad159cd2c33ad5a46e745ea29ee28745b0760",
+  "predecessor": "68f95e18aa2e9e85d5bc19445c7bf965e526664b",
+  "branch": "spawn/breach-adapter",
+  "worktree": "/Users/ray/dev/shepy-wt/breach-adapter",
+  "verdict": "ACCEPT-SOURCE",
+  "started_at_utc": "2026-10-10T07:47:34Z",
+  "ended_at_utc": "2026-10-10T07:51:26Z",
+  "scope_and_identity": {
+    "changed_paths_from_predecessor": [
+      "src/observability/demand-eligibility.ts",
+      "test/integration/profile-demand.test.ts",
+      "test/unit/demand-eligibility-promise-breach.test.ts"
+    ],
+    "before_and_after_hashes": {
+      "src/observability/demand-eligibility.ts": "179c2d98d0484bb52659a2589e71651c1ba9008a76f6d3e0600b25d99789c0f2",
+      "test/integration/profile-demand.test.ts": "7ff427efbf81913fa56fe1a2b18c4442f7fb07d43f999a281aaaaf493b8eee60",
+      "test/unit/demand-eligibility-promise-breach.test.ts": "aa9ea6f3ee3be8dfce422aa3dd0d42bdcefb7f23797bdd76f1d5fd8e03eeab6d"
+    },
+    "hostile_2_hashes": "All three hashes match hostile-2.md before and after. HEAD is exact; predecessor is an ancestor; tracked status stayed clean; diff --check passed."
+  },
+  "findings": [
+    {
+      "id": "BA-1",
+      "result": "CLOSED",
+      "evidence": "The actual DemandEligibilityProvider now parses the hash-pinned v1 record, bare v2 arm, or v2 arm/events snapshot and binds receipt ID, due instant, status, and ownership to derived bytes before admission. Focused real-provider tests refuse different ID, future/mismatched due, closed or breached status, ownership omission/overclaim, non-JSON and unsupported bytes; an expired matching v1 record remains eligible. A v2 keep for p1 refuses an open claim; a keep event for p2 does not close p1, matching the engine fold's per-ID rule."
+    },
+    {
+      "id": "BA-2",
+      "result": "CLOSED",
+      "evidence": "I called the actual engine tools/waits/reconcile.ts against private scratch ledgers, passed its returned ReconcileResult bytes through the actual provider, and observed an eligible matching expired unpaired deadline-passed row. Actual outputs for empty/missing, wrong claimed ID, live/future, paired closure-without-citation debt, and complete-uncollected debt refuse. A duplicated-row adversarial variant made from a real ReconcileResult shape refuses as waits-row-ambiguous; the canonical reconciler assigns sequential wN IDs, so an ambiguous genuine result is structurally unavailable. Source and census hash-tamper controls refuse."
+    },
+    {
+      "id": "BA-3",
+      "result": "PRESERVED",
+      "evidence": "Used-path UTC parsing still rejects impossible classifiedAt and adoption cutoff values as demand:invalid-utc. Missing and pre-adoption cutoff refusals remain in the focused suite. A receipt due outside the row's resolved window refuses. For the canonical minute-precision deadline 10:00Z, 10:00:30Z is admitted because tools/waits/defs.ts defines that stamp as the bounded minute interval; 10:01:00Z and a future 13:00Z claim refuse. This is bounded-window behavior, not a future-at-observation admission."
+    }
+  ],
+  "canonical_source_comparison": {
+    "promise_ledger": "/Users/ray/dev/agent-factory/tools/promises/ledger.ts: lineOf, parseLedgerUnified, and projectLedger fold v1 whole-line states and v2 events by ID in file order; keep/breach/escalation/void close that ID; ack/unknown events do not change state.",
+    "waits_reconcile": "/Users/ray/dev/agent-factory/tools/waits/reconcile.ts: ReconcileResult is census, rows, unpaired, probes, backfilled; WaitRow is id, subject, deadline, waitClass, reason, citation, unpaired. IDs are assigned sequentially as wN. tools/waits/defs.ts names deadline-passed, complete-uncollected, and closure-without-citation distinctly.",
+    "calendar_limit": "The adapter mirrors a correct 12-month date table while tools/waits/defs.ts currently has an 11-entry MONTH_DAYS table with a month-offset defect. The provider still requires the actual reconciler row to be debt with exact deadline-passed reason, unpaired, and an independently resolvable fully elapsed date window. The discrepancy can cause refusals; invalid dates admitted or rejected differently by the engine table are refused by the adapter's calendar check. No engine clock/classifier authority was changed.",
+    "upstream_limit": "The upstream receipt writer remains absent and unqualified. This review accepts only the source correction's semantic binding over cited bytes; it does not prove production receipt provenance, public API adoption, landing, or activation."
+  },
+  "checks": [
+    {
+      "name": "focused candidate tests",
+      "command": "/opt/homebrew/bin/node /Users/ray/dev/shepy-wt/breach-adapter/node_modules/vitest/vitest.mjs run test/unit/demand-eligibility-promise-breach.test.ts test/integration/profile-demand.test.ts --no-cache",
+      "cwd": "/Users/ray/dev/shepy-wt/breach-adapter",
+      "environment": "HOME, TMPDIR, TMP and TEMP pointed to /private/tmp/breach267-correction-review; stdout/stderr captured unpiped; timeout 60 seconds.",
+      "exit": 0,
+      "result": "2 files, 34 tests passed",
+      "stdout_sha256": "0c8f8456f7762ae1202d7082e9d348a2701002e86a604a8beb9163f190d5c3a1",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "independent actual-provider and canonical-reconcile probes",
+      "command": "/opt/homebrew/bin/node /Users/ray/dev/shepy-wt/breach-adapter/node_modules/vitest/vitest.mjs run --config /private/tmp/breach267-correction-review/vitest.config.ts --root /private/tmp/breach267-correction-review --no-cache actual-provider-probe.test.ts",
+      "cwd": "/private/tmp/breach267-correction-review",
+      "environment": "Private scratch HOME/TMPDIR; imported frozen candidate provider and actual engine reconcile implementation; all ledgers, census files and the one completion commit were scratch-only; timeout 60 seconds.",
+      "exit": 0,
+      "result": "1 file, 32 tests passed, including matching expired positive, actual missing/wrong/live/paired/complete/closure cases, malformed and hash refusals, strict UTC, due-window edges, and v2 event ID controls.",
+      "stdout_sha256": "6aa432bc3919e6690807bad6c3f2752e60b47caa19ec577184e3a802f6334138",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "record-binding mutation kill",
+      "mutation": "Scratch copy of demand-eligibility.ts with only the receipt.promise.recordId versus record.id guard removed; no candidate file changed.",
+      "command": "/opt/homebrew/bin/node /Users/ray/dev/shepy-wt/breach-adapter/node_modules/vitest/vitest.mjs run --config /private/tmp/breach267-correction-review/vitest.config.ts --root /private/tmp/breach267-correction-review --no-cache mutant-control.test.ts -t 'refuses a record whose bytes resolve'",
+      "exit": 1,
+      "result": "Expected mutation failure: the actual provider copy admitted the mismatched-ID receipt as eligible, so the existing contradictory-record control failed. 25 tests skipped; 1 discriminating test failed.",
+      "stdout_sha256": "44f0ee8cada44a9097c68f70d5a24c9108d3566db00bc864e3f9a68f4b6c994a",
+      "stderr_sha256": "d36a073691b85b11347a56ed81cd06cc4dbfb9382f01391bd61587ad3cf7bfc3"
+    }
+  ],
+  "raw_evidence_directory": "/Users/ray/dev/factory-driffs/docs/seat/lens-reports-20261009/codex-big-picture-20261009/breach267-root-correction-authority-evidence",
+  "limits": [
+    "No full 783-test suite rerun; focused candidate files and targeted probes passed.",
+    "No live ledger, daemon, socket, profile, database, credential, client, source, index, queue, main, API adoption, or activation was touched.",
+    "The actual reconciler cannot emit duplicate IDs; the ambiguity refusal is established with a duplicated-row adversarial copy of its real result shape, not claimed as authentic output."
+  ]
+}

@@ -1,0 +1,16 @@
+[ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY] Aborted removal of modules directory due to no TTY
+
+If you are running pnpm in CI, set the CI environment variable to "true", or set "confirmModulesPurge" to "false".
+[ERROR] Command failed with exit code 1: /opt/homebrew/Cellar/node/26.5.0/bin/node '/Users/ray/Library/pnpm/store/v11/links/@/pnpm/11.9.0/92bb10372f62db71cbc98af38930d00b053c41d2580dc6358198bb66fe9b65f4/node_modules/pnpm/bin/pnpm.mjs' install
+
+pnpm: Command failed with exit code 1: /opt/homebrew/Cellar/node/26.5.0/bin/node '/Users/ray/Library/pnpm/store/v11/links/@/pnpm/11.9.0/92bb10372f62db71cbc98af38930d00b053c41d2580dc6358198bb66fe9b65f4/node_modules/pnpm/bin/pnpm.mjs' install
+    at getFinalError (file:///Users/ray/Library/pnpm/store/v11/links/@/pnpm/11.9.0/92bb10372f62db71cbc98af38930d00b053c41d2580dc6358198bb66fe9b65f4/node_modules/pnpm/dist/pnpm.mjs:34291:14)
+    at makeError (file:///Users/ray/Library/pnpm/store/v11/links/@/pnpm/11.9.0/92bb10372f62db71cbc98af38930d00b053c41d2580dc6358198bb66fe9b65f4/node_modules/pnpm/dist/pnpm.mjs:36598:21)
+    at getSyncResult (file:///Users/ray/Library/pnpm/store/v11/links/@/pnpm/11.9.0/92bb10372f62db71cbc98af38930d00b053c41d2580dc6358198bb66fe9b65f4/node_modules/pnpm/dist/pnpm.mjs:38442:10)
+    at spawnSubprocessSync (file:///Users/ray/Library/pnpm/store/v11/links/@/pnpm/11.9.0/92bb10372f62db71cbc98af38930d00b053c41d2580dc6358198bb66fe9b65f4/node_modules/pnpm/dist/pnpm.mjs:38402:14)
+    at execaCoreSync (file:///Users/ray/Library/pnpm/store/v11/links/@/pnpm/11.9.0/92bb10372f62db71cbc98af38930d00b053c41d2580dc6358198bb66fe9b65f4/node_modules/pnpm/dist/pnpm.mjs:38332:23)
+    at callBoundExeca (file:///Users/ray/Library/pnpm/store/v11/links/@/pnpm/11.9.0/92bb10372f62db71cbc98af38930d00b053c41d2580dc6358198bb66fe9b65f4/node_modules/pnpm/dist/pnpm.mjs:40860:23)
+    at boundExeca (file:///Users/ray/Library/pnpm/store/v11/links/@/pnpm/11.9.0/92bb10372f62db71cbc98af38930d00b053c41d2580dc6358198bb66fe9b65f4/node_modules/pnpm/dist/pnpm.mjs:40837:49)
+    at sync (file:///Users/ray/Library/pnpm/store/v11/links/@/pnpm/11.9.0/92bb10372f62db71cbc98af38930d00b053c41d2580dc6358198bb66fe9b65f4/node_modules/pnpm/dist/pnpm.mjs:40996:10)
+    at runPnpmCli (file:///Users/ray/Library/pnpm/store/v11/links/@/pnpm/11.9.0/92bb10372f62db71cbc98af38930d00b053c41d2580dc6358198bb66fe9b65f4/node_modules/pnpm/dist/pnpm.mjs:247126:5)
+    at runDepsStatusCheck (file:///Users/ray/Library/pnpm/store/v11/links/@/pnpm/11.9.0/92bb10372f62db71cbc98af38930d00b053c41d2580dc6358198bb66fe9b65f4/node_modules/pnpm/dist/pnpm.mjs:248869:7)

@@ -1,0 +1,13 @@
+Already up to date
+Done in 255ms using pnpm v11.9.0
+$ vitest run
+
+ RUN  v4.1.9 /Users/ray/dev/shepy-wt/breach-adapter
+
+npm warn Unknown env config "manage-package-manager-versions". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+
+ Test Files  67 passed (67)
+      Tests  783 passed (783)
+   Start at  20:00:37
+   Duration  10.03s (transform 9.57s, setup 0ms, import 13.35s, tests 44.64s, environment 3ms)
+

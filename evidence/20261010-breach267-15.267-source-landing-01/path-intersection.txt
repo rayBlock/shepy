@@ -1,0 +1,17 @@
+candidate paths (8):
+packages/shepy-pi/src/index.ts
+packages/shepy-pi/src/wake.ts
+src/observability/demand-eligibility.ts
+src/observability/profile-demand-ingress.ts
+test/integration/profile-demand.test.ts
+test/unit/demand-eligibility-promise-breach.test.ts
+test/unit/profile-demand-ingress.test.ts
+test/unit/shepy-pi-wake.test.ts
+local closeout paths (6):
+evidence/20261010-ocv2-15.262-landing-01/final-closeout-sha256.txt
+evidence/20261010-ocv2-15.262-landing-01/final-closeout.md
+evidence/20261010-ocv2-15.262-landing-01/hook-attempt-before-restore.log
+evidence/20261010-ocv2-15.262-landing-01/hook-success-after-restore.log
+evidence/20261010-ocv2-15.262-landing-01/landing-push.log
+evidence/20261010-ocv2-15.262-landing-01/queue-cas.log
+intersection (0): []

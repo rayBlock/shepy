@@ -1,0 +1,1 @@
+Observed pnpm run pnpm:devPreinstall from the new worktree did not setup hooks; it attempted pnpm install and aborted ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY before removal. Do not retry/install. Use the existing candidate worktree at the same path with physical dependencies and generated hooks; preserve this unused detached worktree/symlink until green.

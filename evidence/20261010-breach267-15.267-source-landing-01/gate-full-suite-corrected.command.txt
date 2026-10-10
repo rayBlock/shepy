@@ -1,0 +1,1 @@
+COMMAND: TMPDIR=/private/tmp/b267-59 pnpm test (short owned TMPDIR to keep Unix socket paths below platform limit)

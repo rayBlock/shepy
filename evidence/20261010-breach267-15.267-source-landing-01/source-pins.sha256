@@ -1,0 +1,8 @@
+99a2f9b79fd999c14e0226deef910ca260ebdc614e09e10272c045023a9ab5d7  packages/shepy-pi/src/index.ts
+61b74ceb32b0956221e804a641d9f62a5753dfe4177377ea2fefb3b6392624d6  packages/shepy-pi/src/wake.ts
+179c2d98d0484bb52659a2589e71651c1ba9008a76f6d3e0600b25d99789c0f2  src/observability/demand-eligibility.ts
+62c8bf43a39253fb34b37b91d4a09c1d495b074be034fea6fb576d156a4a0454  src/observability/profile-demand-ingress.ts
+7ff427efbf81913fa56fe1a2b18c4442f7fb07d43f999a281aaaaf493b8eee60  test/integration/profile-demand.test.ts
+aa9ea6f3ee3be8dfce422aa3dd0d42bdcefb7f23797bdd76f1d5fd8e03eeab6d  test/unit/demand-eligibility-promise-breach.test.ts
+0d96e480295ed4f6f612becc6f6d77caa9283924a8671b8849ef52d886f5a2cd  test/unit/profile-demand-ingress.test.ts
+4b2067296b7f5cbfc94e1d7508e61012fb7bb697834186cdcca0978ec4c50c49  test/unit/shepy-pi-wake.test.ts
