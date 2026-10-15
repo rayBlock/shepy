@@ -18,6 +18,12 @@ import type { CompactAgentHistory } from "@/observability/contracts.js";
 export type OutcomeContextState = "current" | "stale" | "unavailable";
 
 export type OutcomeContext = {
+  /**
+   * Seconds from the reading to the event (event time minus reading time).
+   * Null when either time is unknown or the reading claims to be later than
+   * the event: no age is invented.
+   */
+  ageSeconds: number | null;
   /** Always the event's own snapshot; never a delivery-time read. */
   basis: "event";
   eventAt: string | null;
@@ -55,6 +61,7 @@ function unavailable(
   extra: Partial<OutcomeContext> = {},
 ): OutcomeContext {
   return {
+    ageSeconds: null,
     basis: "event",
     eventAt,
     model: null,
@@ -113,6 +120,11 @@ export function projectOutcomeContext(event: {
   ) {
     return unavailable("session_mismatch", eventAt, base);
   }
+  // A file whose entries carry more than one session id cannot prove which
+  // session the reading belongs to, even when the last id matches.
+  if (Array.isArray(health.limitations) && health.limitations.includes("session_id_varies")) {
+    return unavailable("session_id_varies", eventAt, base);
+  }
   const reportedAt = iso(usage.reportedAt);
   if (usage.kind === "unavailable" || usage.tokens === null) {
     return unavailable(token(usage.reason) ?? "no_usage_recorded", eventAt, base);
@@ -132,7 +144,12 @@ export function projectOutcomeContext(event: {
       ? usage.percent
       : null;
   const fresh = usage.current === true && usage.reason === null;
+  const age =
+    eventAt !== null && reportedAt !== null
+      ? Math.floor((Date.parse(eventAt) - Date.parse(reportedAt)) / 1000)
+      : null;
   return {
+    ageSeconds: age !== null && Number.isSafeInteger(age) && age >= 0 ? age : null,
     basis: "event",
     eventAt,
     model,
@@ -145,6 +162,13 @@ export function projectOutcomeContext(event: {
     tokens,
     window: validWindow,
   };
+}
+
+/** Bounded human age: seconds, then minutes, then hours and minutes. */
+function formatAge(seconds: number): string {
+  if (seconds < 120) return `${seconds}s`;
+  if (seconds < 7200) return `${Math.floor(seconds / 60)}m`;
+  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
 }
 
 /** The context line for a lease whose event snapshot is gone. */
@@ -175,6 +199,7 @@ export function formatOutcomeContextLine(value: unknown): string {
   const tokens = NUMBER.format(context.tokens as number);
   const window = count(context.window);
   const at = iso(context.reportedAt) ?? "time unknown";
+  const age = count(context.ageSeconds);
   const event = iso(context.eventAt);
   const share =
     window !== null && window > 0
@@ -187,7 +212,7 @@ export function formatOutcomeContextLine(value: unknown): string {
         }`
       : `${tokens} prompt tokens (window unknown)`;
   const provenance = [
-    `reported ${at}`,
+    age === null ? `reported ${at}` : `reported ${at} (${formatAge(age)} before event)`,
     event ? `as of event ${event}` : "as of event (time unknown)",
     token(context.model) ? `model ${context.model}` : null,
     token(context.source),

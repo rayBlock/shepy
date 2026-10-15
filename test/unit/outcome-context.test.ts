@@ -182,6 +182,7 @@ describe("projectOutcomeContext: correctly bound per-call occupancy", () => {
   test("Pi: newest per-call prompt occupancy, current at the event, window unknown", () => {
     const context = pi(PI_BASE);
     expect(context).toMatchObject({
+      ageSeconds: 2400,
       basis: "event",
       state: "current",
       tokens: 300210,
@@ -195,7 +196,7 @@ describe("projectOutcomeContext: correctly bound per-call occupancy", () => {
     });
     const line = formatOutcomeContextLine(context);
     expect(line).toBe(
-      "context: 300,210 prompt tokens (window unknown) · reported 2026-10-15T08:20:00.000Z · as of event 2026-10-15T09:00:00.000Z · model gpt-6-luna · pi-jsonl",
+      "context: 300,210 prompt tokens (window unknown) · reported 2026-10-15T08:20:00.000Z (40m before event) · as of event 2026-10-15T09:00:00.000Z · model gpt-6-luna · pi-jsonl",
     );
     // Never the session sum, never output tokens, never a manufactured percent.
     expect(line).not.toContain("301,360");
@@ -297,7 +298,7 @@ describe("projectOutcomeContext: correctly bound per-call occupancy", () => {
       tokens: 300210,
     });
     expect(formatOutcomeContextLine(context)).toBe(
-      "context: stale — later_turn_without_usage; last 300,210 prompt tokens (window unknown) · reported 2026-10-15T08:20:00.000Z · as of event 2026-10-15T09:00:00.000Z · model gpt-6-luna · pi-jsonl",
+      "context: stale — later_turn_without_usage; last 300,210 prompt tokens (window unknown) · reported 2026-10-15T08:20:00.000Z (40m before event) · as of event 2026-10-15T09:00:00.000Z · model gpt-6-luna · pi-jsonl",
     );
   });
 
@@ -627,7 +628,7 @@ describe("Codex outcomes after the S3 reader fix", () => {
       ref: `${CODEX_PATH}#line=3`,
     });
     expect(formatOutcomeContextLine(context)).toBe(
-      "context: 117,187 / 475,000 prompt tokens (24.7%) · reported 2026-10-15T08:35:45.000Z · as of event 2026-10-15T09:00:00.000Z · model gpt-6.1-sol · codex-jsonl",
+      "context: 117,187 / 475,000 prompt tokens (24.7%) · reported 2026-10-15T08:35:45.000Z (24m before event) · as of event 2026-10-15T09:00:00.000Z · model gpt-6.1-sol · codex-jsonl",
     );
   });
 
@@ -679,5 +680,67 @@ describe("Codex outcomes after the S3 reader fix", () => {
     expect(
       projectOutcomeContext({ compactHistory: history(stored, codexRef), createdAt: EVENT_AT }),
     ).toMatchObject({ state: "unavailable", reason: "later_turn_without_usage", tokens: null });
+  });
+});
+
+// Row 15.309 S1 follow-up (adopted plan): the reading's age relative to the
+// event, and session_id_varies as ambiguous provenance.
+describe("S1 follow-up: event-relative age and ambiguous session provenance", () => {
+  test("a Claude file whose entries carry two session ids gives no figure, even when the last id is bound", () => {
+    const resumed = [
+      ...CLAUDE_BASE,
+      entry(3, {
+        ...claudeAssistant("u2", "2026-10-15T08:40:00.000Z", {
+          input_tokens: 5,
+          cache_creation_input_tokens: 10,
+          cache_read_input_tokens: 70000,
+        }),
+        sessionId: "c2",
+      }),
+    ];
+    expect(claude(resumed, { ...claudeRef, value: "c2" })).toMatchObject({
+      state: "unavailable",
+      reason: "session_id_varies",
+      tokens: null,
+      ageSeconds: null,
+    });
+  });
+
+  test("age is event time minus reading time; unknown or negative age is shown as nothing", () => {
+    const later = projectOutcomeContext({
+      compactHistory: history(projectPiContextHealth(PI_PATH, PI_BASE), piRef),
+      createdAt: new Date("2026-10-15T08:10:00.000Z"),
+    });
+    expect(later).toMatchObject({ state: "current", ageSeconds: null });
+    expect(formatOutcomeContextLine(later)).toContain(
+      "reported 2026-10-15T08:20:00.000Z · as of event",
+    );
+    const unknownEvent = projectOutcomeContext({
+      compactHistory: history(projectPiContextHealth(PI_PATH, PI_BASE), piRef),
+      createdAt: "not a time",
+    });
+    expect(unknownEvent).toMatchObject({ ageSeconds: null, eventAt: null });
+  });
+
+  test("age buckets render the same in the daemon and the Pi renderer; a 6800-shape DTO without age still renders", () => {
+    const base = pi(PI_BASE);
+    const cases: Array<[number | undefined | string, string]> = [
+      [0, "(0s before event)"],
+      [119, "(119s before event)"],
+      [120, "(2m before event)"],
+      [7199, "(119m before event)"],
+      [7200, "(2h 0m before event)"],
+      [90061, "(25h 1m before event)"],
+      [undefined, "reported 2026-10-15T08:20:00.000Z · as of event"],
+      ["40", "reported 2026-10-15T08:20:00.000Z · as of event"],
+      [-5, "reported 2026-10-15T08:20:00.000Z · as of event"],
+    ];
+    for (const [ageSeconds, expected] of cases) {
+      const dto: Record<string, unknown> = { ...base, ageSeconds };
+      if (ageSeconds === undefined) delete dto.ageSeconds;
+      const line = formatOutcomeContextLine(dto);
+      expect(line).toContain(expected);
+      expect(piFormatOutcomeContextLine(dto)).toBe(line);
+    }
   });
 });

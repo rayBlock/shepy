@@ -691,7 +691,11 @@ describe("inbox.lease event-correlated outcomes", () => {
     });
     const lease = delivery.inboxLease({ leaseToken: ownerToken, profileId: "driffs" });
     const outcome = (lease.obligations[0] as { outcome?: Record<string, unknown> }).outcome;
+    const age = Math.floor(
+      (stored.createdAt.getTime() - Date.parse("2026-10-15T08:20:00.000Z")) / 1000,
+    );
     expect(outcome?.context).toEqual({
+      ageSeconds: age >= 0 ? age : null,
       basis: "event",
       eventAt: stored.createdAt.toISOString(),
       model: "gpt-6-luna",

@@ -72,6 +72,7 @@ function normalizeExcerpt(
  * is no reading.
  */
 type OutcomeContextWire = {
+  ageSeconds: number | null;
   basis: "event";
   eventAt: string | null;
   model: string | null;
@@ -102,6 +103,13 @@ function contextCount(value: unknown): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
+/** Bounded human age: seconds, then minutes, then hours and minutes. */
+function formatContextAge(seconds: number): string {
+  if (seconds < 120) return `${seconds}s`;
+  if (seconds < 7200) return `${Math.floor(seconds / 60)}m`;
+  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+}
+
 /** The context line for a lease whose event snapshot is gone. */
 export const SNAPSHOT_UNAVAILABLE_CONTEXT = "context: unavailable — snapshot_unavailable";
 
@@ -130,6 +138,7 @@ export function formatOutcomeContextLine(value: unknown): string {
   const tokens = CONTEXT_NUMBER.format(context.tokens as number);
   const window = contextCount(context.window);
   const at = contextIso(context.reportedAt) ?? "time unknown";
+  const age = contextCount(context.ageSeconds);
   const event = contextIso(context.eventAt);
   const share =
     window !== null && window > 0
@@ -142,7 +151,7 @@ export function formatOutcomeContextLine(value: unknown): string {
         }`
       : `${tokens} prompt tokens (window unknown)`;
   const provenance = [
-    `reported ${at}`,
+    age === null ? `reported ${at}` : `reported ${at} (${formatContextAge(age)} before event)`,
     event ? `as of event ${event}` : "as of event (time unknown)",
     contextToken(context.model) ? `model ${context.model}` : null,
     contextToken(context.source),
