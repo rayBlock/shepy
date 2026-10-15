@@ -49,6 +49,15 @@ execute it. This supersedes the automatic `pnpm:devPreinstall` hook in the
 archived 2026-07-15 npm publication plan, which ran before dependencies were
 linked and failed every fresh clone.
 
+`pnpm test` (and so `pnpm check`) runs `scripts/run-tests.mjs`, not the
+`vitest` bin shim. It creates a fresh private runtime root with its own HOME,
+SHEPY_HOME, TMPDIR, XDG and socket paths, drops loader overrides
+(`NODE_OPTIONS`, `NODE_PATH`), Herdr/Shepy selectors and credentials, admits
+the isolated demand-validation fixture and starts the locked Vitest directly.
+The shim exports `NODE_PATH`, which that fixture refuses, so a bare
+`vitest run` cannot execute its strict cases. No extra environment setup is
+needed; arguments after `pnpm test` are passed to `vitest run` unchanged.
+
 ## Update versions
 
 Keep these files synchronized:

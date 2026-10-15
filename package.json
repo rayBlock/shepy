@@ -51,7 +51,7 @@
     "package:check": "node scripts/check-root-package.mjs",
     "pi-package:check": "pnpm --dir packages/shepy-pi typecheck && node scripts/check-pi-package.mjs",
     "prepack": "pnpm build",
-    "test": "vitest run",
+    "test": "node scripts/run-tests.mjs",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
