@@ -180,9 +180,12 @@ The plugin connects to the Shepy daemon and shows compact agent rows for the cur
 
 ```bash
 pnpm install
+pnpm hooks:install
 pnpm check
 pnpm build
 ```
+
+Git hooks are an explicit developer step: `pnpm hooks:install` runs Husky once dependencies are installed and points this clone's `core.hooksPath` at `.husky/_`. No install lifecycle script (`preinstall`, `install`, `postinstall`, `prepare` or `pnpm:devPreinstall`) runs Husky, so npm and git-URL consumers never execute it. This supersedes the automatic `pnpm:devPreinstall` hook in the archived 2026-07-15 npm publication plan, which ran before dependencies were linked and failed every fresh clone.
 
 See [Releasing Shepy](./docs/releasing.md) for package validation, npm publication, and GitHub Release steps.
 

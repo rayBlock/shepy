@@ -1,4 +1,8 @@
-import { readFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { access, constants, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 
 type PackageManifest = {
@@ -36,10 +40,28 @@ describe("npm publication metadata", () => {
     expect(root.scripts).toMatchObject({
       "clean:dist": "node scripts/clean-dist.mjs",
       "package:check": "node scripts/check-root-package.mjs",
-      "pnpm:devPreinstall": "husky",
+      "hooks:install": "husky",
       prepack: "pnpm build",
     });
-    expect(root.scripts).not.toHaveProperty("prepare");
+    // No install lifecycle runs Husky for npm or git-URL consumers; hooks are an
+    // explicit developer step after dependencies exist (`pnpm hooks:install`).
+    for (const lifecycle of [
+      "preinstall",
+      "install",
+      "postinstall",
+      "prepublish",
+      "preprepare",
+      "prepare",
+      "postprepare",
+      "pnpm:devPreinstall",
+    ]) {
+      expect(root.scripts).not.toHaveProperty(lifecycle);
+    }
+    expect(
+      Object.entries(root.scripts ?? {})
+        .filter(([, command]) => /\bhusky\b/.test(command))
+        .map(([name]) => name),
+    ).toEqual(["hooks:install"]);
     expect(root.scripts?.build).toContain("pnpm clean:dist");
     expect(root.scripts?.check).toContain("pnpm package:check");
 
@@ -57,5 +79,35 @@ describe("npm publication metadata", () => {
     expect(new Set([root.version, pi.version, herdr.version, pluginVersion])).toEqual(
       new Set([root.version]),
     );
+  });
+});
+
+describe("developer hook setup", () => {
+  test("hooks:install runs the real Husky and configures the tracked hooks", async () => {
+    const husky = fileURLToPath(new URL("../../node_modules/husky/bin.js", import.meta.url));
+    await access(husky, constants.R_OK);
+    const preCommit = await readFile(new URL("../../.husky/pre-commit", import.meta.url), "utf8");
+    const repo = await mkdtemp(join(tmpdir(), "shepy-hooks-install-"));
+    const env = Object.fromEntries(
+      Object.entries(process.env).filter(
+        ([key]) => !key.startsWith("GIT_") && key !== "HUSKY",
+      ),
+    );
+    try {
+      execFileSync("git", ["init", "--quiet"], { cwd: repo, env });
+      await mkdir(join(repo, ".husky"));
+      await writeFile(join(repo, ".husky", "pre-commit"), preCommit);
+      execFileSync(process.execPath, [husky], { cwd: repo, env, stdio: "pipe" });
+      expect(
+        execFileSync("git", ["config", "--local", "--get", "core.hooksPath"], {
+          cwd: repo,
+          env,
+          encoding: "utf8",
+        }).trim(),
+      ).toBe(".husky/_");
+      await access(join(repo, ".husky", "_", "pre-commit"), constants.X_OK);
+    } finally {
+      await rm(repo, { force: true, recursive: true });
+    }
   });
 });
