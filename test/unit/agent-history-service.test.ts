@@ -329,7 +329,7 @@ describe("agent history service", () => {
   });
 
   test("bumped formatter version recomputes v1 cache rows instead of serving them", async () => {
-    expect(agentHistoryFormatterVersion).toBe("agent-history-v2");
+    expect(agentHistoryFormatterVersion).toBe("agent-history-v3");
     const path = await sourceFile("cached-v1.jsonl");
     await writeFile(path, `${JSON.stringify({ type: "session", id: "s1" })}\n`);
     const preferred = ref(path);
@@ -363,6 +363,108 @@ describe("agent history service", () => {
     expect(result.compactHistory.messageCount).toBe(0);
     expect(result.compactHistory.contextHealth).toBeNull();
     expect(fixture.reader.compactRefs).toEqual([preferred]);
+    sqlite.close();
+  });
+
+  test("row 15.309 S3: a v2 Codex projection under the unchanged fingerprint is recomputed, not served", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "shepy-history-codex-v3-"));
+    tempDirs.push(dir);
+    const path = join(dir, "rollout.jsonl");
+    const records = [
+      {
+        type: "session_meta",
+        timestamp: "2026-10-15T07:00:00.000Z",
+        payload: { id: "019a-cache", cwd: "/repo" },
+      },
+      {
+        type: "turn_context",
+        timestamp: "2026-10-15T07:00:01.000Z",
+        payload: { model: "gpt-6.1-sol" },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-10-15T07:00:41.983Z",
+        payload: {
+          type: "token_count",
+          info: {
+            last_token_usage: { input_tokens: 170_125, cached_input_tokens: 168_448 },
+            model_context_window: 475_000,
+          },
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-10-15T07:00:41.996Z",
+        payload: { type: "task_complete" },
+      },
+    ];
+    await writeFile(path, `${records.map((record) => JSON.stringify(record)).join("\n")}\n`);
+    const historyRef: AgentHistoryRef = {
+      kind: "agent_session",
+      path,
+      source: "codex-jsonl",
+      value: "019a-cache",
+    };
+    const { sqlite } = openSqlite(join(dir, "cache.sqlite"));
+    applyMigrations(sqlite, { migrationsFolder: "drizzle" });
+    const cache = new AgentHistoryCacheStore(sqlite);
+    const before = await stat(path);
+    const fingerprint = {
+      sourceMtimeMs: Math.trunc(before.mtimeMs),
+      sourcePath: cacheSourcePathForRef(historyRef),
+      sourceSize: before.size,
+    };
+    // What the v2 reader stored for this idle file: the settled turn hidden
+    // behind task_complete.
+    const v2 = await new CodexHistoryReader().readCompact(historyRef);
+    cache.put({
+      compactHistory: {
+        ...v2,
+        contextHealth: {
+          ...(v2.contextHealth as NonNullable<typeof v2.contextHealth>),
+          usage: {
+            current: false,
+            kind: "unavailable",
+            percent: null,
+            reason: "later_turn_without_usage",
+            ref: null,
+            reportedAt: null,
+            tokens: null,
+            window: null,
+          },
+        },
+      },
+      formatterVersion: "agent-history-v2",
+      historyRef,
+      ...fingerprint,
+    });
+    expect(cache.getFresh({ ...fingerprint, formatterVersion: "agent-history-v2" })).toBeDefined();
+
+    const resolved = await createAgentHistoryService({
+      cache,
+      discover: async () => historyRef,
+      readers: [new CodexHistoryReader()],
+    }).resolveCompactHistory({
+      agent: "codex",
+      agentSession: { agent: "codex", kind: "id", source: "codex", value: "019a-cache" },
+      cwd: "/repo",
+      foregroundCwd: null,
+    });
+    const after = await stat(path);
+    // The source file did not change; only the formatter version did.
+    expect([Math.trunc(after.mtimeMs), after.size]).toEqual([
+      fingerprint.sourceMtimeMs,
+      fingerprint.sourceSize,
+    ]);
+    expect(resolved.compactHistory.contextHealth?.usage).toMatchObject({
+      current: true,
+      tokens: 170_125,
+      window: 475_000,
+    });
+    expect(
+      cache.getFresh({ ...fingerprint, formatterVersion: agentHistoryFormatterVersion })
+        ?.compactHistory.contextHealth?.usage,
+    ).toMatchObject({ current: true, tokens: 170_125 });
     sqlite.close();
   });
 

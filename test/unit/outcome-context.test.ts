@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { projectCodexContextHealth } from "@/agent-history/codex-context.js";
 import {
   projectClaudeContextHealth,
   projectPiContextHealth,
@@ -568,5 +569,115 @@ describe("every delivered done/idle block carries the context line", () => {
       { agentEventId: 31, id: "00000031-0000-4000-8000-000000000000", outcome: legacy },
     ]);
     expect(formatted.context).toContain("context: unavailable — context_not_provided");
+  });
+});
+
+// Row 15.309 S3: the corrected Codex reader through the same event-time
+// projection. Exact native binding stays a separate requirement: a correct
+// reading from a newest-cwd guess is still not this worker's context.
+describe("Codex outcomes after the S3 reader fix", () => {
+  const CODEX_PATH = "/fixture/codex/rollout-019a.jsonl";
+  const codexRef: AgentHistoryRef = {
+    kind: "agent_session",
+    path: CODEX_PATH,
+    source: "codex-jsonl",
+    value: "019a-codex",
+  };
+  const settled = [
+    entry(1, {
+      type: "session_meta",
+      timestamp: "2026-10-15T08:00:00.000Z",
+      payload: { id: "019a-codex" },
+    }),
+    entry(2, {
+      type: "turn_context",
+      timestamp: "2026-10-15T08:00:01.000Z",
+      payload: { model: "gpt-6.1-sol" },
+    }),
+    entry(3, {
+      type: "event_msg",
+      timestamp: "2026-10-15T08:35:45.000Z",
+      payload: {
+        type: "token_count",
+        info: {
+          last_token_usage: { input_tokens: 117_187, cached_input_tokens: 116_000 },
+          total_token_usage: { input_tokens: 9_000_000 },
+          model_context_window: 475_000,
+        },
+      },
+    }),
+    entry(4, {
+      type: "event_msg",
+      timestamp: "2026-10-15T08:35:46.000Z",
+      payload: { type: "task_complete" },
+    }),
+  ];
+  const codex = (entries: JsonlEntry[], ref: AgentHistoryRef) =>
+    projectOutcomeContext({
+      compactHistory: history(projectCodexContextHealth(CODEX_PATH, entries), ref),
+      createdAt: EVENT_AT,
+    });
+
+  test("an exactly bound settled Codex turn shows tokens over the window Codex reported", () => {
+    const context = codex(settled, codexRef);
+    expect(context).toMatchObject({
+      state: "current",
+      tokens: 117_187,
+      window: 475_000,
+      ref: `${CODEX_PATH}#line=3`,
+    });
+    expect(formatOutcomeContextLine(context)).toBe(
+      "context: 117,187 / 475,000 prompt tokens (24.7%) · reported 2026-10-15T08:35:45.000Z · as of event 2026-10-15T09:00:00.000Z · model gpt-6.1-sol · codex-jsonl",
+    );
+  });
+
+  test("the same correct reading from a newest-cwd guess is refused as not bound", () => {
+    expect(
+      codex(settled, {
+        kind: "discovered_file",
+        path: CODEX_PATH,
+        source: "codex-jsonl",
+        value: CODEX_PATH,
+      }),
+    ).toMatchObject({ state: "unavailable", reason: "history_not_session_bound", tokens: null });
+  });
+
+  test("after a compaction the Codex line is unavailable, not 0%", () => {
+    const compacted = [
+      ...settled,
+      entry(5, { type: "compacted", timestamp: "2026-10-15T08:40:00.000Z", payload: {} }),
+      entry(6, {
+        type: "event_msg",
+        timestamp: "2026-10-15T08:40:00.010Z",
+        payload: {
+          type: "token_count",
+          info: { last_token_usage: { input_tokens: 0 }, model_context_window: 475_000 },
+        },
+      }),
+    ];
+    const context = codex(compacted, codexRef);
+    expect(formatOutcomeContextLine(context)).toBe(
+      "context: unavailable — post_compaction_no_turn",
+    );
+  });
+
+  test("an event stored by the old reader keeps its stored projection; nothing rewrites it", () => {
+    const old = projectCodexContextHealth(CODEX_PATH, settled);
+    const stored: ContextHealth = {
+      ...old,
+      usage: {
+        current: false,
+        kind: "unavailable",
+        percent: null,
+        reason: "later_turn_without_usage",
+        ref: null,
+        reportedAt: null,
+        tokens: null,
+        window: null,
+      },
+    };
+    expect(
+      projectOutcomeContext({ compactHistory: history(stored, codexRef), createdAt: EVENT_AT }),
+    ).toMatchObject({ state: "unavailable", reason: "later_turn_without_usage", tokens: null });
   });
 });

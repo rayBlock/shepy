@@ -501,3 +501,211 @@ describe("GeminiHistoryReader", () => {
     ).resolves.toEqual([]);
   });
 });
+
+// Row 15.309 S3: record order and fields mirror real Codex rollouts (structure
+// only): a turn ends with token_count then task_complete; a compaction writes
+// `compacted`, turn_context, thread_settings_applied, then an all-zero
+// token_count. All values are fake.
+describe("Codex context from real rollout structure (row 15.309 S3)", () => {
+  const SESSION = "019a-s3-fixture";
+  const meta = {
+    type: "session_meta",
+    timestamp: "2026-10-15T07:00:00.000Z",
+    payload: { id: SESSION, cwd: "/repo" },
+  };
+  const turn = (timestamp: string, model = "gpt-6.1-sol") => ({
+    type: "turn_context",
+    timestamp,
+    payload: { model },
+  });
+  const event = (timestamp: string, type: string) => ({
+    type: "event_msg",
+    timestamp,
+    payload: { type },
+  });
+  const tokenCount = (timestamp: string, input: number, cached = 0, output = 0) => ({
+    type: "event_msg",
+    timestamp,
+    payload: {
+      type: "token_count",
+      info: {
+        total_token_usage: { input_tokens: 56_080_583, output_tokens: 412_000 },
+        last_token_usage: {
+          input_tokens: input,
+          cached_input_tokens: cached,
+          cache_write_input_tokens: 0,
+          output_tokens: output,
+          reasoning_output_tokens: 0,
+          total_tokens: input + output,
+        },
+        model_context_window: 475_000,
+      },
+    },
+  });
+  const compacted = (timestamp: string, windowNumber: number) => ({
+    type: "compacted",
+    timestamp,
+    payload: { window_number: windowNumber, window_id: `w${windowNumber}` },
+  });
+  const settledTurn = [
+    meta,
+    turn("2026-10-15T07:00:01.000Z"),
+    event("2026-10-15T07:00:01.500Z", "task_started"),
+    tokenCount("2026-10-15T07:00:30.000Z", 168_617, 166_400, 1420),
+    event("2026-10-15T07:00:31.000Z", "item_completed"),
+    tokenCount("2026-10-15T07:00:41.983Z", 170_125, 168_448, 206),
+    event("2026-10-15T07:00:41.996Z", "task_complete"),
+  ];
+  const compaction = [
+    compacted("2026-10-15T07:23:25.105Z", 1),
+    turn("2026-10-15T07:23:25.106Z"),
+    event("2026-10-15T07:23:25.106Z", "thread_settings_applied"),
+    tokenCount("2026-10-15T07:23:25.109Z", 0),
+    event("2026-10-15T07:23:25.110Z", "item_completed"),
+    event("2026-10-15T07:23:30.000Z", "task_complete"),
+  ];
+
+  async function health(records: unknown[]) {
+    const home = await tempHome("shepy-codex-s3-");
+    const path = join(home, "rollout.jsonl");
+    await writeFile(path, `${records.map((record) => JSON.stringify(record)).join("\n")}\n`);
+    const compact = await new CodexHistoryReader().readCompact({
+      kind: "agent_session",
+      path,
+      source: "codex-jsonl",
+      value: SESSION,
+    });
+    return { health: compact.contextHealth, path };
+  }
+
+  test("token_count then task_complete settles the turn: current, latest call, reported window", async () => {
+    const { health: result, path } = await health(settledTurn);
+    expect(result).toMatchObject({
+      sessionId: SESSION,
+      compactionCount: 0,
+      usage: {
+        current: true,
+        kind: "last_reported",
+        reason: null,
+        tokens: 170_125,
+        window: 475_000,
+        percent: (170_125 / 475_000) * 100,
+        reportedAt: "2026-10-15T07:00:41.983Z",
+        ref: `${path}#line=6`,
+      },
+    });
+  });
+
+  test("a new task_started before its first token_count still invalidates the reading", async () => {
+    const { health: result } = await health([
+      ...settledTurn,
+      event("2026-10-15T07:05:00.000Z", "task_started"),
+    ]);
+    expect(result?.usage).toMatchObject({
+      current: false,
+      kind: "unavailable",
+      reason: "later_turn_without_usage",
+      tokens: null,
+      percent: null,
+    });
+    const { health: next } = await health([
+      ...settledTurn,
+      event("2026-10-15T07:05:00.000Z", "task_started"),
+      tokenCount("2026-10-15T07:05:20.000Z", 171_002, 170_000, 90),
+      event("2026-10-15T07:05:21.000Z", "task_complete"),
+    ]);
+    expect(next?.usage).toMatchObject({ current: true, tokens: 171_002 });
+  });
+
+  test("compacted plus all-zero token_count then task_complete is unavailable, never 0% and never the old figure", async () => {
+    const { health: result, path } = await health([...settledTurn, ...compaction]);
+    expect(result).toMatchObject({
+      compactionCount: 1,
+      lastCompaction: {
+        ref: `${path}#line=8`,
+        timestamp: "2026-10-15T07:23:25.105Z",
+        tokensAfter: null,
+        tokensBefore: null,
+        trigger: "unknown",
+      },
+      usage: {
+        current: false,
+        kind: "unavailable",
+        reason: "post_compaction_no_turn",
+        tokens: null,
+        window: null,
+        percent: null,
+      },
+    });
+  });
+
+  test("a later legitimate positive sample recovers after compaction", async () => {
+    const { health: result } = await health([
+      ...settledTurn,
+      ...compaction,
+      event("2026-10-15T07:30:00.000Z", "task_started"),
+      tokenCount("2026-10-15T07:30:12.000Z", 21_380, 8_832, 300),
+      event("2026-10-15T07:30:13.000Z", "task_complete"),
+    ]);
+    expect(result).toMatchObject({
+      compactionCount: 1,
+      usage: { current: true, reason: null, tokens: 21_380, window: 475_000 },
+    });
+  });
+
+  test("a zero token_count without a compaction is no reading and does not keep the earlier one", async () => {
+    const { health: result } = await health([
+      ...settledTurn,
+      tokenCount("2026-10-15T07:01:00.000Z", 0),
+    ]);
+    expect(result?.usage).toMatchObject({
+      current: false,
+      kind: "unavailable",
+      reason: "zero_usage_reported",
+      tokens: null,
+    });
+  });
+
+  test("malformed or cumulative-only, model change and session change after a settled turn stay unavailable", async () => {
+    const cumulativeOnly = {
+      type: "event_msg",
+      timestamp: "2026-10-15T07:02:00.000Z",
+      payload: {
+        type: "token_count",
+        info: { total_token_usage: { input_tokens: 56_200_000 }, model_context_window: 475_000 },
+      },
+    };
+    expect((await health([...settledTurn, cumulativeOnly])).health?.usage).toMatchObject({
+      current: false,
+      reason: "incomplete_token_count",
+      tokens: null,
+    });
+    expect(
+      (await health([...settledTurn, turn("2026-10-15T07:02:00.000Z", "gpt-6.1-luna")])).health
+        ?.usage,
+    ).toMatchObject({ current: false, reason: "model_changed_since_reading", tokens: null });
+    const otherSession = { ...meta, payload: { id: "019a-other", cwd: "/repo" } };
+    // The exactly bound reader refuses a file carrying another session id.
+    expect((await health([...settledTurn, otherSession])).health).toBeNull();
+    const home = await tempHome("shepy-codex-s3-varied-");
+    const variedPath = join(home, "rollout.jsonl");
+    await writeFile(
+      variedPath,
+      `${[...settledTurn, otherSession].map((record) => JSON.stringify(record)).join("\n")}\n`,
+    );
+    const varied = (
+      await new CodexHistoryReader().readCompact({
+        kind: "discovered_file",
+        path: variedPath,
+        source: "codex-jsonl",
+        value: variedPath,
+      })
+    ).contextHealth;
+    expect(varied?.sessionId).toBeNull();
+    expect(varied?.usage).toMatchObject({
+      current: false,
+      reason: "session_id_varies",
+      tokens: null,
+    });
+  });
+});

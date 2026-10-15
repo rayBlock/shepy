@@ -21,7 +21,10 @@ import type { AgentHistoryReader } from "./readers.js";
 
 // RUN-20260913-06 D5: v2 adds history.contextHealth; v1 blobs lack the field,
 // so the fingerprint cache recomputes them once via the version mismatch.
-export const agentHistoryFormatterVersion = "agent-history-v2";
+// Row 15.309 S3: v3 corrects the Codex context projection (task_complete,
+// compaction, zero usage). An idle, unchanged file keeps its fingerprint, so
+// only the version change makes it recompute instead of serving the v2 blob.
+export const agentHistoryFormatterVersion = "agent-history-v3";
 
 type CacheLike = Pick<AgentHistoryCacheStore, "getFresh" | "put">;
 type Discovery = (input: AgentHistoryLookupInput) => Promise<AgentHistoryRef | null>;
