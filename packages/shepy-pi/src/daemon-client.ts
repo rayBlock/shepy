@@ -6,6 +6,8 @@ export type AgentEventWireRecord = {
   createdAt?: string;
   herdrSessionName?: string;
   id: number;
+  /** Row 15.309: daemon-projected context of this event; absent from old daemons. */
+  outcomeContext?: unknown;
   paneId?: string | null;
   payload: unknown;
   terminalId?: string | null;

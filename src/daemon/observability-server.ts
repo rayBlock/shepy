@@ -39,6 +39,7 @@ import type {
 } from "@/observability/contracts.js";
 import type { OperationDispatchService } from "@/observability/operation-dispatch-service.js";
 import type { OperationWaitService } from "@/observability/operation-wait-service.js";
+import { projectOutcomeContext } from "@/observability/outcome-context.js";
 import type { ProfileDeliveryService } from "@/observability/profile-delivery-service.js";
 import type { ProfileDemandService } from "@/observability/profile-demand-service.js";
 import type { ProfileDiagnoseService } from "@/observability/profile-diagnose-service.js";
@@ -284,7 +285,8 @@ export class ObservabilityRpcServer {
     // Explicit all-or-none host guard before the terminal socket lookup.
     if (!owner.terminalId) return;
     const socket = this.#newestSocketForTerminal({ ...scope, terminalId: owner.terminalId });
-    if (socket) this.#write(socket, { method: "agent.event", params: { event } });
+    if (socket)
+      this.#write(socket, { method: "agent.event", params: { event: withOutcomeContext(event) } });
   }
 
   reconcileAgentLocations(input: { agents: AgentIndexRecord[]; herdrSessionName: string }): void {
@@ -702,7 +704,7 @@ export class ObservabilityRpcServer {
       case "agent.events": {
         assertSchema(agentEventsInputSchema, params);
         const input = params as AgentQueryScope & { afterEventId?: number; limit?: number };
-        return { events: this.#stores.agentEvents.listAfter(input) };
+        return { events: this.#stores.agentEvents.listAfter(input).map(withOutcomeContext) };
       }
       case "agent.orchestrator.register": {
         assertSchema(agentOrchestratorRegisterInputSchema, params);
@@ -1014,6 +1016,15 @@ export class ObservabilityRpcServer {
       "agent scope requires current Herdr workspace, --workspace, --session, or --all",
     );
   }
+}
+
+/**
+ * Row 15.309: every event that leaves the daemon carries its own context
+ * reading, projected from the event's stored append-time history. Computed on
+ * read, so stored rows and their identity/dedupe are unchanged.
+ */
+function withOutcomeContext(event: AgentEventRecord) {
+  return { ...event, outcomeContext: projectOutcomeContext(event) };
 }
 
 function historyInput(agent: AgentIndexRecord) {

@@ -12,6 +12,7 @@ import {
   toPublicProfileOwner,
 } from "@/db/profile-owners.js";
 import type { AgentEventRecord, AgentEventType } from "./contracts.js";
+import { type OutcomeContext, projectOutcomeContext } from "./outcome-context.js";
 import type { ProfileDemandService } from "./profile-demand-service.js";
 import { resolveSelectorInWorkspaceScope } from "./profile-selector-scope.js";
 import { parseAgentSelector, parseWorkspaceSelector } from "./profile-selectors.js";
@@ -92,6 +93,8 @@ export class InboxRefusedError extends RpcRefusedError {
  */
 export type InboxOutcomeSnapshot = {
   agent: string | null;
+  /** Row 15.309: the event's own context reading (or why there is none). */
+  context: OutcomeContext;
   createdAt: string;
   eventId: number;
   excerpt: { text: string; truncated: boolean } | null;
@@ -145,6 +148,7 @@ export function projectInboxOutcome(event: AgentEventRecord): InboxOutcomeSnapsh
   const lastAssistant = event.compactHistory?.lastAssistantMessage ?? null;
   return {
     agent: outcomeString(payload.agent),
+    context: projectOutcomeContext(event),
     createdAt: event.createdAt.toISOString(),
     eventId: event.id,
     excerpt: normalizeOutcomeExcerpt(lastAssistant?.text, event.paneId),

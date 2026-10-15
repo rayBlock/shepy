@@ -9,6 +9,10 @@ import {
   readOwnerRecord,
 } from "@/cli/owner-file.js";
 import { ObservabilityRpcClient } from "@/daemon/client.js";
+import {
+  formatOutcomeContextLine,
+  SNAPSHOT_UNAVAILABLE_CONTEXT,
+} from "@/observability/outcome-context.js";
 import { profileClaimInputSchema } from "@/observability/schemas.js";
 
 /**
@@ -154,6 +158,8 @@ const leaseResponseSchema = Type.Object(
             Type.Object(
               {
                 agent: nullableString,
+                // Row 15.309: validated at render; an old daemon omits it.
+                context: Type.Optional(Type.Unknown()),
                 eventId: Type.Integer(),
                 excerpt: Type.Union([
                   Type.Null(),
@@ -179,6 +185,7 @@ const leaseResponseSchema = Type.Object(
 
 type OutcomeSnapshot = {
   agent: string | null;
+  context?: unknown;
   eventId: number;
   excerpt: { text: string; truncated: boolean } | null;
   from: string | null;
@@ -1027,16 +1034,18 @@ export function formatHookContext(
     lineCount += lineLines;
     index += 1;
   }
-  // (b) One-line stubs for the rest, while they fit. A stub still shows the
-  // outcome's identity and where to read it in full, so it counts as
-  // represented — the model saw what happened and how to get the rest.
+  // (b) Compact stubs for the rest, while they fit. A stub still shows the
+  // outcome's identity, its context line (row 15.309: budget pressure never
+  // drops context) and where to read it in full, so it counts as represented
+  // — the model saw what happened and how to get the rest.
   while (index < obligations.length) {
     const line = stubLine(obligations[index] as LeasedObligation);
-    if (used + line.length + 1 > charBudget || lineCount + 1 > lineBudget) break;
+    const lineLines = line.split("\n").length;
+    if (used + line.length + 1 > charBudget || lineCount + lineLines > lineBudget) break;
     lines.push(line);
     representedIds.push((obligations[index] as LeasedObligation).id);
     used += line.length + 1;
-    lineCount += 1;
+    lineCount += lineLines;
     index += 1;
   }
   // (c) The tail fit nowhere: deferred — the hook hands these rows back to
@@ -1083,7 +1092,7 @@ function outcomeLine(obligation: LeasedObligation): string {
   if (!outcome) {
     // Honest fallback, matching the Pi wake card: the lease proves the event
     // and obligation identity even when the snapshot is gone.
-    return `- event ${obligation.agentEventId} · obligation ${id} — snapshot unavailable (no pane known; run shepy agent list to locate the worker)`;
+    return `- event ${obligation.agentEventId} · obligation ${id} — snapshot unavailable (no pane known; run shepy agent list to locate the worker)\n  ${SNAPSHOT_UNAVAILABLE_CONTEXT}`;
   }
   const agent = safeToken(outcome.agent, HERDR_AGENT_TOKEN) ?? "unknown";
   const name = safeToken(outcome.name, HERDR_AGENT_TOKEN);
@@ -1099,7 +1108,7 @@ function outcomeLine(obligation: LeasedObligation): string {
       : "(no assistant message)";
   const assistantRef = safeToken(outcome.lastAssistantRef, ASSISTANT_REF_TOKEN);
   const ref = assistantRef ? ` · assistantRef: ${assistantRef}` : "";
-  return `- ${type ?? "event"} ${identity} ${paneId} ${transition}\n  last assistant: ${excerpt}\n  event: ${outcome.eventId} · obligation: ${id}${ref}`;
+  return `- ${type ?? "event"} ${identity} ${paneId} ${transition}\n  last assistant: ${excerpt}\n  ${formatOutcomeContextLine(outcome.context)}\n  event: ${outcome.eventId} · obligation: ${id}${ref}`;
 }
 
 /**
@@ -1113,8 +1122,8 @@ function stubLine(obligation: LeasedObligation): string {
   const outcome = obligation.outcome ?? null;
   const id = safeToken(obligation.id, OBLIGATION_ID_TOKEN) ?? "unavailable";
   if (!outcome) {
-    // Already one line — the honest fallback IS the stub.
-    return `- event ${obligation.agentEventId} · obligation ${id} — snapshot unavailable (no pane known; run shepy agent list to locate the worker)`;
+    // The honest fallback IS the stub (identity line plus its context line).
+    return `- event ${obligation.agentEventId} · obligation ${id} — snapshot unavailable (no pane known; run shepy agent list to locate the worker)\n  ${SNAPSHOT_UNAVAILABLE_CONTEXT}`;
   }
   const agent = safeToken(outcome.agent, HERDR_AGENT_TOKEN) ?? "unknown";
   const name = safeToken(outcome.name, HERDR_AGENT_TOKEN);
@@ -1124,7 +1133,7 @@ function stubLine(obligation: LeasedObligation): string {
   const type = safeToken(outcome.type, EVENT_TYPE_TOKEN);
   const transition = from && to ? `${from}→${to}` : (type ?? "event");
   const paneId = safeToken(outcome.paneId, PANE_ID_TOKEN) ?? "unknown";
-  return `- ${type ?? "event"} ${identity} ${paneId} ${transition} · event ${obligation.agentEventId} · obligation ${id} — excerpt omitted for budget; run shepy inbox get ${id}`;
+  return `- ${type ?? "event"} ${identity} ${paneId} ${transition} · event ${obligation.agentEventId} · obligation ${id} — excerpt omitted for budget; run shepy inbox get ${id}\n  ${formatOutcomeContextLine(outcome.context)}`;
 }
 
 /**

@@ -7,6 +7,8 @@ export const WAKE_SETTLE_MS = 500;
 
 export type AgentOutcome = {
   agent: string;
+  /** Row 15.309: the daemon-projected context of this event (untrusted). */
+  context?: unknown;
   eventId: number;
   kind: "blocked" | "completed";
   name?: string | null;
@@ -59,6 +61,99 @@ function normalizeExcerpt(
   };
 }
 
+/**
+ * Row 15.309: the context line on every delivered outcome. The daemon
+ * projects it from the event's own append-time history
+ * (src/observability/outcome-context.ts) and sends it as untrusted JSON. This
+ * package cannot import daemon source, so the bounded validating renderer is
+ * mirrored here and must render exactly what the daemon-side one renders. It
+ * invents nothing: no percent without an authoritative window, no
+ * fresh-looking number for a stale reading, and an explicit reason when there
+ * is no reading.
+ */
+type OutcomeContextWire = {
+  basis: "event";
+  eventAt: string | null;
+  model: string | null;
+  percent: number | null;
+  reason: string | null;
+  ref: string | null;
+  reportedAt: string | null;
+  source: string | null;
+  state: "current" | "stale" | "unavailable";
+  tokens: number | null;
+  window: number | null;
+};
+
+const CONTEXT_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$/;
+const CONTEXT_ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
+
+function contextToken(value: unknown): string | null {
+  return typeof value === "string" && CONTEXT_TOKEN.test(value) ? value : null;
+}
+
+function contextIso(value: unknown): string | null {
+  return typeof value === "string" && CONTEXT_ISO.test(value) && Number.isFinite(Date.parse(value))
+    ? value
+    : null;
+}
+
+function contextCount(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+/** The context line for a lease whose event snapshot is gone. */
+export const SNAPSHOT_UNAVAILABLE_CONTEXT = "context: unavailable — snapshot_unavailable";
+
+const CONTEXT_NUMBER = new Intl.NumberFormat("en-US");
+
+/**
+ * The one bounded line every delivered outcome carries. Renders only what the
+ * DTO proves: no percent without an authoritative window, no fresh-looking
+ * number for a stale reading, and an explicit reason when there is none.
+ */
+export function formatOutcomeContextLine(value: unknown): string {
+  if (value === null || value === undefined) return "context: unavailable — context_not_provided";
+  const context = value as Partial<OutcomeContextWire>;
+  if (
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    context.basis !== "event" ||
+    (context.state !== "current" && context.state !== "stale" && context.state !== "unavailable")
+  ) {
+    return "context: unavailable — context_invalid";
+  }
+  const reason = contextToken(context.reason) ?? "unknown";
+  if (context.state === "unavailable" || contextCount(context.tokens) === null) {
+    return `context: unavailable — ${context.state === "unavailable" ? reason : "invalid_reading"}`;
+  }
+  const tokens = CONTEXT_NUMBER.format(context.tokens as number);
+  const window = contextCount(context.window);
+  const at = contextIso(context.reportedAt) ?? "time unknown";
+  const event = contextIso(context.eventAt);
+  const share =
+    window !== null && window > 0
+      ? `${tokens} / ${CONTEXT_NUMBER.format(window)} prompt tokens${
+          context.state === "current" &&
+          typeof context.percent === "number" &&
+          Number.isFinite(context.percent)
+            ? ` (${context.percent.toFixed(1)}%)`
+            : ""
+        }`
+      : `${tokens} prompt tokens (window unknown)`;
+  const provenance = [
+    `reported ${at}`,
+    event ? `as of event ${event}` : "as of event (time unknown)",
+    contextToken(context.model) ? `model ${context.model}` : null,
+    contextToken(context.source),
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return context.state === "current"
+    ? `context: ${share} · ${provenance}`
+    : `context: stale — ${reason}; last ${share} · ${provenance}`;
+}
+
 function outcomeKind(event: AgentEventWireRecord): AgentOutcome["kind"] | undefined {
   if (!event.terminalId) return undefined;
   if (event.type === "agent.done") return "completed";
@@ -87,6 +182,7 @@ export function projectAgentOutcomes(events: AgentEventWireRecord[]): AgentOutco
           stringValue(event.agentId) ??
           paneId ??
           event.terminalId,
+        context: event.outcomeContext,
         eventId: event.id,
         kind,
         name: stringValue(payload.name) ?? null,
@@ -106,6 +202,7 @@ export function formatAgentOutcomeUpdates(outcomes: AgentOutcome[]): string {
       const identity = agentIdentityLabel({ agent: outcome.agent, name: outcome.name });
       return `- ${outcome.kind} ${identity} ${outcome.paneId ?? "unknown"}
   last assistant: ${excerpt}
+  ${formatOutcomeContextLine(outcome.context)}
   event: ${outcome.eventId}`;
     })
     .join("\n");
@@ -121,6 +218,8 @@ export function formatAgentOutcomeUpdates(outcomes: AgentOutcome[]): string {
  */
 export type ProfileObligationOutcome = {
   agent: string | null;
+  /** Row 15.309: the event's own context reading, validated at render. */
+  context?: unknown;
   createdAt: string | null;
   eventId: number | null;
   excerpt: { text: string; truncated: boolean } | null;
@@ -215,7 +314,7 @@ export function formatProfileObligationUpdates(updates: ProfileObligationUpdate[
         // Honest fallback: the lease itself proves the event and obligation
         // identity. No pane is known for a missing snapshot — none may be
         // invented; the owner can locate the worker via shepy agent list.
-        return `- event ${eventId ?? "?"} · obligation ${update.obligationId} — snapshot unavailable (no pane known; run shepy agent list to locate the worker)`;
+        return `- event ${eventId ?? "?"} · obligation ${update.obligationId} — snapshot unavailable (no pane known; run shepy agent list to locate the worker)\n  ${SNAPSHOT_UNAVAILABLE_CONTEXT}`;
       }
       const identity = agentIdentityLabel({
         agent: outcome.agent ?? "unknown",
@@ -232,6 +331,7 @@ export function formatProfileObligationUpdates(updates: ProfileObligationUpdate[
         : "";
       return `- ${outcome.type ?? "event"} ${identity} ${outcome.paneId ?? "unknown"} ${transition}
   last assistant: ${excerpt}
+  ${formatOutcomeContextLine(outcome.context)}
   event: ${eventId ?? "?"} · obligation: ${update.obligationId}${assistantRef}`;
     })
     .join("\n");

@@ -47,7 +47,18 @@ describe("ObservabilityRpcServer", () => {
       workspaceId: "wB",
     });
     await expect(client.request("agent.events", { workspaceId: "wB" })).resolves.toMatchObject({
-      events: [expect.objectContaining({ id: event.id, type: "agent.idle" })],
+      events: [
+        expect.objectContaining({
+          id: event.id,
+          // Row 15.309: every served event carries its own context reading.
+          outcomeContext: expect.objectContaining({
+            basis: "event",
+            reason: "context_not_recorded_at_event",
+            state: "unavailable",
+          }),
+          type: "agent.idle",
+        }),
+      ],
     });
 
     await expect(
@@ -290,7 +301,9 @@ describe("ObservabilityRpcServer", () => {
     const agentEvent = appendRoutedEvent(harness, "term_agent", "wB");
     server.publishAgentEvent(agentEvent);
     await expect(piA.waitForNotification("agent.event")).resolves.toMatchObject({
-      params: { event: { id: agentEvent.id } },
+      params: {
+        event: { id: agentEvent.id, outcomeContext: expect.objectContaining({ basis: "event" }) },
+      },
     });
     expect(piB.notifications).toEqual([]);
 

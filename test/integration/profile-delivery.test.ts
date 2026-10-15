@@ -650,6 +650,76 @@ describe("inbox.lease event-correlated outcomes", () => {
     expect(excerpt?.text).not.toContain("TOOL BODY");
   });
 
+  test("row 15.309: the leased outcome carries the event's own bound context, also when leased later", () => {
+    const path = "/fixture/pi/worker.jsonl";
+    const { delivery, ownerToken, stored } = appendOutcomeEvent({
+      compactHistory: {
+        contextHealth: {
+          branch: null,
+          compactionCount: 0,
+          lastCompaction: null,
+          limitations: ["context_window_not_recorded"],
+          model: { changedAt: null, id: "gpt-6-luna", provider: "openai-codex" },
+          sessionId: "pi-a",
+          source: "pi-jsonl",
+          sourceUpdatedAt: "2026-10-15T08:20:00.000Z",
+          usage: {
+            current: true,
+            kind: "last_reported",
+            percent: null,
+            reason: null,
+            ref: `${path}#entry=m2`,
+            reportedAt: "2026-10-15T08:20:00.000Z",
+            tokens: 300210,
+            window: null,
+          },
+        },
+        historyRef: { kind: "agent_session", path, source: "pi-jsonl", value: path },
+        lastAssistantMessage: {
+          ref: `${path}#entry=m2`,
+          role: "assistant",
+          text: "done",
+          timestamp: null,
+        },
+        lastToolResult: null,
+        lastUserMessage: null,
+        messageCount: 2,
+        source: "pi-jsonl",
+        updatedAt: null,
+      },
+      idempotency: "outcome-context-309",
+    });
+    const lease = delivery.inboxLease({ leaseToken: ownerToken, profileId: "driffs" });
+    const outcome = (lease.obligations[0] as { outcome?: Record<string, unknown> }).outcome;
+    expect(outcome?.context).toEqual({
+      basis: "event",
+      eventAt: stored.createdAt.toISOString(),
+      model: "gpt-6-luna",
+      percent: null,
+      reason: null,
+      ref: `${path}#entry=m2`,
+      reportedAt: "2026-10-15T08:20:00.000Z",
+      source: "pi-jsonl",
+      state: "current",
+      tokens: 300210,
+      window: null,
+    });
+  });
+
+  test("row 15.309: an event stored without context health leases an explicit reason, not a number", () => {
+    const { delivery, ownerToken } = appendOutcomeEvent({
+      compactHistory: null,
+      idempotency: "outcome-context-none",
+    });
+    const lease = delivery.inboxLease({ leaseToken: ownerToken, profileId: "driffs" });
+    const outcome = (lease.obligations[0] as { outcome?: Record<string, unknown> }).outcome;
+    expect(outcome?.context).toMatchObject({
+      reason: "context_not_recorded_at_event",
+      state: "unavailable",
+      tokens: null,
+    });
+  });
+
   test("long excerpts are bounded with a read-back hint; tool bodies never ride", () => {
     const long = "x".repeat(5_000);
     const { delivery, ownerToken } = appendOutcomeEvent({
