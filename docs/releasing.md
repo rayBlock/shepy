@@ -40,6 +40,15 @@ pnpm build
 pnpm smoke:install   # tarball -> isolated prefix -> bin runs
 ```
 
+Git hooks are an explicit developer step in a clone, after dependencies:
+`pnpm install`, then `pnpm hooks:install` (Husky; it points that clone's
+`core.hooksPath` at `.husky/_`). No install lifecycle script (`preinstall`,
+`install`, `postinstall`, `prepare` or `pnpm:devPreinstall`) runs Husky, so
+`npm install -g rayBlock/shepy` and other git-URL or tarball consumers never
+execute it. This supersedes the automatic `pnpm:devPreinstall` hook in the
+archived 2026-07-15 npm publication plan, which ran before dependencies were
+linked and failed every fresh clone.
+
 ## Update versions
 
 Keep these files synchronized:
