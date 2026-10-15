@@ -1,5 +1,9 @@
 import { describe, expect, test } from "vitest";
-import { lapsedRecoveryWarning, SYSTEM_MESSAGE_MAX_CHARS } from "@/cli/claude-hook.js";
+import {
+  lapsedRecoveryWarning,
+  noSubscriptionWarning,
+  SYSTEM_MESSAGE_MAX_CHARS,
+} from "@/cli/claude-hook.js";
 
 describe("claude-hook lapsed-recovery contention warning", () => {
   test("names the rival pane and harness, stays inside the systemMessage budget, one line", () => {
@@ -21,5 +25,25 @@ describe("claude-hook lapsed-recovery contention warning", () => {
     });
     expect(hostile.split("\n")).toHaveLength(1);
     expect(hostile).not.toContain("EVIL\n");
+  });
+});
+
+describe("claude-hook no-subscription warning", () => {
+  test("agent-only wording is unchanged; a demand-capable pane is not told nothing can arrive", () => {
+    const agentOnly = noSubscriptionWarning({ demandCapable: false, profileId: "driffs" });
+    expect(agentOnly).toBe(
+      "shepy: profile driffs has no enabled subscriptions; nothing can be delivered to this pane",
+    );
+    const capable = noSubscriptionWarning({ demandCapable: true, profileId: "driffs" });
+    expect(capable).toContain("no enabled subscriptions");
+    expect(capable).toContain("no worker outcomes can be delivered");
+    expect(capable).toContain("profile demands still can");
+    expect(capable).not.toContain("nothing can be delivered");
+    for (const warning of [agentOnly, capable]) {
+      expect(warning.length).toBeLessThanOrEqual(SYSTEM_MESSAGE_MAX_CHARS);
+      expect(warning.split("\n")).toHaveLength(1);
+    }
+    const hostile = noSubscriptionWarning({ demandCapable: true, profileId: "driffs\nEVIL" });
+    expect(hostile.split("\n")).toHaveLength(1);
   });
 });

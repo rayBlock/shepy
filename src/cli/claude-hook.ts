@@ -13,7 +13,8 @@ import {
   formatOutcomeContextLine,
   SNAPSHOT_UNAVAILABLE_CONTEXT,
 } from "@/observability/outcome-context.js";
-import { profileClaimInputSchema } from "@/observability/schemas.js";
+import { type DemandRequest, demandRequestSchema } from "@/observability/profile-demand-ingress.js";
+import { inboxLeaseInputSchema, profileClaimInputSchema } from "@/observability/schemas.js";
 
 /**
  * Claude Code hook bridge (`shepy claude-hook`).
@@ -59,6 +60,14 @@ import { profileClaimInputSchema } from "@/observability/schemas.js";
  * accepted trade, a blocked editor is not. A record from the old filename
  * scheme reads as absent: the hook re-claims, the rows re-deliver.
  *
+ * Profile demands are opt-in (`--profile-demand`). An opted-in pane asks
+ * daemon.info once per invocation; only a daemon advertising
+ * profile-demand-v1 gets ["agent", "profile-demand"] on every claim and lease
+ * of that invocation, otherwise every request stays agent-only. Leased
+ * demand rows are validated field by field and rendered as citations inside
+ * the same budget, represented set and two-phase record as worker outcomes;
+ * a demand row that cannot be rendered is nacked, never shown or acked.
+ *
  * Hard rules:
  *  - Exit 0 on every expected condition. The hook runs inside the user's turn
  *    latency; Shepy is observability and must never degrade the session.
@@ -69,7 +78,8 @@ import { profileClaimInputSchema } from "@/observability/schemas.js";
  *    user-facing only, never model input, one short line each. A first
  *    failed handoff and other transient daemon trouble stay silent.
  *  - One claim, one lease, no retries, no sleeps, and a hard per-request
- *    deadline.
+ *    deadline. An opted-in pane (--profile-demand) adds one daemon.info
+ *    capability probe under the same deadline; any failure is agent-only.
  *  - The lease token is a credential. It never reaches stdout or the
  *    transcript; it lives in <home>/owners/claude-<session_id>-<profile>.json,
  *    mode 0600. A missing file is recovered by the next claim, never an error.
@@ -86,6 +96,27 @@ import { profileClaimInputSchema } from "@/observability/schemas.js";
  * token whenever the owner file has one.
  */
 const schemaAcceptsCurrentLeaseToken = "currentLeaseToken" in profileClaimInputSchema.properties;
+
+/**
+ * Same build-time lockstep rule for the profile-demand source kinds: the
+ * claim must be able to persist acceptedSourceKinds and the lease must be
+ * able to request sourceKinds, or the hook never asks for demands at all.
+ */
+const schemaAcceptsSourceKinds =
+  "acceptedSourceKinds" in profileClaimInputSchema.properties &&
+  "sourceKinds" in inboxLeaseInputSchema.properties;
+
+/** The daemon.info capability that proves the daemon leases demand rows. */
+const PROFILE_DEMAND_CAPABILITY = "profile-demand-v1";
+/**
+ * The kinds an opted-in, capable pane claims AND leases. A claim that omits
+ * acceptedSourceKinds persists agent-only, and a lease that requests a kind
+ * the claim did not accept is refused, so every claim and lease site in one
+ * invocation sends exactly this list or nothing.
+ */
+const DEMAND_SOURCE_KINDS = ["agent", "profile-demand"] as const;
+/** The nack code for a leased demand row this hook cannot render (Pi's code). */
+const DEMAND_UNRENDERABLE_ERROR_CODE = "demand_snapshot_missing";
 
 /** Hook payloads are small JSON documents; anything larger is malformed. */
 export const CLAUDE_HOOK_STDIN_MAX_CHARS = 1_000_000;
@@ -145,40 +176,43 @@ const nullableString = Type.Union([Type.Null(), Type.String()]);
  * TypeError in formatHookContext. Unknown extra fields are tolerated (the
  * response carries whole obligation rows); only the fields the renderer
  * reads are required.
+ *
+ * The response is discriminated per row (see classifyLease): a row without
+ * sourceKind is an agent row and must match agentRowSchema exactly as before;
+ * a row with sourceKind "profile-demand" is a demand row, validated field by
+ * field before it may render.
  */
-const leaseResponseSchema = Type.Object(
+const leaseEnvelopeSchema = Type.Object(
+  { obligations: Type.Array(Type.Unknown()) },
+  { additionalProperties: true },
+);
+
+const agentRowSchema = Type.Object(
   {
-    obligations: Type.Array(
+    agentEventId: Type.Integer(),
+    id: Type.String({ minLength: 1 }),
+    outcome: Type.Union([
+      Type.Null(),
       Type.Object(
         {
-          agentEventId: Type.Integer(),
-          id: Type.String({ minLength: 1 }),
-          outcome: Type.Union([
+          agent: nullableString,
+          // Row 15.309: validated at render; an old daemon omits it.
+          context: Type.Optional(Type.Unknown()),
+          eventId: Type.Integer(),
+          excerpt: Type.Union([
             Type.Null(),
-            Type.Object(
-              {
-                agent: nullableString,
-                // Row 15.309: validated at render; an old daemon omits it.
-                context: Type.Optional(Type.Unknown()),
-                eventId: Type.Integer(),
-                excerpt: Type.Union([
-                  Type.Null(),
-                  Type.Object({ text: Type.String(), truncated: Type.Boolean() }),
-                ]),
-                from: nullableString,
-                lastAssistantRef: nullableString,
-                name: nullableString,
-                paneId: nullableString,
-                to: nullableString,
-                type: Type.String(),
-              },
-              { additionalProperties: true },
-            ),
+            Type.Object({ text: Type.String(), truncated: Type.Boolean() }),
           ]),
+          from: nullableString,
+          lastAssistantRef: nullableString,
+          name: nullableString,
+          paneId: nullableString,
+          to: nullableString,
+          type: Type.String(),
         },
         { additionalProperties: true },
       ),
-    ),
+    ]),
   },
   { additionalProperties: true },
 );
@@ -200,7 +234,24 @@ export type LeasedObligation = {
   agentEventId: number;
   id: string;
   outcome?: OutcomeSnapshot | null;
+  /** Absent on today's agent rows; the known explicit "agent" is accepted too. */
+  sourceKind?: "agent" | undefined;
 };
+
+/**
+ * A leased profile-demand row that passed every render check in
+ * renderableDemand. Only rows of this shape ever reach the formatter as
+ * demands; a null or failing snapshot never becomes an agent fallback.
+ */
+export type LeasedDemandObligation = {
+  demand: DemandRequest;
+  id: string;
+  profileDemandEventId: string;
+  sourceKind: "profile-demand";
+};
+
+/** What the formatter can represent: agent outcomes and validated demands. */
+export type RenderableObligation = LeasedObligation | LeasedDemandObligation;
 
 /** A classified failure: expected, so the hook exits 0 for it. */
 class ExpectedHookError extends Error {
@@ -229,6 +280,13 @@ class ExpectedHookError extends Error {
 export type ClaudeHookInput = {
   environment: NodeJS.ProcessEnv;
   homeDir: string;
+  /**
+   * Opt in to profile-demand delivery (`--profile-demand`). Off (the
+   * default) keeps every request byte-identical to the agent-only hook. On,
+   * the hook still claims and leases agent-only unless the daemon advertises
+   * profile-demand-v1 through daemon.info.
+   */
+  profileDemand?: boolean | undefined;
   profileId: string;
   readStdin: () => Promise<string>;
   socketPath: string;
@@ -398,6 +456,58 @@ export function lapsedRecoveryWarning(input: {
   return `shepy: profile ${plainText(input.profileId)} lapsed mid-turn and pane ${plainText(input.owner?.paneId)} (${plainText(input.owner?.harnessKind, 24)}) claimed it before this pane could recover — this pane will not receive worker outcomes until its next claim succeeds`;
 }
 
+/**
+ * The no-enabled-subscriptions line. Subscriptions feed worker outcomes
+ * only; profile demands are published to the profile directly. An agent-only
+ * pane truly receives nothing, so its wording is unchanged. A pane that
+ * claimed the demand kind this turn must not be told nothing can arrive.
+ */
+export function noSubscriptionWarning(input: {
+  demandCapable: boolean;
+  profileId: string;
+}): string {
+  if (input.demandCapable) {
+    return `shepy: profile ${plainText(input.profileId)} has no enabled subscriptions; no worker outcomes can be delivered to this pane (profile demands still can)`;
+  }
+  return `shepy: profile ${plainText(input.profileId)} has no enabled subscriptions; nothing can be delivered to this pane`;
+}
+
+/**
+ * The per-invocation source-kind decision. True only when the operator
+ * opted in, this build's claim and lease schemas carry the source-kind
+ * fields, and the daemon answers daemon.info with profile-demand-v1. A
+ * daemon without the method (older build), a refusal, a timeout or any
+ * other answer means agent-only — silently, one request, no retry. The
+ * decision is never inferred from a demand row, a name, an idle state or
+ * the agent roster.
+ */
+async function probeDemandCapability(
+  input: ClaudeHookInput,
+  request: HookRequest,
+): Promise<boolean> {
+  if (input.profileDemand !== true || !schemaAcceptsSourceKinds) return false;
+  try {
+    const info = await request<unknown>("daemon.info", {});
+    const capabilities =
+      typeof info === "object" && info !== null
+        ? (info as { capabilities?: unknown }).capabilities
+        : undefined;
+    return Array.isArray(capabilities) && capabilities.includes(PROFILE_DEMAND_CAPABILITY);
+  } catch {
+    return false;
+  }
+}
+
+/** The claim fragment for this invocation's decision: both kinds, or nothing. */
+function claimSourceKinds(demandCapable: boolean): { acceptedSourceKinds?: string[] } {
+  return demandCapable ? { acceptedSourceKinds: [...DEMAND_SOURCE_KINDS] } : {};
+}
+
+/** The lease fragment for this invocation's decision: both kinds, or nothing. */
+function leaseSourceKinds(demandCapable: boolean): { sourceKinds?: string[] } {
+  return demandCapable ? { sourceKinds: [...DEMAND_SOURCE_KINDS] } : {};
+}
+
 async function handlePromptSubmit(
   payload: HookPayload,
   input: ClaudeHookInput,
@@ -416,6 +526,10 @@ async function handlePromptSubmit(
       value: payload.session_id,
     });
     const herdrSessionName = await resolveHerdrSessionName(request, paneId, workspaceId);
+    // One decision for this whole invocation: the claim below and the lease
+    // after it name the same source kinds, so the lease is never refused
+    // for a kind the claim did not accept.
+    const demandCapable = await probeDemandCapability(input, request);
     // The owner-file read sits ABOVE the claim on purpose: the persisted
     // record (and its lease token) must be in scope at the profile.claim
     // call site below, where the token is presented as proof of possession.
@@ -443,6 +557,7 @@ async function handlePromptSubmit(
       ...(previous?.leaseToken !== undefined && schemaAcceptsCurrentLeaseToken
         ? { currentLeaseToken: previous.leaseToken }
         : {}),
+      ...claimSourceKinds(demandCapable),
       harnessKind: "claude",
       harnessSessionRefJson: ownerSessionRefJson,
       herdrSessionName,
@@ -490,9 +605,7 @@ async function handlePromptSubmit(
         (subscription) => subscription.enabled !== false,
       );
       if (!anyEnabled) {
-        warnings.push(
-          `shepy: profile ${plainText(input.profileId)} has no enabled subscriptions; nothing can be delivered to this pane`,
-        );
+        warnings.push(noSubscriptionWarning({ demandCapable, profileId: input.profileId }));
       }
     } catch (error) {
       if (/No such profile/.test(describe(error))) {
@@ -544,8 +657,10 @@ async function handlePromptSubmit(
       leaseToken,
       maxBatch: LEASE_MAX_BATCH,
       profileId: input.profileId,
+      ...leaseSourceKinds(demandCapable),
     });
-    if (!Value.Check(leaseResponseSchema, lease)) {
+    const classified = classifyLease(lease, demandCapable, input.profileId);
+    if (classified === null) {
       // The daemon answered, but with a payload this build cannot render
       // (version skew). Treat it exactly like a rejected inbox.delivered:
       // the rows stay leased server-side, nothing is recorded as seen, and a
@@ -562,7 +677,11 @@ async function handlePromptSubmit(
         "shepy daemon returned an unexpected inbox lease response",
       );
     }
-    const obligations = (lease as { obligations: LeasedObligation[] }).obligations;
+    // A demand row this build cannot render goes back to pending with its
+    // error recorded — never rendered, recorded, delivered or acked, and
+    // never turned into an agent fallback line.
+    await nackUnrenderableDemands(request, classified.unrenderableIds, leaseToken, input.profileId);
+    const obligations = classified.rows;
     if (obligations.length === 0) {
       // Persist even with nothing to deliver: this clears a stale delivered
       // record (an interrupted turn never ran Stop to clear it) and parks the
@@ -721,6 +840,15 @@ async function handleStop(
     if (payload.stop_hook_active === true) return null;
     if (!file || file.profileId !== input.profileId) return null;
 
+    // The same per-invocation decision as UserPromptSubmit, taken only once
+    // the loop guard and the owner-file checks passed (the ack-only paths
+    // above make no extra request). The normal lease, the recovery claim and
+    // the recovery lease below all name exactly these kinds. If this turn's
+    // prompt claimed agent-only (its probe failed) and this probe succeeds,
+    // the demand lease is refused before anything is leased — the ordinary
+    // silent no-op below — and the next prompt re-claims with both kinds.
+    const demandCapable = await probeDemandCapability(input, request);
+
     // Deliver fresh mid-turn outcomes the same way UserPromptSubmit does:
     // lease, mark delivered under this prompt id, inject the same bounded
     // summary. The injection is what continues the conversation.
@@ -730,6 +858,7 @@ async function handleStop(
         leaseToken: file.leaseToken,
         maxBatch: LEASE_MAX_BATCH,
         profileId: input.profileId,
+        ...leaseSourceKinds(demandCapable),
       });
     } catch (error) {
       // A long Claude turn outlives lease + grace: Stop runs on a row that
@@ -757,6 +886,9 @@ async function handleStop(
         };
       }>("profile.claim", {
         currentLeaseToken: file.leaseToken,
+        // An omitted field would persist agent-only and silently drop the
+        // demand kind this pane claimed at the prompt.
+        ...claimSourceKinds(demandCapable),
         harnessKind: "claude",
         harnessSessionRefJson: file.ownerSessionRefJson,
         herdrSessionName,
@@ -802,9 +934,11 @@ async function handleStop(
         leaseToken: freshToken,
         maxBatch: LEASE_MAX_BATCH,
         profileId: input.profileId,
+        ...leaseSourceKinds(demandCapable),
       });
     }
-    if (!Value.Check(leaseResponseSchema, lease)) {
+    const classified = classifyLease(lease, demandCapable, input.profileId);
+    if (classified === null) {
       // Same boundary rule as UserPromptSubmit: an unrenderable lease
       // response is an expected no-op, never a TypeError after promotion.
       recordHandoffFailure(
@@ -817,7 +951,15 @@ async function handleStop(
         "shepy daemon returned an unexpected inbox lease response",
       );
     }
-    const obligations = (lease as { obligations: LeasedObligation[] }).obligations;
+    // Same rule as UserPromptSubmit: unrenderable demand rows are nacked,
+    // never rendered, recorded or acked.
+    await nackUnrenderableDemands(
+      request,
+      classified.unrenderableIds,
+      file.leaseToken,
+      input.profileId,
+    );
+    const obligations = classified.rows;
     if (obligations.length === 0) return null;
     // Render FIRST — the represented set defines the record, the delivery
     // and the ack (same as UserPromptSubmit). Pure, cannot throw on daemon
@@ -1005,47 +1147,77 @@ export type FormattedHookContext = {
   representedIds: string[];
 };
 
+/** Section heading for demand rows — the Pi wake card's demand section name. */
+const DEMANDS_HEADING = "[SHEPY DUTY DEMANDS]";
+
+function isDemandObligation(
+  obligation: RenderableObligation,
+): obligation is LeasedDemandObligation {
+  return obligation.sourceKind === "profile-demand";
+}
+
 export function formatHookContext(
   profileId: string,
-  obligations: LeasedObligation[],
+  input: RenderableObligation[],
 ): FormattedHookContext {
-  const header = `${WAKE_POLICY}\n\n[SHEPY PROFILE OUTCOMES]\n`;
+  // Agent outcomes first, then demands (the Pi card's section order). The
+  // represented and deferred sets are sets of ids, so reordering for display
+  // changes nothing about what is delivered or acked.
+  const agentRows = input.filter((obligation) => !isDemandObligation(obligation));
+  const demandRows = input.filter(isDemandObligation);
+  const obligations: RenderableObligation[] = [...agentRows, ...demandRows];
+  // An all-agent batch renders byte-identically to the agent-only hook. A
+  // demand-only batch takes the demand heading as its section header; a
+  // mixed batch opens the demand section with its own heading, charged to
+  // the budget when the first demand line (full or stub) is placed.
+  const header =
+    agentRows.length === 0 && demandRows.length > 0
+      ? `${WAKE_POLICY}\n\n${DEMANDS_HEADING}\n`
+      : `${WAKE_POLICY}\n\n[SHEPY PROFILE OUTCOMES]\n`;
+  const innerHeading = agentRows.length > 0 && demandRows.length > 0 ? `\n${DEMANDS_HEADING}` : "";
+  const noun = demandRows.length > 0 ? "update(s)" : "outcome(s)";
   // Reserve the note's worst-case space up front (every obligation deferred
   // is the longest variant): Claude Code truncates an over-budget
   // additionalContext from the tail, so a note appended after the lines is
   // the first thing cut — precisely when it matters.
   const printableProfileId = profileId.replace(/[^ -~]/g, "");
-  const reservedNote = `… [${obligations.length} more outcome(s) deferred to your next turn; run shepy inbox list ${printableProfileId} --state pending]`;
+  const reservedNote = `… [${obligations.length} more ${noun} deferred to your next turn; run shepy inbox list ${printableProfileId} --state pending]`;
   const charBudget = CONTEXT_MAX_CHARS - reservedNote.length - 1;
   const lineBudget = CONTEXT_MAX_LINES - 1;
   const lines: string[] = [];
   const representedIds: string[] = [];
   let used = header.length;
   let lineCount = header.split("\n").length - 1;
+  let headingPlaced = innerHeading === "";
   let index = 0;
-  // (a) Full outcome lines while they fit, oldest first.
+  // Places one rendered row (plus the demand heading before the first demand
+  // in a mixed batch) if both budgets hold; false means it did not fit.
+  const place = (obligation: RenderableObligation, line: string): boolean => {
+    const heading = isDemandObligation(obligation) && !headingPlaced ? innerHeading : "";
+    const block = heading ? `${heading}\n${line}` : line;
+    const blockLines = block.split("\n").length;
+    if (used + block.length + 1 > charBudget || lineCount + blockLines > lineBudget) return false;
+    lines.push(block);
+    representedIds.push(obligation.id);
+    used += block.length + 1;
+    lineCount += blockLines;
+    if (heading) headingPlaced = true;
+    return true;
+  };
+  // (a) Full lines while they fit, oldest first.
   while (index < obligations.length) {
-    const line = outcomeLine(obligations[index] as LeasedObligation);
-    const lineLines = line.split("\n").length;
-    if (used + line.length + 1 > charBudget || lineCount + lineLines > lineBudget) break;
-    lines.push(line);
-    representedIds.push((obligations[index] as LeasedObligation).id);
-    used += line.length + 1;
-    lineCount += lineLines;
+    const obligation = obligations[index] as RenderableObligation;
+    const line = isDemandObligation(obligation) ? demandLine(obligation) : outcomeLine(obligation);
+    if (!place(obligation, line)) break;
     index += 1;
   }
-  // (b) Compact stubs for the rest, while they fit. A stub still shows the
-  // outcome's identity, its context line (row 15.309: budget pressure never
-  // drops context) and where to read it in full, so it counts as represented
-  // — the model saw what happened and how to get the rest.
+  // (b) Bounded stubs for the remaining rows. Agent stubs retain the outcome
+  // context line; demand stubs retain their citation. A complete rendered block
+  // counts as represented only when both budgets admit it.
   while (index < obligations.length) {
-    const line = stubLine(obligations[index] as LeasedObligation);
-    const lineLines = line.split("\n").length;
-    if (used + line.length + 1 > charBudget || lineCount + lineLines > lineBudget) break;
-    lines.push(line);
-    representedIds.push((obligations[index] as LeasedObligation).id);
-    used += line.length + 1;
-    lineCount += lineLines;
+    const obligation = obligations[index] as RenderableObligation;
+    const line = isDemandObligation(obligation) ? demandStubLine(obligation) : stubLine(obligation);
+    if (!place(obligation, line)) break;
     index += 1;
   }
   // (c) The tail fit nowhere: deferred — the hook hands these rows back to
@@ -1053,7 +1225,7 @@ export function formatHookContext(
   const deferredIds = obligations.slice(index).map((obligation) => obligation.id);
   if (deferredIds.length > 0) {
     lines.push(
-      `… [${deferredIds.length} more outcome(s) deferred to your next turn; run shepy inbox list ${printableProfileId} --state pending]`,
+      `… [${deferredIds.length} more ${noun} deferred to your next turn; run shepy inbox list ${printableProfileId} --state pending]`,
     );
   }
   return { context: `${header}${lines.join("\n")}`, deferredIds, representedIds };
@@ -1137,6 +1309,156 @@ function stubLine(obligation: LeasedObligation): string {
 }
 
 /**
+ * Demand citation policy — mirrors the Pi demand card
+ * (formatDemandObligationUpdates in packages/shepy-pi): a demand is a set of
+ * pointers to untrusted evidence, cited as a JSON-quoted path, its sha256
+ * and a JSON-quoted selector. Only fields renderableDemand validated are
+ * read; the source, seat, owner generation (including the native session
+ * reference), idempotency key, action fingerprint, observation time and the
+ * row's lease token are never rendered.
+ */
+const DEMAND_REF_PATH_MAX_CHARS = 256;
+/** The ingress UTC shape (utc() in profile-demand-ingress.ts). */
+const DEMAND_UTC = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/;
+
+/**
+ * True only for a real, still-live expiry, by the ingress rules exactly
+ * (utc() and the expiry check in profile-demand-ingress.ts): the canonical
+ * shape (seconds with a three-digit millisecond fraction, Z), a finite parse
+ * whose toISOString round-trips to the same text (so an impossible calendar
+ * date such as February 30, month 13 or hour 24 is refused), and an instant
+ * strictly after `now`, the hook's own observation clock (expiry at or
+ * before now is expired, as at ingress). The server's lease eligibility stays
+ * authoritative; this only refuses a malformed or skewed lease response. No
+ * TTL is guessed and no timestamp is refreshed.
+ */
+function liveDemandExpiry(value: string, now: number): boolean {
+  if (!DEMAND_UTC.test(value)) return false;
+  const epoch = Date.parse(value);
+  if (!Number.isFinite(epoch) || new Date(epoch).toISOString() !== value) return false;
+  return epoch > now;
+}
+
+/**
+ * Characters a cited path or selector may not carry: C0, DEL and C1
+ * controls, the Unicode line and paragraph separators, and the bidi
+ * controls — U+061C ARABIC LETTER MARK, the U+200E/U+200F marks, and the
+ * embedding, override and isolate controls. A ref carrying any is rejected,
+ * not stripped — a stripped path would cite a different file.
+ */
+const UNSAFE_REF_TEXT =
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional — control bytes in a cited ref make the whole demand unrenderable.
+  /[\u0000-\u001f\u007f-\u009f\u061c\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]/;
+
+type DemandRef = DemandRequest["snapshotRef"];
+
+function renderableRef(ref: DemandRef): boolean {
+  return (
+    ref.path.length <= DEMAND_REF_PATH_MAX_CHARS &&
+    !UNSAFE_REF_TEXT.test(ref.path) &&
+    !UNSAFE_REF_TEXT.test(ref.selector)
+  );
+}
+
+function citeRef(ref: DemandRef): string {
+  return `${JSON.stringify(ref.path)}#sha256=${ref.sha256} (selector ${JSON.stringify(ref.selector)})`;
+}
+
+function demandLine(obligation: LeasedDemandObligation): string {
+  const { demand } = obligation;
+  const id = safeToken(obligation.id, OBLIGATION_ID_TOKEN) ?? "unavailable";
+  const eventId = safeToken(obligation.profileDemandEventId, OBLIGATION_ID_TOKEN) ?? "unavailable";
+  return `- ${demand.kind} · episode ${demand.episodeId} · revision ${demand.activationRevision}\n  obligation: ${id} · demand event: ${eventId} · reason: ${demand.reasonCode} · expires: ${demand.expiresAt}\n  snapshot: ${citeRef(demand.snapshotRef)}\n  marker: ${citeRef(demand.markerRef)}\n  duty: ${citeRef(demand.dutyRef)} · grant: ${citeRef(demand.grantRef)}`;
+}
+
+/** The one-line demand stand-in: kind, reason and both ids; refs omitted. */
+function demandStubLine(obligation: LeasedDemandObligation): string {
+  const { demand } = obligation;
+  const id = safeToken(obligation.id, OBLIGATION_ID_TOKEN) ?? "unavailable";
+  const eventId = safeToken(obligation.profileDemandEventId, OBLIGATION_ID_TOKEN) ?? "unavailable";
+  return `- ${demand.kind} · reason ${demand.reasonCode} · obligation ${id} · demand event ${eventId} — refs omitted for budget; run shepy inbox get ${id}`;
+}
+
+/**
+ * A demand row is renderable only when EVERY field the renderer reads is
+ * proven: the row is a demand (kind "demand", no agent event, no agent
+ * outcome), its demand event id is a plain id token, its snapshot is
+ * non-null and passes this build's own demandRequestSchema (the producer's
+ * schema, imported, so the hook and the daemon ship in lockstep), it is for
+ * this profile, its expiry is a real canonical UTC instant still later than
+ * `now` (liveDemandExpiry), and every cited ref is bounded and free of
+ * control and bidi characters. Anything else returns null.
+ */
+function renderableDemand(
+  row: Record<string, unknown>,
+  id: string,
+  profileId: string,
+  now: number,
+): LeasedDemandObligation | null {
+  if (row.kind !== "demand" || row.agentEventId !== null || row.outcome !== null) return null;
+  const eventId = row.profileDemandEventId;
+  if (typeof eventId !== "string" || !OBLIGATION_ID_TOKEN.test(eventId)) return null;
+  if (!Value.Check(demandRequestSchema, row.demand)) return null;
+  const demand = row.demand as DemandRequest;
+  if (demand.profileId !== profileId) return null;
+  if (!liveDemandExpiry(demand.expiresAt, now)) return null;
+  for (const ref of [demand.snapshotRef, demand.markerRef, demand.dutyRef, demand.grantRef]) {
+    if (!renderableRef(ref)) return null;
+  }
+  return { demand, id, profileDemandEventId: eventId, sourceKind: "profile-demand" };
+}
+
+type ClassifiedLease = {
+  /** Agent rows and validated demand rows, in lease order. */
+  rows: RenderableObligation[];
+  /** Leased demand rows that failed renderableDemand: nacked, never shown. */
+  unrenderableIds: string[];
+};
+
+/**
+ * Discriminates the lease response by the daemon's actual row shapes. A row
+ * without sourceKind, or with the known explicit sourceKind "agent", is an
+ * agent row and must match agentRowSchema (the pre-demand check, unchanged —
+ * that check always tolerated extra fields, so an explicit "agent" row is
+ * accepted whether or not demands were requested). A row with sourceKind
+ * "profile-demand" is a
+ * demand row — only when this invocation asked for demands — with a plain id
+ * token; it renders if renderableDemand proves it, otherwise its id is
+ * listed for a nack. Anything else — no envelope, a non-object row, an agent
+ * row failing its schema, an unknown sourceKind, a demand row nobody asked
+ * for, or a demand row without a usable id — makes the whole response
+ * unrenderable (null): the caller's handoff-failure path keeps every row
+ * leased and records nothing as seen. Demand expiry is judged against one
+ * observation of the hook's clock, taken here.
+ */
+function classifyLease(
+  lease: unknown,
+  demandCapable: boolean,
+  profileId: string,
+): ClassifiedLease | null {
+  if (!Value.Check(leaseEnvelopeSchema, lease)) return null;
+  const now = Date.now();
+  const rows: RenderableObligation[] = [];
+  const unrenderableIds: string[] = [];
+  for (const row of (lease as { obligations: unknown[] }).obligations) {
+    if (typeof row !== "object" || row === null || Array.isArray(row)) return null;
+    const record = row as Record<string, unknown>;
+    if (!("sourceKind" in record) || record.sourceKind === "agent") {
+      if (!Value.Check(agentRowSchema, record)) return null;
+      rows.push(record as LeasedObligation);
+      continue;
+    }
+    if (!demandCapable || record.sourceKind !== "profile-demand") return null;
+    const id = record.id;
+    if (typeof id !== "string" || !OBLIGATION_ID_TOKEN.test(id)) return null;
+    const demand = renderableDemand(record, id, profileId, now);
+    if (demand) rows.push(demand);
+    else unrenderableIds.push(id);
+  }
+  return { rows, unrenderableIds };
+}
+
+/**
  * A failed post-lease delivery handoff (`inbox.delivered` rejected, or — from
  * round 4 — a lease response this build cannot render): the rows are leased
  * server-side and unseen, the batch was already re-leased or is about to be,
@@ -1211,6 +1533,34 @@ async function deferOverBudget(
     await request("inbox.defer", { ids: deferredIds, leaseToken });
   } catch {
     // Stay-leased-and-expire is the documented fallback; see above.
+  }
+}
+
+/**
+ * Leased demand rows this build cannot render go back to pending via
+ * inbox.nack with demand_snapshot_missing: token-fenced, the attempt stays
+ * burned (unlike defer), so a permanently unrenderable demand reaches
+ * dead_letter visibly instead of looping unseen. If the RPC fails the rows
+ * stay leased and expire — the same accepted degradation as defer. No
+ * warning, no retry; awaited because the client closes in the handler's
+ * finally.
+ */
+async function nackUnrenderableDemands(
+  request: HookRequest,
+  ids: string[],
+  leaseToken: string,
+  profileId: string,
+): Promise<void> {
+  if (ids.length === 0) return;
+  try {
+    await request("inbox.nack", {
+      errorCode: DEMAND_UNRENDERABLE_ERROR_CODE,
+      ids,
+      leaseToken,
+      profileId,
+    });
+  } catch {
+    // Stay-leased-and-expire; see deferOverBudget.
   }
 }
 

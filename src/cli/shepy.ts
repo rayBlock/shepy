@@ -173,7 +173,7 @@ export type CliCommand =
   | { command: "operation-wait"; json: boolean; operationId: string; timeoutMs?: number }
   | { command: "operation-get"; json: boolean; operationId: string }
   | { command: "operation-list"; json: boolean; profileId: string }
-  | { command: "claude-hook"; profileId: string }
+  | { command: "claude-hook"; profileDemand?: true; profileId: string }
   | { command: "help"; topic: HelpTopic }
   | { command: "version" };
 
@@ -227,8 +227,13 @@ function parseClaudeHookCommand(args: string[]): CliCommand {
   if (!profileId) {
     throw new CliUsageError("claude-hook requires --profile <profileId>", "claude-hook");
   }
+  // Opt-in only: without the flag the command (and every hook request) is
+  // exactly the agent-only shape.
+  const profileDemand = takeFlag(args, "--profile-demand");
   rejectExtra(args, "claude-hook");
-  return { command: "claude-hook", profileId };
+  return profileDemand
+    ? { command: "claude-hook", profileDemand: true, profileId }
+    : { command: "claude-hook", profileId };
 }
 
 function parseDispatchCommand(args: string[]): CliCommand {
@@ -969,11 +974,13 @@ pending. Exits 0 on every expected condition so Shepy never degrades the
 coding session, and never prints the lease token.
 
 Usage:
-  shepy claude-hook --profile <profileId>
+  shepy claude-hook --profile <profileId> [--profile-demand]
 
 Options:
-  --profile <id>    Profile this pane owns (required)
-  -h, --help        Show help
+  --profile <id>      Profile this pane owns (required)
+  --profile-demand    Also claim and deliver profile demands, when the daemon
+                      advertises profile-demand-v1; otherwise agent-only
+  -h, --help          Show help
 `;
   }
 }
@@ -1399,6 +1406,7 @@ async function main(): Promise<void> {
       await runClaudeHook({
         environment: process.env,
         homeDir: runtime.homeDir,
+        profileDemand: command.profileDemand === true,
         profileId: command.profileId,
         readStdin: readStdinPayload,
         socketPath: runtime.paths.socketPath,

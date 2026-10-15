@@ -1244,3 +1244,38 @@ function createFakeClient(overrides: { name?: string | null } = {}): FakeClient 
     },
   };
 }
+
+describe("claude-hook --profile-demand opt-in parsing", () => {
+  test("without the flag the command keeps the exact agent-only shape", () => {
+    const parsed = parseCliArgs(["claude-hook", "--profile", "driffs"]);
+    expect(parsed).toEqual({ command: "claude-hook", profileId: "driffs" });
+    expect(parsed).not.toHaveProperty("profileDemand");
+  });
+
+  test("the flag opts in, in either position", () => {
+    expect(parseCliArgs(["claude-hook", "--profile", "driffs", "--profile-demand"])).toEqual({
+      command: "claude-hook",
+      profileDemand: true,
+      profileId: "driffs",
+    });
+    expect(parseCliArgs(["claude-hook", "--profile-demand", "--profile", "driffs"])).toEqual({
+      command: "claude-hook",
+      profileDemand: true,
+      profileId: "driffs",
+    });
+  });
+
+  test("the flag takes no value and never replaces the required profile", () => {
+    expect(() =>
+      parseCliArgs(["claude-hook", "--profile", "driffs", "--profile-demand", "yes"]),
+    ).toThrow("Invalid argument: yes");
+    expect(() => parseCliArgs(["claude-hook", "--profile-demand"])).toThrow("--profile");
+  });
+
+  test("help documents the flag and its agent-only fallback", () => {
+    const help = helpText("claude-hook");
+    expect(help).toContain("--profile-demand");
+    expect(help).toContain("profile-demand-v1");
+    expect(help).toContain("agent-only");
+  });
+});
