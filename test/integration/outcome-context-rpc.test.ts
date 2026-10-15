@@ -80,7 +80,7 @@ function piHistory(): CompactAgentHistory {
 const LINE =
   "context: 300 prompt tokens (window unknown) · reported 2026-10-15T08:59:00.000Z (60s before event) · as of event 2026-10-15T09:00:00.000Z · model review-model · pi-jsonl";
 
-async function leaseOverRpc(workerKind: string) {
+async function leaseOverRpc(workerKind: string, reportedAt?: string) {
   const dir = mkdtempSync(join(tmpdir(), "shepy-309-rpc-"));
   const { sqlite } = openSqlite(join(dir, "db.sqlite"));
   applyMigrations(sqlite, { migrationsFolder: "drizzle" });
@@ -134,7 +134,16 @@ async function leaseOverRpc(workerKind: string) {
     workspaceId: "wV",
     type: "agent.done",
     payload: { agent: workerKind, from: "working", to: "done", name: "review-worker" },
-    compactHistory: piHistory(),
+    compactHistory: (() => {
+      const history = piHistory();
+      if (reportedAt !== undefined && history.contextHealth) {
+        history.contextHealth = {
+          ...history.contextHealth,
+          usage: { ...history.contextHealth.usage, reportedAt },
+        };
+      }
+      return history;
+    })(),
   });
   // Deterministic event clock on the real row (no timer mocking).
   sqlite
@@ -242,5 +251,34 @@ describe("row 15.309 correction: real store -> inbox.lease / agent.events RPC ->
     expect(formatHookContext("review", [obligation]).context).toContain(
       "context: unavailable — source_mismatch",
     );
+  });
+
+  test("calendar: an impossible reading date reaches the lease and event wire as unknown, never printed", async () => {
+    const { leasedOutcome, obligation, wire } = await leaseOverRpc(
+      "pi",
+      "2026-02-30T08:20:00.000Z",
+    );
+    for (const served of [obligation.outcome?.context, wire]) {
+      expect(served).toMatchObject({
+        state: "stale",
+        reason: "reading_time_unknown",
+        reportedAt: null,
+        ageSeconds: null,
+      });
+      expect(JSON.stringify(served)).not.toContain("2026-02-30");
+    }
+    const hook = formatHookContext("review", [obligation]).context;
+    const pi = formatProfileObligationUpdates([
+      {
+        agentEventId: obligation.agentEventId,
+        obligationId: obligation.id,
+        outcome: leasedOutcome,
+      },
+    ]);
+    for (const text of [hook, pi]) {
+      expect(text).toContain("context: stale — reading_time_unknown; last 300 prompt tokens");
+      expect(text).toContain("reported time unknown");
+      expect(text).not.toContain("2026-02-30");
+    }
   });
 });

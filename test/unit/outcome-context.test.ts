@@ -1081,3 +1081,130 @@ describe("correction F4: the public context object publishes no transcript path"
     ]);
   });
 });
+
+// Calendar-valid timestamps (independent review-S3-01, Luna pZC): Date.parse
+// normalizes impossible dates (2026-02-30 becomes March 2), which produced a
+// current reading with age 0. Inputs below are the reviewer's exact probe.
+describe("calendar-valid timestamps", () => {
+  const withReportedAt = (reportedAt: string, createdAt: string | Date) => {
+    const health = projectPiContextHealth(PI_PATH, PI_BASE);
+    return project({
+      compactHistory: history({ ...health, usage: { ...health.usage, reportedAt } }, piRef),
+      createdAt,
+    });
+  };
+
+  test("reviewer case: an impossible reading date is unknown, never current with age 0", () => {
+    const context = withReportedAt("2026-02-30T08:20:00.000Z", "2026-03-02T08:20:00.000Z");
+    expect(context).toMatchObject({
+      state: "stale",
+      reason: "reading_time_unknown",
+      reportedAt: null,
+      ageSeconds: null,
+      eventAt: "2026-03-02T08:20:00.000Z",
+    });
+    for (const render of [formatOutcomeContextLine, piFormatOutcomeContextLine]) {
+      const line = render(context);
+      expect(line).toContain("reported time unknown");
+      expect(line).not.toContain("2026-02-30");
+      expect(line).not.toContain("0s before event");
+    }
+  });
+
+  test("reviewer case: an impossible event date is unknown, never current with age 0", () => {
+    const context = withReportedAt("2026-03-02T08:20:00.000Z", "2026-02-30T08:20:00.000Z");
+    expect(context).toMatchObject({
+      state: "stale",
+      reason: "event_time_unknown",
+      eventAt: null,
+      ageSeconds: null,
+    });
+    for (const render of [formatOutcomeContextLine, piFormatOutcomeContextLine]) {
+      const line = render(context);
+      expect(line).toContain("as of event (time unknown)");
+      expect(line).not.toContain("2026-02-30");
+      expect(line).not.toContain("before event)");
+    }
+  });
+
+  const INVALID = [
+    "2026-02-29T00:00:00Z",
+    "1900-02-29T00:00:00Z",
+    "2026-02-30T08:20:00.000Z",
+    "2026-13-01T00:00:00Z",
+    "2026-00-10T00:00:00Z",
+    "2026-04-31T00:00:00Z",
+    "2026-10-00T00:00:00Z",
+    "2026-10-15T24:00:00Z",
+    "2026-10-15T23:60:00Z",
+    "2026-10-15T23:59:60Z",
+    "2026-10-15T08:00:00+24:00",
+    "2026-10-15T08:00:00+05:60",
+  ];
+
+  test.each(
+    INVALID,
+  )("impossible reading time %s: stale and unprinted in the projector and both renderers", (value) => {
+    const context = withReportedAt(value, "2026-10-16T00:00:00.000Z");
+    expect(context).toMatchObject({
+      state: "stale",
+      reason: "reading_time_unknown",
+      reportedAt: null,
+      ageSeconds: null,
+    });
+    const stale = {
+      ...pi(PI_BASE),
+      state: "stale",
+      reason: "later_turn_without_usage",
+      reportedAt: value,
+    };
+    const current = { ...pi(PI_BASE), reportedAt: value };
+    const eventStale = { ...stale, reportedAt: "2026-10-15T08:20:00.000Z", eventAt: value };
+    const eventCurrent = { ...pi(PI_BASE), eventAt: value };
+    for (const render of [formatOutcomeContextLine, piFormatOutcomeContextLine]) {
+      expect(render(stale)).toContain("reported time unknown");
+      expect(render(stale)).not.toContain(value);
+      expect(render(current)).toBe("context: unavailable — context_invalid");
+      expect(render(eventStale)).toContain("as of event (time unknown)");
+      expect(render(eventStale)).not.toContain(value);
+      expect(render(eventCurrent)).toBe("context: unavailable — context_invalid");
+    }
+  });
+
+  const VALID = [
+    "2024-02-29T12:00:00Z",
+    "2000-02-29T00:00:00.000Z",
+    "2026-02-28T23:59:59Z",
+    "2026-12-31T23:59:59.999999999Z",
+    "2026-10-15T14:00:00+05:30",
+    "2026-10-15T00:00:00-08:00",
+    "2026-10-15T08:00:00.1Z",
+    "2026-10-15T08:00:00Z",
+  ];
+
+  test.each(
+    VALID,
+  )("valid reading time %s is kept as written and current; both renderers print it", (value) => {
+    const context = withReportedAt(value, "2027-01-01T00:00:00.000Z");
+    expect(context).toMatchObject({
+      state: "current",
+      reportedAt: value,
+      eventAt: "2027-01-01T00:00:00.000Z",
+    });
+    expect(context.ageSeconds).toBe(
+      Math.floor((Date.parse("2027-01-01T00:00:00.000Z") - Date.parse(value)) / 1000),
+    );
+    const line = formatOutcomeContextLine(context);
+    expect(line).toContain(`reported ${value} (`);
+    expect(piFormatOutcomeContextLine(context)).toBe(line);
+  });
+
+  test("a valid offset event time is accepted and kept as written", () => {
+    const context = withReportedAt("2026-10-15T08:20:00.000Z", "2026-10-15T11:00:00+02:00");
+    expect(context).toMatchObject({
+      state: "current",
+      eventAt: "2026-10-15T11:00:00+02:00",
+      ageSeconds: 2400,
+    });
+  });
+});

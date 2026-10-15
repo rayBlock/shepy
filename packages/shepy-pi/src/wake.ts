@@ -87,7 +87,10 @@ type OutcomeContextWire = {
 };
 
 const CONTEXT_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$/;
-const CONTEXT_ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
+// Captures year, month, day, hour, minute, second, and an optional offset
+// sign/hour/minute; the shape alone is not validity (see contextCalendarValid).
+const CONTEXT_ISO =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|([+-])(\d{2}):(\d{2}))$/;
 /** Upper bound for token counts and windows; anything larger is not a reading. */
 const CONTEXT_MAX_TOKENS = 1_000_000_000;
 /** A supplied percentage may differ from tokens/window by one-decimal rounding only (plus float error). */
@@ -97,10 +100,32 @@ function contextToken(value: unknown): string | null {
   return typeof value === "string" && CONTEXT_TOKEN.test(value) ? value : null;
 }
 
+/**
+ * Date.parse normalizes impossible dates (2026-02-30 becomes March 2), so
+ * every field is range-checked first: Gregorian month lengths and leap years,
+ * 24-hour clock without leap seconds, and an offset within ±23:59. Offsets
+ * and 1–9 fractional digits stay valid; the original string is kept.
+ */
+function contextCalendarValid(match: RegExpExecArray): boolean {
+  const [year, month, day, hour, minute, second] = match.slice(1, 7).map(Number) as [
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+  ];
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+  if (days === undefined || day < 1 || day > days) return false;
+  if (hour > 23 || minute > 59 || second > 59) return false;
+  return match[7] === undefined || (Number(match[8]) <= 23 && Number(match[9]) <= 59);
+}
+
 function contextIso(value: unknown): string | null {
-  return typeof value === "string" && CONTEXT_ISO.test(value) && Number.isFinite(Date.parse(value))
-    ? value
-    : null;
+  if (typeof value !== "string") return null;
+  const match = CONTEXT_ISO.exec(value);
+  return match && contextCalendarValid(match) && Number.isFinite(Date.parse(value)) ? value : null;
 }
 
 /** A positive bounded integer count; zero is no reading. */
