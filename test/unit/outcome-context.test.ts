@@ -1208,3 +1208,129 @@ describe("calendar-valid timestamps", () => {
     });
   });
 });
+
+// Final common review F3-R1 (Luna pZC, review-common-final-01): the untrusted
+// DTO's status fields must agree. Base tuple is the reviewer's probe.
+describe("renderer status tuples", () => {
+  const VALID = {
+    ageSeconds: 60,
+    basis: "event",
+    eventAt: "2026-10-15T09:00:00.000Z",
+    model: "review-model",
+    percent: 24.7,
+    reason: null,
+    reportedAt: "2026-10-15T08:59:00.000Z",
+    source: "pi-jsonl",
+    state: "current",
+    tokens: 117_187,
+    window: 475_000,
+    windowStatus: "reported",
+  };
+  const INVALID = "context: unavailable — context_invalid";
+  const RENDERERS = [
+    ["daemon", formatOutcomeContextLine],
+    ["pi", piFormatOutcomeContextLine],
+  ] as const;
+
+  const positives: Array<[string, Record<string, unknown>, string]> = [
+    [
+      "reported window with derived percent",
+      {},
+      "context: 117,187 / 475,000 prompt tokens (24.7%) ·",
+    ],
+    [
+      "reported window without percent",
+      { percent: null },
+      "context: 117,187 / 475,000 prompt tokens · reported",
+    ],
+    [
+      "unknown status, tokens only",
+      { windowStatus: "unknown", window: null, percent: null },
+      "context: 117,187 prompt tokens (window unknown) ·",
+    ],
+    [
+      "inconsistent status, tokens only",
+      { windowStatus: "inconsistent", window: null, percent: null },
+      "context: 117,187 prompt tokens (window inconsistent) ·",
+    ],
+    [
+      "stale with its reason and a reported window",
+      { state: "stale", reason: "later_turn_without_usage", percent: null },
+      "context: stale — later_turn_without_usage; last 117,187 / 475,000 prompt tokens ·",
+    ],
+    [
+      "older DTO without windowStatus or window",
+      { windowStatus: undefined, window: null, percent: null },
+      "context: 117,187 prompt tokens (window unknown) ·",
+    ],
+  ];
+  for (const [name, render] of RENDERERS) {
+    test.each(positives)(`${name} renders a coherent tuple: %s`, (_case, change, expected) => {
+      const dto: Record<string, unknown> = { ...VALID, ...change };
+      if (change.windowStatus === undefined && "windowStatus" in change) delete dto.windowStatus;
+      expect(render(dto)).toContain(expected);
+    });
+  }
+
+  // current/reason relation (one condition).
+  const reasonNegatives: Array<[string, unknown]> = [
+    ["post_compaction_no_turn", "post_compaction_no_turn"],
+    ["later_turn_without_usage", "later_turn_without_usage"],
+    ["reading_time_unknown", "reading_time_unknown"],
+    ["missing reason field", undefined],
+  ];
+  // window/status relation (one condition): no number without "reported".
+  const relationNegatives: Array<[string, Record<string, unknown>]> = [
+    ["unknown status with a window", { windowStatus: "unknown", percent: null }],
+    ["inconsistent status with a window", { windowStatus: "inconsistent", percent: null }],
+    ["older DTO (no status) with a window", { windowStatus: undefined, percent: null }],
+  ];
+  // windowStatus enum (one condition), without a window so only the enum can refuse it.
+  const enumNegatives: Array<[string, unknown]> = [
+    ["unrecognized token", "measured"],
+    ["empty token", ""],
+    ["case variant", "REPORTED"],
+    ["number", 7],
+  ];
+  // The reviewer's exact six probes (both renderers): fresh-looking 24.7% must be refused.
+  const reviewerProbes: Array<[string, Record<string, unknown>]> = [
+    ["current with post_compaction_no_turn", { reason: "post_compaction_no_turn" }],
+    ["denominator whose status says unknown", { windowStatus: "unknown" }],
+    ["unrecognized window status token", { windowStatus: "measured" }],
+  ];
+  for (const [name, render] of RENDERERS) {
+    test.each(reasonNegatives)(`${name} refuses current with reason %s`, (_case, reason) => {
+      const dto: Record<string, unknown> = { ...VALID, reason };
+      if (reason === undefined) delete dto.reason;
+      expect(render(dto)).toBe(INVALID);
+    });
+    test.each(relationNegatives)(`${name} refuses %s`, (_case, change) => {
+      const dto: Record<string, unknown> = { ...VALID, ...change };
+      if ("windowStatus" in change && change.windowStatus === undefined) delete dto.windowStatus;
+      expect(render(dto)).toBe(INVALID);
+    });
+    test.each(enumNegatives)(`${name} refuses windowStatus %s`, (_case, windowStatus) => {
+      expect(render({ ...VALID, windowStatus, window: null, percent: null })).toBe(INVALID);
+    });
+    test.each(reviewerProbes)(`${name} refuses reviewer probe: %s`, (_case, change) => {
+      const line = render({ ...VALID, ...change });
+      expect(line).toBe(INVALID);
+      expect(line).not.toContain("24.7%");
+    });
+    test(`${name} keeps the explicit missing-context fallback`, () => {
+      expect(render(undefined)).toBe("context: unavailable — context_not_provided");
+      expect(render(null)).toBe("context: unavailable — context_not_provided");
+    });
+  }
+
+  test("the projector only emits coherent tuples (every projected state renders without context_invalid)", () => {
+    const states = [
+      pi(PI_BASE),
+      claude(CLAUDE_BASE),
+      pi([...PI_BASE, entry(4, piAssistant("m3", "m2", "2026-10-15T08:50:00.000Z", null))]),
+    ];
+    for (const context of states) {
+      for (const [, render] of RENDERERS) expect(render(context)).not.toBe(INVALID);
+    }
+  });
+});

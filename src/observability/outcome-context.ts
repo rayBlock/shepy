@@ -306,13 +306,26 @@ export function formatOutcomeContextLine(value: unknown): string {
   const event = iso(context.eventAt);
   if (at !== null && event !== null && Date.parse(at) > Date.parse(event)) return INVALID_CONTEXT;
   if (context.state === "current" && (at === null || event === null)) return INVALID_CONTEXT;
+  // A current reading carries no stale or unavailable reason.
+  if (context.state === "current" && context.reason !== null) return INVALID_CONTEXT;
+  // windowStatus is a closed set; an absent one is an older DTO.
+  const status = context.windowStatus;
+  if (
+    status !== undefined &&
+    status !== "reported" &&
+    status !== "unknown" &&
+    status !== "inconsistent"
+  ) {
+    return INVALID_CONTEXT;
+  }
+  // Only a reported status may carry a window, and it must fit the reading.
+  // Unknown, inconsistent or an older DTO's absent status carries no number.
   let window: number | null = null;
-  if (context.window !== null && context.window !== undefined) {
+  const hasWindow = context.window !== null && context.window !== undefined;
+  if (status === "reported") {
     window = positive(context.window);
-    if (window === null || window < count || context.windowStatus === "inconsistent") {
-      return INVALID_CONTEXT;
-    }
-  } else if (context.windowStatus === "reported") {
+    if (window === null || window < count) return INVALID_CONTEXT;
+  } else if (hasWindow) {
     return INVALID_CONTEXT;
   }
   let percent = "";
@@ -333,7 +346,7 @@ export function formatOutcomeContextLine(value: unknown): string {
   const share =
     window !== null
       ? `${tokens} / ${NUMBER.format(window)} prompt tokens${percent}`
-      : context.windowStatus === "inconsistent"
+      : status === "inconsistent"
         ? `${tokens} prompt tokens (window inconsistent)`
         : `${tokens} prompt tokens (window unknown)`;
   const age =
