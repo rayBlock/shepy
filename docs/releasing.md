@@ -50,7 +50,8 @@ archived 2026-07-15 npm publication plan, which ran before dependencies were
 linked and failed every fresh clone.
 
 `pnpm test` (and so `pnpm check`) runs `scripts/run-tests.mjs`, not the
-`vitest` bin shim. It creates a fresh private runtime root with its own HOME,
+`vitest` bin shim. It creates a fresh private runtime root (under TMPDIR, or
+the physical `/tmp` when TMPDIR is too long for test socket paths) with its own HOME,
 SHEPY_HOME, TMPDIR, XDG and socket paths, drops loader overrides
 (`NODE_OPTIONS`, `NODE_PATH`), Herdr/Shepy selectors and credentials, admits
 the isolated demand-validation fixture and starts the locked Vitest directly.

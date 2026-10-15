@@ -9,7 +9,10 @@
  * cases. This entry builds that admission instead of weakening the fixture:
  *
  *  1. create a fresh physical runtime root, disjoint from the repository, with
- *     owned private HOME, SHEPY_HOME, TMPDIR, XDG and socket paths;
+ *     owned private HOME, SHEPY_HOME, TMPDIR, XDG and socket paths. Tests
+ *     bind Unix sockets below TMPDIR and macOS caps a socket path at 103
+ *     bytes, so when the caller's physical TMPDIR leaves too little room the
+ *     root is created under the physical /tmp instead;
  *  2. copy the caller environment WITHOUT loader overrides, Herdr/Shepy
  *     runtime selectors or credentials (the caller's own process.env is never
  *     modified) and set isolated-fixture admission in source CLI mode;
@@ -32,10 +35,15 @@ export const repoRoot = realpathSync(fileURLToPath(new URL("..", import.meta.url
 const LOADER_OVERRIDES = new Set(["NODE_OPTIONS", "NODE_PATH", "HERDR_BIN_PATH"]);
 const RUNTIME_PREFIXES = ["HERDR_", "SHEPY_", "XDG_"];
 const CREDENTIAL = /TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|API_?KEY|ACCESS_?KEY|_AUTH/i;
+// Measured longest test socket suffix below TMPDIR is 44 bytes; keep a margin.
+const SOCKET_PATH_MAX = 103;
+const SOCKET_SUFFIX_RESERVE = 50;
+const ROOT_PREFIX = "shepy-t-";
+const ROOT_LAYOUT = `/${ROOT_PREFIX}XXXXXX/t/`;
 const PRIVATE_PATHS = {
   HOME: "home",
   SHEPY_HOME: "shepy",
-  TMPDIR: "tmp",
+  TMPDIR: "t",
   XDG_CONFIG_HOME: "xdg-config",
   XDG_DATA_HOME: "xdg-data",
   XDG_CACHE_HOME: "xdg-cache",
@@ -47,26 +55,34 @@ function contained(path, root) {
   return rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`));
 }
 
+/** The physical base for the runtime root: the caller's TMPDIR when sockets still fit. */
+export function runtimeBase(base = tmpdir()) {
+  const physical = realpathSync(base);
+  if (physical.length + ROOT_LAYOUT.length + SOCKET_SUFFIX_RESERVE <= SOCKET_PATH_MAX) {
+    return physical;
+  }
+  return realpathSync("/tmp");
+}
+
 /** A fresh, physical, owner-only runtime root that shares no path with `subject`. */
-export function createRuntime(base = tmpdir(), subject = repoRoot) {
+export function createRuntime(base = runtimeBase(), subject = repoRoot) {
   const physicalBase = realpathSync(base);
   // Refuse before creating anything inside the repository.
   if (contained(physicalBase, subject)) {
     throw new Error(`test runtime root must be disjoint from the repository: ${physicalBase}`);
   }
-  const root = mkdtempSync(join(physicalBase, "shepy-test-runtime-"));
+  const root = mkdtempSync(join(physicalBase, ROOT_PREFIX));
   if (realpathSync(root) !== root) throw new Error(`test runtime root is not physical: ${root}`);
   if (contained(root, subject) || contained(subject, root)) {
     throw new Error(`test runtime root must be disjoint from the repository: ${root}`);
   }
-  const parent = join(root, "parent");
   const paths = {};
   for (const [key, name] of Object.entries(PRIVATE_PATHS)) {
-    paths[key] = join(parent, name);
-    mkdirSync(paths[key], { recursive: true, mode: 0o700 });
+    paths[key] = join(root, name);
+    mkdirSync(paths[key], { mode: 0o700 });
   }
-  mkdirSync(join(parent, "sockets"), { mode: 0o700 });
-  return { root, paths, socket: join(parent, "sockets", "forbidden.sock") };
+  mkdirSync(join(root, "sockets"), { mode: 0o700 });
+  return { root, paths, socket: join(root, "sockets", "forbidden.sock") };
 }
 
 /** A new environment object for the Vitest child; `inherited` is not modified. */

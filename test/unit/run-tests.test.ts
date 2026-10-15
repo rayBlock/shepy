@@ -1,4 +1,12 @@
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -7,6 +15,7 @@ import { describe, expect, test } from "vitest";
 type Runtime = { root: string; paths: Record<string, string>; socket: string };
 type RunTests = {
   repoRoot: string;
+  runtimeBase: (base?: string) => string;
   createRuntime: (base?: string, subject?: string) => Runtime;
   testEnvironment: (
     inherited: Record<string, string | undefined>,
@@ -62,6 +71,15 @@ describe("pnpm test entry", () => {
       }
     }
     expect(() => createRuntime(join(repoRoot, "test"))).toThrow("disjoint");
+  });
+
+  test("a caller TMPDIR too long for test socket paths falls back to the physical /tmp", async () => {
+    const { runtimeBase } = await load();
+    const long = join(scratch(), "x".repeat(40), "y".repeat(40));
+    mkdirSync(long, { recursive: true });
+    expect(runtimeBase(long)).toBe(realpathSync("/tmp"));
+    expect(runtimeBase("/")).toBe("/");
+    expect(runtimeBase(long).length + "/shepy-t-XXXXXX/t/".length + 50).toBeLessThanOrEqual(103);
   });
 
   test("the child environment drops overrides and credentials and binds every path to the runtime", async () => {
@@ -147,7 +165,10 @@ describe("pnpm test entry", () => {
         'process.exit(Number(args.find((a) => a.startsWith("--exit="))?.slice(7) ?? 0));',
       ].join("\n"),
     );
-    const env = { PATH: process.env.PATH ?? "", SHEPY_DEMAND_FIXTURE_ADMISSION: "isolated-fixture" };
+    const env = {
+      PATH: process.env.PATH ?? "",
+      SHEPY_DEMAND_FIXTURE_ADMISSION: "isolated-fixture",
+    };
     const forwarded = ["test/unit/a.test.ts", "-t", "a name with spaces", "--reporter=verbose"];
     expect(await runVitest([...forwarded, "--exit=0"], env, { entry: child, cwd: dir })).toBe(0);
     expect(await runVitest(["--exit=3"], env, { entry: child, cwd: dir })).toBe(3);
