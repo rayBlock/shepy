@@ -89,9 +89,7 @@ describe("developer hook setup", () => {
     const preCommit = await readFile(new URL("../../.husky/pre-commit", import.meta.url), "utf8");
     const repo = await mkdtemp(join(tmpdir(), "shepy-hooks-install-"));
     const env = Object.fromEntries(
-      Object.entries(process.env).filter(
-        ([key]) => !key.startsWith("GIT_") && key !== "HUSKY",
-      ),
+      Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_") && key !== "HUSKY"),
     );
     try {
       execFileSync("git", ["init", "--quiet"], { cwd: repo, env });
