@@ -163,13 +163,27 @@ function history(
   };
 }
 
+const AGENT_OF: Record<string, string> = {
+  "claude-jsonl": "claude",
+  "codex-jsonl": "codex",
+  "pi-jsonl": "pi",
+};
+/** An event whose recorded worker harness is the bound history's own (the normal append). */
+function project(event: {
+  compactHistory: CompactAgentHistory | null;
+  createdAt: Date | string | null;
+}) {
+  const agent = AGENT_OF[event.compactHistory?.historyRef?.source ?? ""] ?? "pi";
+  return projectOutcomeContext({ ...event, payload: { agent } });
+}
+
 const pi = (entries: JsonlEntry[], ref: AgentHistoryRef | null = piRef) =>
-  projectOutcomeContext({
+  project({
     compactHistory: history(projectPiContextHealth(PI_PATH, entries), ref),
     createdAt: EVENT_AT,
   });
 const claude = (entries: JsonlEntry[], ref: AgentHistoryRef | null = claudeRef) =>
-  projectOutcomeContext({
+  project({
     compactHistory: history(projectClaudeContextHealth(CLAUDE_PATH, entries), ref),
     createdAt: EVENT_AT,
   });
@@ -358,7 +372,7 @@ describe("projectOutcomeContext: identity binding and honest absence", () => {
   test("a numeric reading without a ref cannot prove its session and is refused", () => {
     const health = projectPiContextHealth(PI_PATH, PI_BASE);
     expect(
-      projectOutcomeContext({
+      project({
         compactHistory: history({ ...health, usage: { ...health.usage, ref: null } }, piRef),
         createdAt: EVENT_AT,
       }),
@@ -378,19 +392,20 @@ describe("projectOutcomeContext: identity binding and honest absence", () => {
   });
 
   test("an event recorded without history or without context health says so", () => {
-    expect(projectOutcomeContext({ compactHistory: null, createdAt: EVENT_AT })).toMatchObject({
+    expect(project({ compactHistory: null, createdAt: EVENT_AT })).toMatchObject({
       state: "unavailable",
       reason: "context_not_recorded_at_event",
     });
-    expect(
-      projectOutcomeContext({ compactHistory: history(null, piRef), createdAt: EVENT_AT }),
-    ).toMatchObject({ state: "unavailable", reason: "context_not_recorded_at_event" });
+    expect(project({ compactHistory: history(null, piRef), createdAt: EVENT_AT })).toMatchObject({
+      state: "unavailable",
+      reason: "context_not_recorded_at_event",
+    });
   });
 
   test("non-finite, negative or fractional counts are invalid, never rounded", () => {
     const health = projectPiContextHealth(PI_PATH, PI_BASE);
     for (const tokens of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 60]) {
-      const context = projectOutcomeContext({
+      const context = project({
         compactHistory: history({ ...health, usage: { ...health.usage, tokens } }, piRef),
         createdAt: EVENT_AT,
       });
@@ -408,23 +423,24 @@ describe("projectOutcomeContext: identity binding and honest absence", () => {
       ...health,
       usage: { ...health.usage, percent: 30.021, window: 1_000_000 },
     };
-    const current = projectOutcomeContext({
+    const current = project({
       compactHistory: history(withWindow, piRef),
       createdAt: EVENT_AT,
     });
     expect(formatOutcomeContextLine(current)).toContain(
       "300,210 / 1,000,000 prompt tokens (30.0%)",
     );
-    const zeroWindow = projectOutcomeContext({
+    const zeroWindow = project({
       compactHistory: history(
         { ...health, usage: { ...health.usage, percent: 50, window: 0 } },
         piRef,
       ),
       createdAt: EVENT_AT,
     });
-    expect(formatOutcomeContextLine(zeroWindow)).toContain("(window unknown)");
+    expect(zeroWindow).toMatchObject({ window: null, windowStatus: "inconsistent", percent: null });
+    expect(formatOutcomeContextLine(zeroWindow)).toContain("(window inconsistent)");
     expect(formatOutcomeContextLine(zeroWindow)).not.toContain("%");
-    const stale = projectOutcomeContext({
+    const stale = project({
       compactHistory: history(
         {
           ...withWindow,
@@ -445,7 +461,7 @@ describe("projectOutcomeContext: identity binding and honest absence", () => {
     expect(formatOutcomeContextLine(context)).toBe(early);
     expect(
       formatOutcomeContextLine(
-        projectOutcomeContext({
+        project({
           compactHistory: history(projectPiContextHealth(PI_PATH, PI_BASE), piRef),
           createdAt: EVENT_AT,
         }),
@@ -614,7 +630,7 @@ describe("Codex outcomes after the S3 reader fix", () => {
     }),
   ];
   const codex = (entries: JsonlEntry[], ref: AgentHistoryRef) =>
-    projectOutcomeContext({
+    project({
       compactHistory: history(projectCodexContextHealth(CODEX_PATH, entries), ref),
       createdAt: EVENT_AT,
     });
@@ -625,8 +641,11 @@ describe("Codex outcomes after the S3 reader fix", () => {
       state: "current",
       tokens: 117_187,
       window: 475_000,
-      ref: `${CODEX_PATH}#line=3`,
+      windowStatus: "reported",
+      percent: 24.7,
     });
+    expect(context).not.toHaveProperty("ref");
+    expect(JSON.stringify(context)).not.toContain(CODEX_PATH);
     expect(formatOutcomeContextLine(context)).toBe(
       "context: 117,187 / 475,000 prompt tokens (24.7%) · reported 2026-10-15T08:35:45.000Z (24m before event) · as of event 2026-10-15T09:00:00.000Z · model gpt-6.1-sol · codex-jsonl",
     );
@@ -678,7 +697,7 @@ describe("Codex outcomes after the S3 reader fix", () => {
       },
     };
     expect(
-      projectOutcomeContext({ compactHistory: history(stored, codexRef), createdAt: EVENT_AT }),
+      project({ compactHistory: history(stored, codexRef), createdAt: EVENT_AT }),
     ).toMatchObject({ state: "unavailable", reason: "later_turn_without_usage", tokens: null });
   });
 });
@@ -707,40 +726,358 @@ describe("S1 follow-up: event-relative age and ambiguous session provenance", ()
   });
 
   test("age is event time minus reading time; unknown or negative age is shown as nothing", () => {
-    const later = projectOutcomeContext({
+    const later = project({
       compactHistory: history(projectPiContextHealth(PI_PATH, PI_BASE), piRef),
       createdAt: new Date("2026-10-15T08:10:00.000Z"),
     });
-    expect(later).toMatchObject({ state: "current", ageSeconds: null });
-    expect(formatOutcomeContextLine(later)).toContain(
-      "reported 2026-10-15T08:20:00.000Z · as of event",
-    );
-    const unknownEvent = projectOutcomeContext({
+    // Correction F2: a reading after its event cannot describe that event.
+    expect(later).toMatchObject({
+      state: "unavailable",
+      reason: "reading_after_event",
+      tokens: null,
+      ageSeconds: null,
+      reportedAt: "2026-10-15T08:20:00.000Z",
+      eventAt: "2026-10-15T08:10:00.000Z",
+    });
+    expect(formatOutcomeContextLine(later)).toBe("context: unavailable — reading_after_event");
+    const unknownEvent = project({
       compactHistory: history(projectPiContextHealth(PI_PATH, PI_BASE), piRef),
       createdAt: "not a time",
     });
-    expect(unknownEvent).toMatchObject({ ageSeconds: null, eventAt: null });
+    expect(unknownEvent).toMatchObject({
+      ageSeconds: null,
+      eventAt: null,
+      state: "stale",
+      reason: "event_time_unknown",
+    });
   });
 
-  test("age buckets render the same in the daemon and the Pi renderer; a 6800-shape DTO without age still renders", () => {
+  test("age buckets come from the two timestamps, identically in the daemon and Pi renderers; a supplied age is ignored", () => {
     const base = pi(PI_BASE);
-    const cases: Array<[number | undefined | string, string]> = [
+    const at = (seconds: number) => new Date(EVENT_AT.getTime() - seconds * 1000).toISOString();
+    const cases: Array<[number, string]> = [
       [0, "(0s before event)"],
       [119, "(119s before event)"],
       [120, "(2m before event)"],
       [7199, "(119m before event)"],
       [7200, "(2h 0m before event)"],
       [90061, "(25h 1m before event)"],
-      [undefined, "reported 2026-10-15T08:20:00.000Z · as of event"],
-      ["40", "reported 2026-10-15T08:20:00.000Z · as of event"],
-      [-5, "reported 2026-10-15T08:20:00.000Z · as of event"],
     ];
-    for (const [ageSeconds, expected] of cases) {
-      const dto: Record<string, unknown> = { ...base, ageSeconds };
-      if (ageSeconds === undefined) delete dto.ageSeconds;
-      const line = formatOutcomeContextLine(dto);
-      expect(line).toContain(expected);
-      expect(piFormatOutcomeContextLine(dto)).toBe(line);
+    for (const [seconds, expected] of cases) {
+      for (const ageSeconds of [seconds, 5, "40", -5, undefined]) {
+        const dto: Record<string, unknown> = { ...base, reportedAt: at(seconds), ageSeconds };
+        if (ageSeconds === undefined) delete dto.ageSeconds;
+        const line = formatOutcomeContextLine(dto);
+        expect(line).toContain(expected);
+        expect(piFormatOutcomeContextLine(dto)).toBe(line);
+      }
     }
+  });
+});
+
+// Correction F1–F4 from the independent review of 6800e707 (Sol pZ2,
+// review-S1-01). The reviewer's discriminators are adapted here with a matched
+// healthy positive for each; every malformed case is its own test.
+describe("correction F1: worker harness, history source and reading source agree", () => {
+  const piHealth = () => projectPiContextHealth(PI_PATH, PI_BASE);
+  const piHistory = () => history(piHealth(), piRef);
+
+  test("matched positive: a Pi event with bound Pi history and Pi health is current; a path ref is never compared with the UUID header", () => {
+    const context = projectOutcomeContext({
+      compactHistory: piHistory(),
+      createdAt: EVENT_AT,
+      payload: { agent: "pi" },
+    });
+    expect(context).toMatchObject({ state: "current", tokens: 300210, source: "pi-jsonl" });
+    // The Pi header id ("pi-a") differs from the path-valued ref; that is not a mismatch.
+    expect(piHealth().sessionId).toBe("pi-a");
+  });
+
+  test("a Claude worker event carrying Pi history and health is refused (pane reused by another harness)", () => {
+    expect(
+      projectOutcomeContext({
+        compactHistory: piHistory(),
+        createdAt: EVENT_AT,
+        payload: { agent: "claude" },
+      }),
+    ).toMatchObject({ state: "unavailable", reason: "source_mismatch", tokens: null });
+  });
+
+  test("reviewer case: a history source that disagrees with the reading source is refused", () => {
+    const mismatched = piHistory();
+    mismatched.historyRef = { ...piRef, source: "claude-jsonl" };
+    mismatched.source = "claude-jsonl";
+    for (const agent of ["claude", "pi"]) {
+      expect(
+        projectOutcomeContext({
+          compactHistory: mismatched,
+          createdAt: EVENT_AT,
+          payload: { agent },
+        }),
+      ).toMatchObject({ state: "unavailable", reason: "source_mismatch", tokens: null });
+    }
+  });
+
+  test("the history's own source field must agree too", () => {
+    const mismatched = piHistory();
+    mismatched.source = "claude-jsonl";
+    expect(
+      projectOutcomeContext({
+        compactHistory: mismatched,
+        createdAt: EVENT_AT,
+        payload: { agent: "pi" },
+      }),
+    ).toMatchObject({ state: "unavailable", reason: "source_mismatch" });
+  });
+
+  test.each([
+    ["no payload", undefined],
+    ["payload without agent", { from: "working" }],
+    ["harness without a context reader", { agent: "hermes" }],
+    ["non-string agent", { agent: 7 }],
+    ["array payload", ["pi"]],
+  ])("an event whose worker harness is unknown (%s) gets no figure", (_name, payload) => {
+    expect(
+      projectOutcomeContext({ compactHistory: piHistory(), createdAt: EVENT_AT, payload }),
+    ).toMatchObject({ state: "unavailable", reason: "worker_harness_unknown", tokens: null });
+  });
+
+  test("native generation within one harness stays bound by the session id (Claude id ref vs header)", () => {
+    expect(claude(CLAUDE_BASE, { ...claudeRef, value: "c-next-generation" })).toMatchObject({
+      state: "unavailable",
+      reason: "session_mismatch",
+    });
+    expect(claude(CLAUDE_BASE)).toMatchObject({ state: "current" });
+  });
+});
+
+describe("correction F2: chronological coherence between reading and event", () => {
+  const usageAt = (reportedAt: unknown, current = true) => {
+    const health = projectPiContextHealth(PI_PATH, PI_BASE);
+    return history(
+      {
+        ...health,
+        usage: {
+          ...health.usage,
+          current,
+          reason: current ? null : "later_turn_without_usage",
+          reportedAt: reportedAt as string,
+        },
+      },
+      piRef,
+    );
+  };
+
+  test("reviewer case: a reading one day after its event is refused and both timestamps are kept", () => {
+    const context = project({
+      compactHistory: usageAt("2026-10-16T09:00:00.000Z"),
+      createdAt: EVENT_AT,
+    });
+    expect(context).toMatchObject({
+      state: "unavailable",
+      reason: "reading_after_event",
+      tokens: null,
+      reportedAt: "2026-10-16T09:00:00.000Z",
+      eventAt: "2026-10-15T09:00:00.000Z",
+    });
+  });
+
+  test("matched positive: a reading at the event instant is current with age 0", () => {
+    expect(
+      project({ compactHistory: usageAt("2026-10-15T09:00:00.000Z"), createdAt: EVENT_AT }),
+    ).toMatchObject({ state: "current", ageSeconds: 0 });
+  });
+
+  test.each([
+    ["invalid reading time", "yesterday", "reading_time_unknown"],
+    ["missing reading time", null, "reading_time_unknown"],
+  ])("%s cannot be current: stale with an explicit reason", (_name, reportedAt, reason) => {
+    const context = project({ compactHistory: usageAt(reportedAt), createdAt: EVENT_AT });
+    expect(context).toMatchObject({ state: "stale", reason, tokens: 300210, reportedAt: null });
+    expect(formatOutcomeContextLine(context)).toContain(`context: stale — ${reason}; last 300,210`);
+  });
+
+  test("an unknown event time cannot be current either", () => {
+    expect(
+      project({ compactHistory: usageAt("2026-10-15T08:20:00.000Z"), createdAt: null }),
+    ).toMatchObject({ state: "stale", reason: "event_time_unknown", eventAt: null });
+  });
+
+  test("an upstream stale reason is kept, never replaced by a time reason", () => {
+    expect(
+      project({ compactHistory: usageAt("yesterday", false), createdAt: EVENT_AT }),
+    ).toMatchObject({ state: "stale", reason: "later_turn_without_usage" });
+  });
+
+  test.each([
+    ["reading after event", { reportedAt: "2026-10-16T09:00:00.000Z" }],
+    ["current without reading time", { reportedAt: null }],
+    ["current without event time", { eventAt: null }],
+  ])("renderers refuse an incoherent current DTO (%s) identically", (_name, change) => {
+    const dto = { ...pi(PI_BASE), ...change };
+    expect(formatOutcomeContextLine(dto)).toBe("context: unavailable — context_invalid");
+    expect(piFormatOutcomeContextLine(dto)).toBe("context: unavailable — context_invalid");
+  });
+});
+
+describe("correction F3: coherent windows and percentages, bounded counts", () => {
+  const dto = (change: Record<string, unknown>) => ({
+    ...pi(PI_BASE),
+    tokens: 300,
+    window: 1000,
+    windowStatus: "reported",
+    percent: 30,
+    ...change,
+  });
+
+  test("matched positive: a coherent reported window renders the derived percentage in both renderers", () => {
+    const line = formatOutcomeContextLine(dto({}));
+    expect(line).toContain("300 / 1,000 prompt tokens (30.0%)");
+    expect(piFormatOutcomeContextLine(dto({}))).toBe(line);
+  });
+
+  test.each([
+    ["negative", -20],
+    ["oversized", 999],
+    ["incoherent", 90],
+    ["slightly off", 30.2],
+    ["NaN", Number.NaN],
+    ["infinite", Number.POSITIVE_INFINITY],
+    ["string", "30"],
+  ])("a %s supplied percentage is refused, never rendered (both renderers)", (_name, percent) => {
+    const value = dto({ percent });
+    for (const render of [formatOutcomeContextLine, piFormatOutcomeContextLine]) {
+      const line = render(value);
+      expect(line).toBe("context: unavailable — context_invalid");
+      if (typeof percent === "number") expect(line).not.toContain(`${percent.toFixed(1)}%`);
+    }
+  });
+
+  test.each([
+    ["zero window", { window: 0 }],
+    ["negative window", { window: -1000 }],
+    ["fractional window", { window: 1000.5 }],
+    ["huge window", { window: 2_000_000_000 }],
+    ["window below tokens", { window: 200, percent: 150 }],
+    ["string window", { window: "1000" }],
+    ["percent without a window", { window: null, windowStatus: "unknown" }],
+    ["reported status without a window", { window: null, windowStatus: "reported", percent: null }],
+    ["inconsistent status with a window", { windowStatus: "inconsistent", percent: null }],
+    ["percent on a stale reading", { state: "stale", reason: "later_turn_without_usage" }],
+  ])("an unusable %s is refused identically by both renderers", (_name, change) => {
+    const value = dto(change);
+    expect(formatOutcomeContextLine(value)).toBe("context: unavailable — context_invalid");
+    expect(piFormatOutcomeContextLine(value)).toBe("context: unavailable — context_invalid");
+  });
+
+  test.each([
+    ["zero", 0],
+    ["negative", -1],
+    ["fractional", 1.5],
+    ["huge", 2_000_000_000],
+  ])("%s tokens are not a reading (both renderers)", (_name, tokens) => {
+    const value = dto({ tokens, window: null, windowStatus: "unknown", percent: null });
+    expect(formatOutcomeContextLine(value)).toBe("context: unavailable — invalid_reading");
+    expect(piFormatOutcomeContextLine(value)).toBe("context: unavailable — invalid_reading");
+  });
+
+  const withUsage = (usage: Record<string, unknown>) => {
+    const health = projectPiContextHealth(PI_PATH, PI_BASE);
+    return project({
+      compactHistory: history({ ...health, usage: { ...health.usage, ...usage } }, piRef),
+      createdAt: EVENT_AT,
+    });
+  };
+
+  test.each([
+    ["negative", -20],
+    ["oversized", 999],
+    ["incoherent", 90],
+    ["NaN", Number.NaN],
+  ])("projector: a %s supplied percentage makes the window unusable but keeps the raw tokens", (_name, percent) => {
+    const context = withUsage({ window: 1_000_000, percent });
+    expect(context).toMatchObject({
+      state: "current",
+      tokens: 300210,
+      window: null,
+      windowStatus: "inconsistent",
+      percent: null,
+    });
+    expect(formatOutcomeContextLine(context)).toContain(
+      "300,210 prompt tokens (window inconsistent)",
+    );
+    expect(formatOutcomeContextLine(context)).not.toContain("%");
+  });
+
+  test.each([
+    ["rounds up at .x5", 3005, 10_000],
+    ["rounds at .x5 with float error", 1, 2000],
+    ["large window", 117_187, 475_000],
+  ])("projector-rounded percentage at a rounding boundary (%s) renders in both renderers", (_name, tokens, window) => {
+    const context = withUsage({ tokens, window, percent: null, ref: `${PI_PATH}#entry=m2` });
+    expect(context).toMatchObject({ state: "current", windowStatus: "reported", window });
+    const line = formatOutcomeContextLine(context);
+    expect(line).toContain(`(${((tokens / window) * 100).toFixed(1)}%)`);
+    expect(piFormatOutcomeContextLine(context)).toBe(line);
+  });
+
+  test("projector: a coherent supplied percentage, or none, derives the shown value", () => {
+    expect(withUsage({ window: 1_000_000, percent: 30.04 })).toMatchObject({
+      window: 1_000_000,
+      windowStatus: "reported",
+      percent: 30,
+    });
+    expect(withUsage({ window: 1_000_000, percent: null })).toMatchObject({ percent: 30 });
+  });
+
+  test("projector: tokens above the window, zero tokens and an absent window", () => {
+    expect(withUsage({ window: 100_000, percent: null })).toMatchObject({
+      windowStatus: "inconsistent",
+      window: null,
+      tokens: 300210,
+    });
+    expect(withUsage({ tokens: 0 })).toMatchObject({
+      state: "unavailable",
+      reason: "zero_usage_reported",
+    });
+    expect(withUsage({ window: null, percent: null })).toMatchObject({
+      windowStatus: "unknown",
+      window: null,
+      percent: null,
+    });
+  });
+});
+
+describe("correction F4: the public context object publishes no transcript path", () => {
+  test("reviewer case and every projected state: no ref key and no path anywhere in the DTO", () => {
+    const states = [
+      pi(PI_BASE),
+      claude(CLAUDE_BASE),
+      pi([...PI_BASE, entry(4, piAssistant("m3", "m2", "2026-10-15T08:50:00.000Z", null))]),
+      pi([...PI_BASE], {
+        ...piRef,
+        path: "/fixture/pi/other.jsonl",
+        value: "/fixture/pi/other.jsonl",
+      }),
+      projectOutcomeContext({
+        compactHistory: history(projectPiContextHealth(PI_PATH, PI_BASE), piRef),
+        createdAt: EVENT_AT,
+        payload: { agent: "claude" },
+      }),
+    ];
+    for (const context of states) {
+      expect(context).not.toHaveProperty("ref");
+      const json = JSON.stringify(context);
+      expect(json).not.toContain("/fixture/");
+      expect(json).not.toContain(".jsonl");
+      expect(json.length).toBeLessThan(700);
+    }
+    expect(states.map((context) => context.state)).toEqual([
+      "current",
+      "current",
+      "stale",
+      "unavailable",
+      "unavailable",
+    ]);
   });
 });

@@ -78,16 +78,20 @@ type OutcomeContextWire = {
   model: string | null;
   percent: number | null;
   reason: string | null;
-  ref: string | null;
   reportedAt: string | null;
   source: string | null;
   state: "current" | "stale" | "unavailable";
   tokens: number | null;
   window: number | null;
+  windowStatus: "reported" | "unknown" | "inconsistent";
 };
 
 const CONTEXT_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$/;
 const CONTEXT_ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
+/** Upper bound for token counts and windows; anything larger is not a reading. */
+const CONTEXT_MAX_TOKENS = 1_000_000_000;
+/** A supplied percentage may differ from tokens/window by one-decimal rounding only (plus float error). */
+const CONTEXT_PERCENT_TOLERANCE = 0.05 + 1e-9;
 
 function contextToken(value: unknown): string | null {
   return typeof value === "string" && CONTEXT_TOKEN.test(value) ? value : null;
@@ -99,8 +103,11 @@ function contextIso(value: unknown): string | null {
     : null;
 }
 
-function contextCount(value: unknown): number | null {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+/** A positive bounded integer count; zero is no reading. */
+function contextPositive(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 && value <= CONTEXT_MAX_TOKENS
+    ? value
+    : null;
 }
 
 /** Bounded human age: seconds, then minutes, then hours and minutes. */
@@ -113,12 +120,16 @@ function formatContextAge(seconds: number): string {
 /** The context line for a lease whose event snapshot is gone. */
 export const SNAPSHOT_UNAVAILABLE_CONTEXT = "context: unavailable — snapshot_unavailable";
 
+const CONTEXT_INVALID = "context: unavailable — context_invalid";
 const CONTEXT_NUMBER = new Intl.NumberFormat("en-US");
 
 /**
- * The one bounded line every delivered outcome carries. Renders only what the
- * DTO proves: no percent without an authoritative window, no fresh-looking
- * number for a stale reading, and an explicit reason when there is none.
+ * The one bounded line every delivered outcome carries. The DTO is untrusted
+ * (another daemon build may have produced it): counts must be positive and
+ * bounded, a window must fit the tokens, the percentage is re-derived and a
+ * disagreeing one refused, the age comes from the two timestamps, and a
+ * reading after its event or a current reading without both times is
+ * refused rather than shown.
  */
 export function formatOutcomeContextLine(value: unknown): string {
   if (value === null || value === undefined) return "context: unavailable — context_not_provided";
@@ -129,29 +140,56 @@ export function formatOutcomeContextLine(value: unknown): string {
     context.basis !== "event" ||
     (context.state !== "current" && context.state !== "stale" && context.state !== "unavailable")
   ) {
-    return "context: unavailable — context_invalid";
+    return CONTEXT_INVALID;
   }
   const reason = contextToken(context.reason) ?? "unknown";
-  if (context.state === "unavailable" || contextCount(context.tokens) === null) {
-    return `context: unavailable — ${context.state === "unavailable" ? reason : "invalid_reading"}`;
-  }
-  const tokens = CONTEXT_NUMBER.format(context.tokens as number);
-  const window = contextCount(context.window);
-  const at = contextIso(context.reportedAt) ?? "time unknown";
-  const age = contextCount(context.ageSeconds);
+  if (context.state === "unavailable") return `context: unavailable — ${reason}`;
+  const count = contextPositive(context.tokens);
+  if (count === null) return "context: unavailable — invalid_reading";
+  const at = contextIso(context.reportedAt);
   const event = contextIso(context.eventAt);
+  if (at !== null && event !== null && Date.parse(at) > Date.parse(event)) return CONTEXT_INVALID;
+  if (context.state === "current" && (at === null || event === null)) return CONTEXT_INVALID;
+  let window: number | null = null;
+  if (context.window !== null && context.window !== undefined) {
+    window = contextPositive(context.window);
+    if (window === null || window < count || context.windowStatus === "inconsistent") {
+      return CONTEXT_INVALID;
+    }
+  } else if (context.windowStatus === "reported") {
+    return CONTEXT_INVALID;
+  }
+  let percent = "";
+  if (context.percent !== null && context.percent !== undefined) {
+    const derived = window === null ? null : (count / window) * 100;
+    if (
+      context.state !== "current" ||
+      derived === null ||
+      typeof context.percent !== "number" ||
+      !Number.isFinite(context.percent) ||
+      Math.abs(context.percent - derived) > CONTEXT_PERCENT_TOLERANCE
+    ) {
+      return CONTEXT_INVALID;
+    }
+    percent = ` (${derived.toFixed(1)}%)`;
+  }
+  const tokens = CONTEXT_NUMBER.format(count);
   const share =
-    window !== null && window > 0
-      ? `${tokens} / ${CONTEXT_NUMBER.format(window)} prompt tokens${
-          context.state === "current" &&
-          typeof context.percent === "number" &&
-          Number.isFinite(context.percent)
-            ? ` (${context.percent.toFixed(1)}%)`
-            : ""
-        }`
-      : `${tokens} prompt tokens (window unknown)`;
+    window !== null
+      ? `${tokens} / ${CONTEXT_NUMBER.format(window)} prompt tokens${percent}`
+      : context.windowStatus === "inconsistent"
+        ? `${tokens} prompt tokens (window inconsistent)`
+        : `${tokens} prompt tokens (window unknown)`;
+  const age =
+    at !== null && event !== null
+      ? Math.floor((Date.parse(event) - Date.parse(at)) / 1000)
+      : null;
   const provenance = [
-    age === null ? `reported ${at}` : `reported ${at} (${formatContextAge(age)} before event)`,
+    at === null
+      ? "reported time unknown"
+      : age === null
+        ? `reported ${at}`
+        : `reported ${at} (${formatContextAge(age)} before event)`,
     event ? `as of event ${event}` : "as of event (time unknown)",
     contextToken(context.model) ? `model ${context.model}` : null,
     contextToken(context.source),

@@ -574,6 +574,7 @@ describe("OpenCode source-entry projection", () => {
 
 describe("inbox.lease event-correlated outcomes", () => {
   function appendOutcomeEvent(input: {
+    agent?: string;
     compactHistory?: Record<string, unknown> | null;
     idempotency: string;
     paneId?: string;
@@ -587,7 +588,12 @@ describe("inbox.lease event-correlated outcomes", () => {
       herdrSessionName: "default",
       idempotencyKey: input.idempotency,
       paneId: input.paneId ?? "wA:p1",
-      payload: { agent: "hermes", from: "working", name: "driffs-worker", to: "done" },
+      payload: {
+        agent: input.agent ?? "hermes",
+        from: "working",
+        name: "driffs-worker",
+        to: "done",
+      },
       type: "agent.done",
       workspaceId: "wA",
     });
@@ -650,43 +656,51 @@ describe("inbox.lease event-correlated outcomes", () => {
     expect(excerpt?.text).not.toContain("TOOL BODY");
   });
 
-  test("row 15.309: the leased outcome carries the event's own bound context, also when leased later", () => {
-    const path = "/fixture/pi/worker.jsonl";
-    const { delivery, ownerToken, stored } = appendOutcomeEvent({
-      compactHistory: {
-        contextHealth: {
-          branch: null,
-          compactionCount: 0,
-          lastCompaction: null,
-          limitations: ["context_window_not_recorded"],
-          model: { changedAt: null, id: "gpt-6-luna", provider: "openai-codex" },
-          sessionId: "pi-a",
-          source: "pi-jsonl",
-          sourceUpdatedAt: "2026-10-15T08:20:00.000Z",
-          usage: {
-            current: true,
-            kind: "last_reported",
-            percent: null,
-            reason: null,
-            ref: `${path}#entry=m2`,
-            reportedAt: "2026-10-15T08:20:00.000Z",
-            tokens: 300210,
-            window: null,
-          },
-        },
-        historyRef: { kind: "agent_session", path, source: "pi-jsonl", value: path },
-        lastAssistantMessage: {
-          ref: `${path}#entry=m2`,
-          role: "assistant",
-          text: "done",
-          timestamp: null,
-        },
-        lastToolResult: null,
-        lastUserMessage: null,
-        messageCount: 2,
+  // Correction F1: the event's worker must be the harness whose history and
+  // reading these are. The earlier fixture paired a Hermes event with Pi health.
+  const PI_WORKER_PATH = "/fixture/pi/worker.jsonl";
+  function piWorkerHistory(path = PI_WORKER_PATH): Record<string, unknown> {
+    return {
+      contextHealth: {
+        branch: null,
+        compactionCount: 0,
+        lastCompaction: null,
+        limitations: ["context_window_not_recorded"],
+        model: { changedAt: null, id: "gpt-6-luna", provider: "openai-codex" },
+        sessionId: "pi-a",
         source: "pi-jsonl",
-        updatedAt: null,
+        sourceUpdatedAt: "2026-10-15T08:20:00.000Z",
+        usage: {
+          current: true,
+          kind: "last_reported",
+          percent: null,
+          reason: null,
+          ref: `${path}#entry=m2`,
+          reportedAt: "2026-10-15T08:20:00.000Z",
+          tokens: 300210,
+          window: null,
+        },
       },
+      historyRef: { kind: "agent_session", path, source: "pi-jsonl", value: path },
+      lastAssistantMessage: {
+        ref: `${path}#entry=m2`,
+        role: "assistant",
+        text: "done",
+        timestamp: null,
+      },
+      lastToolResult: null,
+      lastUserMessage: null,
+      messageCount: 2,
+      source: "pi-jsonl",
+      updatedAt: null,
+    };
+  }
+
+  test("row 15.309: the leased outcome carries the event's own bound context, also when leased later", () => {
+    const path = PI_WORKER_PATH;
+    const { delivery, ownerToken, stored } = appendOutcomeEvent({
+      agent: "pi",
+      compactHistory: piWorkerHistory(),
       idempotency: "outcome-context-309",
     });
     const lease = delivery.inboxLease({ leaseToken: ownerToken, profileId: "driffs" });
@@ -701,13 +715,31 @@ describe("inbox.lease event-correlated outcomes", () => {
       model: "gpt-6-luna",
       percent: null,
       reason: null,
-      ref: `${path}#entry=m2`,
       reportedAt: "2026-10-15T08:20:00.000Z",
       source: "pi-jsonl",
       state: "current",
       tokens: 300210,
       window: null,
+      windowStatus: "unknown",
     });
+    // Correction F4: the served object carries no transcript path.
+    expect(JSON.stringify(outcome?.context)).not.toContain(path);
+  });
+
+  test("correction F1: a Claude worker event carrying Pi history leases an explicit mismatch, not a Pi figure", () => {
+    const { delivery, ownerToken } = appendOutcomeEvent({
+      agent: "claude",
+      compactHistory: piWorkerHistory(),
+      idempotency: "outcome-context-309-mismatch",
+    });
+    const lease = delivery.inboxLease({ leaseToken: ownerToken, profileId: "driffs" });
+    const outcome = (lease.obligations[0] as { outcome?: Record<string, unknown> }).outcome;
+    expect(outcome?.context).toMatchObject({
+      reason: "source_mismatch",
+      state: "unavailable",
+      tokens: null,
+    });
+    expect(JSON.stringify(outcome?.context)).not.toContain(PI_WORKER_PATH);
   });
 
   test("row 15.309: an event stored without context health leases an explicit reason, not a number", () => {
