@@ -9,13 +9,18 @@
  * cases. This entry builds that admission instead of weakening the fixture:
  *
  *  1. create a fresh physical runtime root, disjoint from the repository, with
- *     owned private HOME, SHEPY_HOME, TMPDIR, XDG and socket paths. Tests
- *     bind Unix sockets below TMPDIR and macOS caps a socket path at 103
- *     bytes, so when the caller's physical TMPDIR leaves too little room the
- *     root is created under the physical /tmp instead;
- *  2. copy the caller environment WITHOUT loader overrides, Herdr/Shepy
- *     runtime selectors or credentials (the caller's own process.env is never
- *     modified) and set isolated-fixture admission in source CLI mode;
+ *     owned private HOME, SHEPY_HOME, TMPDIR, XDG, socket and tool paths.
+ *     Tests bind Unix sockets below TMPDIR, so the root goes under the
+ *     caller's physical TMPDIR only when the generated TMPDIR plus the longest
+ *     test socket suffix fits the platform's socket path limit in UTF-8 bytes;
+ *     otherwise under the physical /tmp, which must fit as well;
+ *  2. build the child environment from scratch: the private paths, the fixture
+ *     admission in source CLI mode, a PATH of exactly the trusted tools the
+ *     suite runs (this node, the npm shipped with it, a system git) followed
+ *     by /usr/bin:/bin, and a short allowlist of terminal/locale/CI controls.
+ *     Nothing else is inherited: no caller PATH, credential, SDK/cloud/Git
+ *     config, shell startup or loader selector. The caller's own process.env
+ *     is never modified;
  *  3. start the locked Vitest entry directly with node (no shim), forwarding
  *     every argument after `vitest run` unchanged and propagating its exit.
  *
@@ -24,7 +29,7 @@
  * other way without admission or with an inherited override.
  */
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync } from "node:fs";
 import { createRequire } from "node:module";
 import { constants, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
@@ -32,14 +37,12 @@ import { fileURLToPath } from "node:url";
 
 export const repoRoot = realpathSync(fileURLToPath(new URL("..", import.meta.url)));
 
-const LOADER_OVERRIDES = new Set(["NODE_OPTIONS", "NODE_PATH", "HERDR_BIN_PATH"]);
-const RUNTIME_PREFIXES = ["HERDR_", "SHEPY_", "XDG_"];
-const CREDENTIAL = /TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|API_?KEY|ACCESS_?KEY|_AUTH/i;
-// Measured longest test socket suffix below TMPDIR is 44 bytes; keep a margin.
-const SOCKET_PATH_MAX = 103;
-const SOCKET_SUFFIX_RESERVE = 50;
+/** sun_path holds 104 (macOS) or 108 (Linux) bytes including the terminating NUL. */
+export const SOCKET_PATH_MAX = process.platform === "darwin" ? 103 : 107;
+/** The longest socket path any test binds below TMPDIR (test/integration/herdr-orchestration-transport). */
+export const LONGEST_TEST_SOCKET_SUFFIX = "/shepy-herdr-orchestration-XXXXXX/herdr.sock";
 const ROOT_PREFIX = "shepy-t-";
-const ROOT_LAYOUT = `/${ROOT_PREFIX}XXXXXX/t/`;
+const ROOT_TMPDIR_LAYOUT = `/${ROOT_PREFIX}XXXXXX/t`;
 const PRIVATE_PATHS = {
   HOME: "home",
   SHEPY_HOME: "shepy",
@@ -49,23 +52,46 @@ const PRIVATE_PATHS = {
   XDG_CACHE_HOME: "xdg-cache",
   XDG_STATE_HOME: "xdg-state",
 };
+/** Non-sensitive terminal, locale and CI controls a caller may pass to the suite. */
+export const PASSTHROUGH = ["CI", "COLORTERM", "FORCE_COLOR", "LANG", "LC_ALL", "LC_CTYPE", "NO_COLOR", "TERM", "TZ"];
+const SYSTEM_PATH = ["/usr/bin", "/bin"];
+const GIT_CANDIDATES = ["/usr/bin/git", "/usr/local/bin/git", "/opt/homebrew/bin/git"];
 
 function contained(path, root) {
   const rel = relative(root, path);
   return rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`));
 }
 
-/** The physical base for the runtime root: the caller's TMPDIR when sockets still fit. */
+/** True when a test socket created below `tmpdir` stays within the socket path limit. */
+export function fitsSocketBudget(tmpdir) {
+  return Buffer.byteLength(tmpdir) + Buffer.byteLength(LONGEST_TEST_SOCKET_SUFFIX) <= SOCKET_PATH_MAX;
+}
+
+/** The physical base for the runtime root: the caller's TMPDIR when sockets fit, else /tmp. */
 export function runtimeBase(base = tmpdir()) {
-  const physical = realpathSync(base);
-  if (physical.length + ROOT_LAYOUT.length + SOCKET_SUFFIX_RESERVE <= SOCKET_PATH_MAX) {
-    return physical;
+  for (const candidate of [realpathSync(base), realpathSync("/tmp")]) {
+    if (fitsSocketBudget(candidate + ROOT_TMPDIR_LAYOUT)) return candidate;
   }
-  return realpathSync("/tmp");
+  throw new Error(
+    `no runtime base leaves room for test sockets within ${SOCKET_PATH_MAX} bytes: ${base}, /tmp`,
+  );
+}
+
+/** The executables the suite runs, resolved from trusted locations only. */
+export function trustedTools(nodePath = process.execPath, gitCandidates = GIT_CANDIDATES) {
+  // The npm package shipped with this node distribution, not a caller or manager wrapper.
+  const npm = join(dirname(dirname(nodePath)), "lib", "node_modules", "npm", "bin", "npm-cli.js");
+  const git = gitCandidates.find((candidate) => existsSync(candidate));
+  if (!existsSync(nodePath)) throw new Error(`required test tool node not found: ${nodePath}`);
+  if (!existsSync(npm)) throw new Error(`required test tool npm not found with node: ${npm}`);
+  if (git === undefined) {
+    throw new Error(`required test tool git not found in ${gitCandidates.join(", ")}`);
+  }
+  return { node: realpathSync(nodePath), npm: realpathSync(npm), git: realpathSync(git) };
 }
 
 /** A fresh, physical, owner-only runtime root that shares no path with `subject`. */
-export function createRuntime(base = runtimeBase(), subject = repoRoot) {
+export function createRuntime(base = runtimeBase(), subject = repoRoot, tools = trustedTools()) {
   const physicalBase = realpathSync(base);
   // Refuse before creating anything inside the repository.
   if (contained(physicalBase, subject)) {
@@ -82,21 +108,20 @@ export function createRuntime(base = runtimeBase(), subject = repoRoot) {
     mkdirSync(paths[key], { mode: 0o700 });
   }
   mkdirSync(join(root, "sockets"), { mode: 0o700 });
-  return { root, paths, socket: join(root, "sockets", "forbidden.sock") };
+  const bin = join(root, "bin");
+  mkdirSync(bin, { mode: 0o700 });
+  for (const [name, target] of Object.entries(tools)) symlinkSync(target, join(bin, name));
+  return { root, paths, bin, socket: join(root, "sockets", "forbidden.sock") };
 }
 
-/** A new environment object for the Vitest child; `inherited` is not modified. */
+/** The complete environment for the Vitest child; `inherited` is only read. */
 export function testEnvironment(inherited, runtime) {
   const env = {};
-  for (const [key, value] of Object.entries(inherited)) {
-    if (value === undefined || key === "TMP" || key === "TEMP") continue;
-    if (LOADER_OVERRIDES.has(key) || CREDENTIAL.test(key)) continue;
-    if (RUNTIME_PREFIXES.some((prefix) => key.startsWith(prefix))) continue;
-    env[key] = value;
-  }
+  for (const key of PASSTHROUGH) if (inherited[key] !== undefined) env[key] = inherited[key];
   return {
     ...env,
     ...runtime.paths,
+    PATH: [runtime.bin, ...SYSTEM_PATH].join(":"),
     HERDR_SOCKET_PATH: runtime.socket,
     SHEPY_DEMAND_FIXTURE_ROOT: runtime.root,
     SHEPY_DEMAND_FIXTURE_ADMISSION: "isolated-fixture",
@@ -127,7 +152,15 @@ export function runVitest(args, env, { entry = resolveVitest().entry, cwd = repo
 }
 
 if (process.argv[1] !== undefined && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const runtime = createRuntime();
-  process.stderr.write(`shepy test runtime: ${runtime.root}\n`);
-  process.exitCode = await runVitest(process.argv.slice(2), testEnvironment(process.env, runtime));
+  try {
+    const runtime = createRuntime();
+    if (!fitsSocketBudget(runtime.paths.TMPDIR)) {
+      throw new Error(`test runtime TMPDIR leaves no room for test sockets: ${runtime.paths.TMPDIR}`);
+    }
+    process.stderr.write(`shepy test runtime: ${runtime.root}\n`);
+    process.exitCode = await runVitest(process.argv.slice(2), testEnvironment(process.env, runtime));
+  } catch (error) {
+    process.stderr.write(`shepy test entry: ${error instanceof Error ? error.message : error}\n`);
+    process.exitCode = 1;
+  }
 }
