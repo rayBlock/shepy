@@ -106,44 +106,65 @@ export class OpenCodeHistoryReader implements AgentHistoryReader {
   }
 }
 
-// V2 JSON shape is fixture-validated only; live session_message shape remains
-// UNKNOWN until a readable live V2 store is available for a follow-up check.
+// V2 store (opencode 2.x, live-checked against 2.0.25): one session_message row
+// per entry, the entry kind in the `type` column. Conversation rows are `user`
+// ({text}) and `assistant` ({content:[reasoning|text|tool parts], finish,
+// error}); the remaining kinds are session bookkeeping, not conversation.
+const V2_NON_CONVERSATION = new Set([
+  "compaction",
+  "idle",
+  "model-switched",
+  "synthetic",
+  "system",
+]);
+
 function readV2(sqlite: DatabaseSync, dbPath: string, sessionId: string): AgentHistoryMessage[] {
   const rows = sqlite
     .prepare(`
-    select id, time_created, data from session_message
-    where session_id = ? order by time_created asc, id asc
+    select id, type, time_created, data from session_message
+    where session_id = ? order by seq asc, id asc
   `)
-    .all(sessionId) as { id: string; time_created: number; data: string }[];
+    .all(sessionId) as { id: string; type: string; time_created: number; data: string }[];
   const messages: AgentHistoryMessage[] = [];
   for (const row of rows) {
+    if (V2_NON_CONVERSATION.has(row.type)) continue;
     const data = JSON.parse(row.data) as unknown;
     if (!data || typeof data !== "object" || Array.isArray(data)) {
       throw new Error("OpenCode history: malformed V2 message");
     }
     const message = record(data);
-    const role = message.role === "user" || message.role === "assistant" ? message.role : null;
     const timestamp = timestampFrom(row.time_created);
-    const content = message.parts ?? message.content;
-    if (!role || (content === undefined && !stringValue(message.text))) {
+    if (row.type === "user") {
+      const text = stringValue(message.text);
+      if (!text) throw new Error("OpenCode history: unsupported V2 message shape");
+      messages.push({ ref: messageRef(dbPath, row.id, 0), role: "user", text, timestamp });
+      continue;
+    }
+    if (row.type !== "assistant" || !Array.isArray(message.content)) {
       throw new Error("OpenCode history: unsupported V2 message shape");
     }
-    const parts = Array.isArray(content) ? content : [message];
-    for (const [index, value] of parts.entries()) {
+    // Text parts carry no id of their own; the row id is their source entry.
+    const textParts: string[] = [];
+    for (const [index, value] of message.content.entries()) {
       const part = record(value);
-      const refValue = messageRef(dbPath, stringValue(part.id) ?? row.id, index);
       const type = stringValue(part.type);
-      if (type === "tool") {
-        const toolName = stringValue(part.tool) ?? "unknown";
+      if (type === "text") {
+        const text = stringValue(part.text);
+        if (text) textParts.push(text);
+      } else if (type === "tool") {
+        const refValue = messageRef(dbPath, stringValue(part.id) ?? undefined, index);
+        const toolName = stringValue(part.name) ?? "unknown";
         const state = record(part.state);
-        const output = state.output ?? state.error ?? part.output ?? part.content ?? part;
-        const text = typeof output === "string" ? output : JSON.stringify(output);
-        const compact = compactToolResult({
-          isError: Boolean(state.error) || state.status === "error",
-          ref: refValue,
-          text,
-          toolName,
-        });
+        const failure = record(state.error);
+        const isError =
+          stringValue(state.status) === "error" ||
+          Object.keys(failure).length > 0 ||
+          (typeof record(state.metadata).exit === "number" && record(state.metadata).exit !== 0);
+        const text =
+          textFromContent(state.content) ??
+          stringValue(failure.message) ??
+          JSON.stringify(state.content ?? state.error ?? null);
+        const compact = compactToolResult({ isError, ref: refValue, text, toolName });
         messages.push({
           compact,
           ref: refValue,
@@ -152,10 +173,19 @@ function readV2(sqlite: DatabaseSync, dbPath: string, sessionId: string): AgentH
           timestamp,
           toolName,
         });
-      } else if (role) {
-        const text = stringValue(part.text) ?? textFromContent(part.content);
-        if (text) messages.push({ ref: refValue, role, text, timestamp });
       }
+    }
+    // A failed turn has no answer text; surface its error rather than letting
+    // the previous turn's answer stand in as this outcome.
+    const turnError = stringValue(record(message.error).message);
+    const text =
+      textParts.length > 0
+        ? textParts.join("\n")
+        : stringValue(message.finish) === "error" && turnError
+          ? `OpenCode turn failed: ${turnError}`
+          : null;
+    if (text) {
+      messages.push({ ref: messageRef(dbPath, row.id, 0), role: "assistant", text, timestamp });
     }
   }
   return messages;

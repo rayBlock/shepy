@@ -209,11 +209,14 @@ export class ProfileDeliveryService {
     // Filter at projection, not emission: the event log stays a complete
     // audit record, but only notifiable outcomes become owner obligations.
     if (!NOTIFIABLE_EVENT_TYPES.has(event.type)) return;
-    // Only the OpenCode reader's source entry is a stable delivery identity.
+    // Only the OpenCode reader's source entry is a stable delivery identity:
+    // a V1 part id (prt_) or, for the V2 store, the session_message row id (msg_).
     // An absent/malformed entry is UNKNOWN, not a new deliverable outcome.
     const openCode = event.compactHistory?.source === "opencode-sqlite";
     const sourceRef = event.compactHistory?.lastAssistantMessage?.ref;
-    const sourceEntryId = openCode ? /#entry=(prt_[a-zA-Z0-9]+)$/.exec(sourceRef ?? "")?.[1] : null;
+    const sourceEntryId = openCode
+      ? /#entry=((?:prt|msg)_[a-zA-Z0-9]+)$/.exec(sourceRef ?? "")?.[1]
+      : null;
     const sourceText = event.compactHistory?.lastAssistantMessage?.text;
     if (openCode && (!sourceEntryId || typeof sourceText !== "string" || !sourceText.length)) {
       console.warn(`OpenCode outcome UNKNOWN: missing source entry or content (event ${event.id})`);
