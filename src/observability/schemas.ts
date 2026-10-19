@@ -73,6 +73,7 @@ export const agentSelectorSchema = Type.Union([
 
 export const profileEnsureInputSchema = Type.Object(
   {
+    claudeIdleWake: Type.Optional(Type.Boolean()),
     displayName: Type.String({ minLength: 1 }),
     profileId: Type.String({ minLength: 1 }),
     projectRoots: Type.Array(Type.String({ minLength: 1 })),
@@ -199,6 +200,15 @@ export const agentOrchestratorAckInputSchema = Type.Object(
 
 export const profileClaimInputSchema = Type.Object(
   {
+    claudeMessagingSocket: Type.Optional(
+      Type.Object(
+        {
+          path: Type.String({ minLength: 1 }),
+          token: Type.String({ minLength: 1 }),
+        },
+        { additionalProperties: false },
+      ),
+    ),
     // Proof of possession for a same-lease re-claim: the daemon-minted
     // token the claimant currently holds. Only an exact match against the
     // live owner's token takes the fast path; omitted or stale, the claim

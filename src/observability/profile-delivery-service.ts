@@ -204,11 +204,11 @@ export class ProfileDeliveryService {
   }
 
   /** Project one agent event into obligations for every matching subscription. */
-  projectAgentEvent(event: AgentEventRecord): void {
-    if (!event.agentId) return;
+  projectAgentEvent(event: AgentEventRecord): string[] {
+    if (!event.agentId) return [];
     // Filter at projection, not emission: the event log stays a complete
     // audit record, but only notifiable outcomes become owner obligations.
-    if (!NOTIFIABLE_EVENT_TYPES.has(event.type)) return;
+    if (!NOTIFIABLE_EVENT_TYPES.has(event.type)) return [];
     // Only the OpenCode reader's source entry is a stable delivery identity:
     // a V1 part id (prt_) or, for the V2 store, the session_message row id (msg_).
     // An absent/malformed entry is UNKNOWN, not a new deliverable outcome.
@@ -220,7 +220,7 @@ export class ProfileDeliveryService {
     const sourceText = event.compactHistory?.lastAssistantMessage?.text;
     if (openCode && (!sourceEntryId || typeof sourceText !== "string" || !sourceText.length)) {
       console.warn(`OpenCode outcome UNKNOWN: missing source entry or content (event ${event.id})`);
-      return;
+      return [];
     }
     const contentSha256 =
       openCode && sourceText ? createHash("sha256").update(sourceText).digest("hex") : null;
@@ -242,7 +242,7 @@ export class ProfileDeliveryService {
       (from === "done" || from === "idle") &&
       this.#sameSettledOutcomeAsPrior(event)
     )
-      return;
+      return [];
     // Short-circuit only: an event whose agent is absent from the live
     // index can never be projected below (no scoped candidate can name it).
     // The real gate is the scoped resolution + identity check per
@@ -250,7 +250,8 @@ export class ProfileDeliveryService {
     const agentIndexed = this.#agents
       .list({ herdrSessionName: event.herdrSessionName })
       .some((row) => row.id === event.agentId);
-    if (!agentIndexed) return;
+    if (!agentIndexed) return [];
+    const projectedProfiles = new Set<string>();
     for (const profile of this.#profiles.listProfiles()) {
       for (const subscription of this.#profiles.listSubscriptions(profile.profileId)) {
         if (!subscription.enabled) continue;
@@ -312,8 +313,10 @@ export class ProfileDeliveryService {
         } else {
           this.#obligations.project(projection);
         }
+        projectedProfiles.add(profile.profileId);
       }
     }
+    return [...projectedProfiles];
   }
 
   // ── Owner surface ─────────────────────────────────────────────────────

@@ -9,6 +9,7 @@ import type { DatabaseSync } from "node:sqlite";
  */
 
 type ProfileRow = {
+  claude_idle_wake: 0 | 1;
   created_at: number;
   display_name: string;
   profile_id: string;
@@ -28,6 +29,7 @@ type SubscriptionRow = {
 };
 
 export type ProfileRecord = {
+  claudeIdleWake: boolean;
   createdAt: number;
   displayName: string;
   profileId: string;
@@ -54,6 +56,7 @@ export class OrchestratorProfileStore {
   }
 
   createProfile(input: {
+    claudeIdleWake?: boolean;
     displayName: string;
     profileId: string;
     projectRoots: string[];
@@ -62,11 +65,19 @@ export class OrchestratorProfileStore {
     const roots = JSON.stringify(input.projectRoots);
     this.#sqlite
       .prepare(
-        `insert into orchestrator_profiles (profile_id, display_name, project_roots_json, created_at, updated_at)
-				 values (?, ?, ?, ?, ?)
-				 on conflict(profile_id) do update set display_name = excluded.display_name, project_roots_json = excluded.project_roots_json, updated_at = excluded.updated_at`,
+        `insert into orchestrator_profiles (profile_id, display_name, project_roots_json, created_at, updated_at, claude_idle_wake)
+				 values (?, ?, ?, ?, ?, ?)
+				 on conflict(profile_id) do update set display_name = excluded.display_name, project_roots_json = excluded.project_roots_json, updated_at = excluded.updated_at, claude_idle_wake = coalesce(?, orchestrator_profiles.claude_idle_wake)`,
       )
-      .run(input.profileId, input.displayName, roots, now, now);
+      .run(
+        input.profileId,
+        input.displayName,
+        roots,
+        now,
+        now,
+        input.claudeIdleWake === undefined ? 0 : Number(input.claudeIdleWake),
+        input.claudeIdleWake === undefined ? null : Number(input.claudeIdleWake),
+      );
     const created = this.getProfile(input.profileId);
     if (!created) throw new Error(`profile upsert failed to persist ${input.profileId}`);
     return created;
@@ -168,6 +179,7 @@ function toProfile(row: ProfileRow): ProfileRecord {
     projectRoots = [];
   }
   return {
+    claudeIdleWake: row.claude_idle_wake === 1,
     createdAt: row.created_at,
     displayName: row.display_name,
     profileId: row.profile_id,

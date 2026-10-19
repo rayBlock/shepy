@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import {
+  type ClaudeMessagingSocket,
+  validateClaudeMessagingSocket,
+} from "@/shared/claude-messaging-socket.js";
 
 /**
  * Phase 3 — profile owner store (vault §8.2). One active logical owner per
@@ -28,6 +32,7 @@ export function isLeaseAlive(
 }
 
 export type OwnerRow = {
+  claude_messaging_socket_json: string | null;
   accepted_source_kinds_json: string;
   claimed_at: number;
   harness_kind: string;
@@ -44,6 +49,7 @@ export type OwnerRow = {
 };
 
 export type ProfileOwner = {
+  claudeMessagingSocket: ClaudeMessagingSocket | null;
   acceptedSourceKinds: ("agent" | "profile-demand")[];
   claimedAt: number;
   harnessKind: string;
@@ -70,17 +76,18 @@ export type ProfileOwner = {
  * display paneId/harnessKind/workspaceId; nothing else leaves the store. */
 export type PublicProfileOwner = Omit<
   ProfileOwner,
-  "harnessSessionRefJson" | "leaseToken" | "subscriberId"
->;
+  "claudeMessagingSocket" | "harnessSessionRefJson" | "leaseToken" | "subscriberId"
+> & { socket: "present" | "absent" };
 
 export function toPublicProfileOwner(owner: ProfileOwner): PublicProfileOwner {
   const {
+    claudeMessagingSocket,
     harnessSessionRefJson: _harnessSessionRefJson,
     leaseToken: _leaseToken,
     subscriberId: _subscriberId,
     ...publicOwner
   } = owner;
-  return publicOwner;
+  return { ...publicOwner, socket: claudeMessagingSocket ? "present" : "absent" };
 }
 
 export type ClaimResult =
@@ -92,8 +99,10 @@ export type ClaimResult =
 export class ProfileOwnerStore {
   readonly #sqlite: DatabaseSync;
   readonly #now: () => number;
+  readonly #socketDirectory: string | undefined;
 
-  constructor(options: { now?: () => number; sqlite: DatabaseSync }) {
+  constructor(options: { now?: () => number; sqlite: DatabaseSync; socketDirectory?: string }) {
+    this.#socketDirectory = options.socketDirectory;
     this.#sqlite = options.sqlite;
     this.#now = options.now ?? Date.now;
   }
@@ -111,6 +120,7 @@ export class ProfileOwnerStore {
    *  - any successful claim invalidates the previous lease token.
    */
   claim(input: {
+    claudeMessagingSocket?: ClaudeMessagingSocket;
     /** The lease token the claimant currently holds, if any. MUST equal the
      * live owner's token to take the fast path; omitted or stale means the
      * expiry rule applies. This is the re-claim proof of possession. */
@@ -162,19 +172,24 @@ export class ProfileOwnerStore {
         return { kind: "rejected", owner: toPublicProfileOwner(existing), reason: "lease_active" };
       }
     }
+    const socket =
+      input.harnessKind === "claude"
+        ? validateClaudeMessagingSocket(input.claudeMessagingSocket, this.#socketDirectory)
+        : null;
     const leaseToken = randomUUID();
     this.#sqlite
       .prepare(
         `insert into profile_owners (profile_id, subscriber_id, harness_kind, harness_session_ref_json,
-					herdr_session_name, workspace_id, pane_id, terminal_id, lease_token, lease_expires_at, last_seen_at, claimed_at, accepted_source_kinds_json)
-				 values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+					herdr_session_name, workspace_id, pane_id, terminal_id, lease_token, lease_expires_at, last_seen_at, claimed_at, accepted_source_kinds_json, claude_messaging_socket_json)
+				 values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 				 on conflict(profile_id) do update set subscriber_id = excluded.subscriber_id,
 					harness_kind = excluded.harness_kind, harness_session_ref_json = excluded.harness_session_ref_json,
 					herdr_session_name = excluded.herdr_session_name, workspace_id = excluded.workspace_id,
 					pane_id = excluded.pane_id, terminal_id = excluded.terminal_id,
 					lease_token = excluded.lease_token, lease_expires_at = excluded.lease_expires_at,
 					last_seen_at = excluded.last_seen_at, claimed_at = excluded.claimed_at,
-                    accepted_source_kinds_json = excluded.accepted_source_kinds_json`,
+                    accepted_source_kinds_json = excluded.accepted_source_kinds_json,
+                    claude_messaging_socket_json = excluded.claude_messaging_socket_json`,
       )
       .run(
         input.profileId,
@@ -190,6 +205,7 @@ export class ProfileOwnerStore {
         now,
         now,
         JSON.stringify(input.acceptedSourceKinds ?? ["agent"]),
+        socket ? JSON.stringify(socket) : null,
       );
     const owner = this.get(input.profileId);
     if (!owner) throw new Error(`owner upsert failed to persist ${input.profileId}`);
@@ -243,6 +259,9 @@ function toOwner(row: OwnerRow): ProfileOwner {
   )
     throw new Error("owner:invalid-source-capability");
   return {
+    claudeMessagingSocket: row.claude_messaging_socket_json
+      ? (JSON.parse(row.claude_messaging_socket_json) as ClaudeMessagingSocket)
+      : null,
     acceptedSourceKinds: kinds,
     claimedAt: row.claimed_at,
     harnessKind: row.harness_kind,

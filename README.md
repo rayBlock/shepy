@@ -6,7 +6,7 @@ Documentation and agent communication are maintained in English. See [AGENTS.md]
 
 Shepy is a daemon-backed observability layer for coding agents running in Herdr. It provides two interfaces over the same durable agent index: pull-based CLI access to structured history, and owner-scoped Pi notifications with cached context and automatic wake.
 
-Herdr's `herdr agent read` reads terminal streams or scrollback. Shepy instead reads agent session data so callers can retrieve work status, structured message excerpts, compact tool results, and unread outcomes without parsing terminal output. Shepy is read-only; use the official Herdr CLI or skill for agent start, prompts, waits, pane operations, and terminal control.
+Herdr's `herdr agent read` reads terminal streams or scrollback. Shepy instead reads agent session data so callers can retrieve work status, structured message excerpts, compact tool results, and unread outcomes without parsing terminal output. Use the official Herdr CLI or skill for agent start, prompts, waits, pane operations, and terminal control. Shepy does not type into terminals. Its optional Claude wake bridge posts a notification through the owner's private messaging socket.
 
 Shepy currently supports session history from Claude Code, Codex, Gemini CLI, OpenCode, and Pi.
 
@@ -120,7 +120,20 @@ Without the `Stop` hook delivery degrades in two visible ways: outcomes that arr
 
 Recovery is conditional, not guaranteed. The next prompt settles the recorded delivery only while the hook can read and write its owner file and the process is not killed mid-turn. The injected context is composed and runtime-shape-checked before the delivery record is promoted to acknowledged-able, so a daemon response this build cannot render degrades to a no-op instead of promoting a record for text that was never shown. A record that cannot prove the model saw a batch is discarded instead of acknowledged, and the batch is re-delivered — a duplicate, never a silent loss. The one remaining loss window is a process killed (or an unwritable stdout) in the narrow gap between the record's promotion and the injection reaching Claude Code; a stateless hook cannot close it, because stdout is its last side effect. When the hook cannot write its owner file (unwritable `SHEPY_HOME`, full disk, a symlink planted at the path), it says so through a `systemMessage` warning every turn — user-facing only, never model input — instead of failing silently; the stranded outcomes still march toward `dead_letter` on the daemon side until storage recovers. The same applies when the daemon accepts a lease but then repeatedly fails the delivery handoff (for example after an upgrade changed what the daemon accepts): the first failed handoff is treated as transient daemon trouble and stays silent, but from the second consecutive failure on the same rows the hook warns through a `systemMessage` every turn — before the unseen outcomes can retire to `dead_letter`. If outcomes seem to have vanished, check `shepy inbox list <profileId> --state dead_letter` and re-deliver with `shepy inbox retry <id>`.
 
-Delivery is at turn boundaries only. A Pi extension can interrupt an idle terminal; a hook cannot. If an outcome lands while a Claude pane sits idle with nothing queued, it waits for the next prompt — nothing polls in between.
+Without socket wakes, delivery is at turn boundaries only. If an outcome lands while a Claude pane sits idle with nothing queued, it waits for the next prompt.
+
+Claude messaging socket wakes are separately opt-in:
+
+```bash
+shepy profile ensure <profileId> --wake-idle-claude
+shepy profile ensure <profileId> --no-wake-idle-claude
+```
+
+The default is off; an ensure without either flag preserves the current setting. Both hook claim paths, including Stop recovery, register the session's `CLAUDE_CODE_MESSAGING_SOCKET` and `CLAUDE_CODE_MESSAGING_TOKEN` privately with the daemon. Admission requires an absolute, normalized path directly inside `/tmp/cc-socks`, a Unix socket owned by the current user with no group or other permissions, and a nonempty token. Missing or invalid credentials disable wakes, not hook delivery. Public owner readback reports only `socket: present` or `socket: absent`, never the path or token. The database and daemon socket are restricted to mode 0600.
+
+For a live Claude lease, the daemon batches pending worker outcomes for 300 milliseconds and posts one bounded line such as `shepy: 2 finished: builder, reviewer`. An idle session wakes; a working session queues the message. No Herdr status check or terminal input is used, so a wake cannot answer an approval dialog. The owner's own outcomes are excluded. The session lease still expires after five minutes plus the 30-second grace period by default; an expired or replaced owner is not woken.
+
+The messaging protocol is the factory runner's `claude-2.1.257` auth frame followed by a user frame. It has no remote acknowledgement: successful local writes do not prove delivery. Every attempt is recorded before connecting and is never retried, even after failure, ambiguity, a changed pending batch or daemon restart. Details remain pending for the ordinary hook; a nudge never leases or acknowledges them. This unsupported Claude protocol may change. This feature adds a database migration and requires a daemon restart after upgrading; the first subsequent hook claim registers the socket.
 
 ### Orchi orchestration skill
 

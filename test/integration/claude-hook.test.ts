@@ -12,8 +12,10 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import type { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { Value } from "@sinclair/typebox/value";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -30,6 +32,7 @@ import {
 } from "@/cli/claude-hook.js";
 import { ownerLockPath, ownerRecordPath } from "@/cli/owner-file.js";
 import { formatCliError, helpText, parseCliArgs } from "@/cli/shepy.js";
+import { ClaudeIdleWakeService } from "@/daemon/claude-idle-wake-service.js";
 import { ObservabilityRpcClient } from "@/daemon/client.js";
 import { ObservabilityRpcServer } from "@/daemon/observability-server.js";
 import { AgentContextSnapshotStore } from "@/db/agent-context-snapshots.js";
@@ -38,6 +41,7 @@ import { AgentHistoryCacheStore } from "@/db/agent-history-cache.js";
 import { AgentOrchestratorScopeStore } from "@/db/agent-orchestrator-scopes.js";
 import { AgentStore } from "@/db/agents.js";
 import { applyMigrations } from "@/db/apply-migrations.js";
+import { ClaudeIdleWakeStore } from "@/db/claude-idle-wakes.js";
 import { openSqlite } from "@/db/client.js";
 import { DeliveryObligationStore } from "@/db/delivery-obligations.js";
 import { HerdrSessionStore } from "@/db/herdr-sessions.js";
@@ -50,6 +54,349 @@ import { ProfileDeliveryService } from "@/observability/profile-delivery-service
 import { demandRequestSchema } from "@/observability/profile-demand-ingress.js";
 import { ProfileService } from "@/observability/profile-service.js";
 import { profileClaimInputSchema } from "@/observability/schemas.js";
+import type { SocketAdapter } from "@/shared/claude-messaging-socket.js";
+
+async function fakeClaudeSocket(f: Fixture, filename = "owner.sock") {
+  const directory = join(f.dir, "cc-socks");
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const path = join(directory, filename);
+  const frames: unknown[] = [];
+  const server = createServer((socket) => {
+    let buffer = "";
+    socket.on("data", (data) => {
+      buffer += data.toString();
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) frames.push(JSON.parse(line));
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(path, resolve);
+  });
+  chmodSync(path, 0o600);
+  messagingServers.push(server);
+  return {
+    path,
+    frames,
+    environment: {
+      CLAUDE_CODE_MESSAGING_SOCKET: path,
+      CLAUDE_CODE_MESSAGING_TOKEN: "fake-session-secret",
+    },
+  };
+}
+
+function socketWakeService(f: Fixture, post?: SocketAdapter, sqlite = f.sqlite) {
+  const service = new ClaudeIdleWakeService({
+    batchDelayMs: 1,
+    events: new AgentEventStore(sqlite),
+    obligations: new DeliveryObligationStore(sqlite),
+    owners: new ProfileOwnerStore({ sqlite, socketDirectory: join(f.dir, "cc-socks") }),
+    profiles: new OrchestratorProfileStore(sqlite),
+    socketDirectory: join(f.dir, "cc-socks"),
+    wakes: new ClaudeIdleWakeStore(sqlite),
+    ...(post ? { post } : {}),
+  });
+  wakeServices.push(service);
+  return service;
+}
+
+function enableSocketWake(f: Fixture) {
+  f.profiles.createProfile({
+    claudeIdleWake: true,
+    displayName: "Driffs",
+    profileId: "driffs",
+    projectRoots: [],
+  });
+}
+
+const settleSocketWake = () => new Promise((resolve) => setTimeout(resolve, 30));
+
+describe("Claude socket wake through the real hook claim", () => {
+  test("opt-in defaults off; real hook identity posts the runner frames, never its own outcome, once across restart", async () => {
+    const f = await openHookServer();
+    const socket = await fakeClaudeSocket(f);
+    const claim = await runHook(f, promptPayload(), { environment: socket.environment });
+    expect(claim.code).toBe(0);
+    expect(claim.stdout).not.toContain(socket.path);
+    expect(claim.stdout).not.toContain("fake-session-secret");
+    expect(f.owners.get("driffs")).toMatchObject({
+      terminalId: "t1",
+      paneId: "w1:p1",
+      claudeMessagingSocket: { path: socket.path, token: "fake-session-secret" },
+    });
+    const client = new ObservabilityRpcClient({ socketPath: f.socketPath });
+    try {
+      const owner = await client.request("profile.owner", { profileId: "driffs" });
+      expect(owner).toMatchObject({ owner: { socket: "present" } });
+      expect(JSON.stringify(owner)).not.toContain(socket.path);
+      expect(JSON.stringify(owner)).not.toContain("fake-session-secret");
+      const refused = await client.request("profile.claim", {
+        ...hookClaimParams(),
+        claudeMessagingSocket: { path: socket.path, token: "rival" },
+      });
+      expect(JSON.stringify(refused)).not.toContain(socket.path);
+      expect(JSON.stringify(refused)).not.toContain("fake-session-secret");
+    } finally {
+      client.close();
+    }
+    expect(statSync(join(f.dir, "test.sqlite")).mode & 0o777).toBe(0o600);
+    expect(statSync(f.socketPath).mode & 0o777).toBe(0o600);
+    expect(f.profiles.getProfile("driffs")?.claudeIdleWake).toBe(false);
+    const service = socketWakeService(f);
+    projectOutcome(f, "socket-first", "worker done");
+    service.schedule(["driffs"]);
+    await settleSocketWake();
+    expect(socket.frames).toEqual([]);
+    enableSocketWake(f);
+    f.profiles.createProfile({
+      displayName: "Still enabled",
+      profileId: "driffs",
+      projectRoots: [],
+    });
+    expect(f.profiles.getProfile("driffs")?.claudeIdleWake).toBe(true);
+    const own = f.agentEvents.append({
+      herdrSessionName: "lane-b",
+      idempotencyKey: "socket-self",
+      paneId: "w1:p1",
+      terminalId: "t1",
+      workspaceId: "w1",
+      type: "agent.done",
+      payload: { name: "owner" },
+    });
+    f.obligations.project({ profileId: "driffs", subscriptionId: 99, agentEventId: own.id });
+    service.schedule(["driffs"]);
+    await vi.waitFor(() => expect(socket.frames).toHaveLength(2));
+    expect(socket.frames).toEqual([
+      { type: "auth", token: "fake-session-secret" },
+      { type: "user", message: { role: "user", content: "shepy: 1 finished: builder" } },
+    ]);
+    // A nudge does not lease, acknowledge or consume any details.
+    expect(f.obligations.list({ profileId: "driffs", state: "pending" })).toHaveLength(2);
+    service.close();
+    const reopened = openSqlite(join(f.dir, "test.sqlite")).sqlite;
+    openDbs.push(reopened);
+    const restarted = socketWakeService(f, undefined, reopened);
+    restarted.start();
+    await settleSocketWake();
+    expect(socket.frames).toHaveLength(2);
+    projectOutcome(f, "socket-second", "second done", "second-worker");
+    restarted.schedule(["driffs"]);
+    await vi.waitFor(() => expect(socket.frames).toHaveLength(4));
+    expect(socket.frames[3]).toMatchObject({
+      message: { content: "shepy: 1 finished: second-worker" },
+    });
+    const delivered = await runHook(f, promptPayload({ prompt_id: "socket-detail" }), {
+      environment: socket.environment,
+    });
+    expect(delivered.stdout).toContain("worker done");
+  });
+
+  test.each([
+    "working",
+    "blocked",
+  ])("a %s owner receives one queued socket batch without terminal prompting", async (status) => {
+    const f = await openHookServer();
+    const socket = await fakeClaudeSocket(f);
+    enableSocketWake(f);
+    await runHook(f, promptPayload(), { environment: socket.environment });
+    f.sqlite.prepare("update agents set agent_status = ? where pane_id = 'w1:p1'").run(status);
+    const service = socketWakeService(f);
+    projectOutcome(f, "burst-one", "one", "worker-one");
+    service.schedule(["driffs"]);
+    projectOutcome(f, "burst-two", "two", "worker-two");
+    service.schedule(["driffs"]);
+    await vi.waitFor(() => expect(socket.frames).toHaveLength(2));
+    expect(socket.frames[1]).toMatchObject({
+      message: { content: "shepy: 2 finished: worker-one, worker-two" },
+    });
+    const owner = f.owners.get("driffs");
+    if (!owner) throw new Error("fixture owner missing");
+    const client = new ObservabilityRpcClient({ socketPath: f.socketPath });
+    try {
+      const result = await client.request("profile.claim", {
+        ...hookClaimParams(),
+        currentLeaseToken: owner.leaseToken,
+        claudeMessagingSocket: { path: socket.path, token: "fake-session-secret" },
+      });
+      expect(result).toMatchObject({ result: { kind: "reclaimed", owner: { socket: "present" } } });
+      expect(JSON.stringify(result)).not.toContain(socket.path);
+      expect(JSON.stringify(result)).not.toContain("fake-session-secret");
+    } finally {
+      client.close();
+    }
+  });
+
+  test("a large pending batch is not limited by the CLI's newest-50 readback and its wake stays one bounded line", async () => {
+    const f = await openHookServer();
+    const socket = await fakeClaudeSocket(f);
+    enableSocketWake(f);
+    await runHook(f, promptPayload(), { environment: socket.environment });
+    for (let index = 0; index < 55; index++)
+      projectOutcome(f, `large-${index}`, "not in the nudge", `worker-${index}`);
+    const service = socketWakeService(f);
+    service.schedule(["driffs"]);
+    await vi.waitFor(() => expect(socket.frames).toHaveLength(2));
+    const message = socket.frames[1] as { message: { content: string } };
+    expect(message.message.content).toMatch(/^shepy: 55 finished:/);
+    expect(message.message.content.length).toBeLessThanOrEqual(240);
+    expect(message.message.content).not.toMatch(/[\r\n]/);
+    expect(new ClaudeIdleWakeStore(f.sqlite).attemptedObligationIds("driffs").size).toBe(55);
+  });
+
+  test("Stop lapsed-owner recovery records the current session socket, not a stale one", async () => {
+    const f = await openHookServer();
+    const first = await fakeClaudeSocket(f);
+    const second = await fakeClaudeSocket(f, "replacement.sock");
+    await runHook(f, promptPayload(), { environment: first.environment });
+    const token = f.owners.get("driffs")?.leaseToken;
+    lapseOwnerLease(f);
+    await runHook(f, stopPayload(), { environment: second.environment });
+    expect(f.owners.get("driffs")?.leaseToken).not.toBe(token);
+    expect(f.owners.get("driffs")?.claudeMessagingSocket?.path).toBe(second.path);
+    enableSocketWake(f);
+    projectOutcome(f, "stop-recovered", "done");
+    socketWakeService(f).schedule(["driffs"]);
+    await vi.waitFor(() => expect(second.frames).toHaveLength(2));
+    expect(first.frames).toEqual([]);
+  });
+
+  test("absent, missing-token and invalid socket claims keep hook delivery but never wake", async () => {
+    const f = await openHookServer();
+    const socket = await fakeClaudeSocket(f);
+    const file = join(f.dir, "cc-socks", "regular");
+    writeFileSync(file, "not a socket", { mode: 0o600 });
+    const link = join(f.dir, "cc-socks", "link.sock");
+    symlinkSync(socket.path, link);
+    enableSocketWake(f);
+    const service = socketWakeService(f);
+    for (const path of [undefined, "relative.sock", join(f.dir, "outside.sock"), file, link]) {
+      await runHook(f, promptPayload(), {
+        environment: { ...socket.environment, CLAUDE_CODE_MESSAGING_SOCKET: path },
+      });
+      expect(f.owners.get("driffs")?.claudeMessagingSocket).toBeNull();
+      projectOutcome(f, `refused-${path}`, "details still work");
+      service.schedule(["driffs"]);
+      await settleSocketWake();
+      expect(socket.frames).toEqual([]);
+    }
+    await runHook(f, promptPayload(), {
+      environment: { CLAUDE_CODE_MESSAGING_SOCKET: socket.path },
+    });
+    expect(f.owners.get("driffs")?.claudeMessagingSocket).toBeNull();
+    chmodSync(socket.path, 0o660);
+    await runHook(f, promptPayload(), { environment: socket.environment });
+    expect(f.owners.get("driffs")?.claudeMessagingSocket).toBeNull();
+  });
+
+  test("self outcomes alone cannot wake, including the legacy pane-as-terminal identity", async () => {
+    const f = await openHookServer();
+    const socket = await fakeClaudeSocket(f);
+    enableSocketWake(f);
+    await runHook(f, promptPayload(), { environment: socket.environment });
+    f.sqlite.prepare("update profile_owners set terminal_id = pane_id").run();
+    const event = f.agentEvents.append({
+      herdrSessionName: "lane-b",
+      idempotencyKey: "self-only",
+      paneId: "w1:p1",
+      terminalId: "t1",
+      workspaceId: "w1",
+      type: "agent.done",
+      payload: { name: "owner" },
+    });
+    f.obligations.project({ profileId: "driffs", subscriptionId: 1, agentEventId: event.id });
+    socketWakeService(f).schedule(["driffs"]);
+    await settleSocketWake();
+    expect(socket.frames).toEqual([]);
+    expect(new ClaudeIdleWakeStore(f.sqlite).attemptedObligationIds("driffs").size).toBe(0);
+  });
+
+  test.each([
+    "before-timer",
+    "after-connect",
+    "expired",
+    "socket-permissions",
+    "disabled",
+    "closed",
+  ])("fences %s before any frames", async (change) => {
+    const f = await openHookServer();
+    const socket = await fakeClaudeSocket(f);
+    enableSocketWake(f);
+    await runHook(f, promptPayload(), { environment: socket.environment });
+    projectOutcome(f, `fence-${change}`, "done");
+    const posted: string[] = [];
+    const replace = () => {
+      const owner = f.owners.get("driffs");
+      if (!owner) throw new Error("fixture owner missing");
+      f.owners.release({ profileId: "driffs", leaseToken: owner.leaseToken });
+      f.owners.claim({ ...hookClaimParams(), subscriberId: "replacement" } as Parameters<
+        ProfileOwnerStore["claim"]
+      >[0]);
+    };
+    const service = socketWakeService(f, async (_path, frames) => {
+      if (change === "after-connect") replace();
+      posted.push(...frames());
+      return { status: "posted-unacknowledged", reason: "local-writes-complete" };
+    });
+    service.schedule(["driffs"]);
+    if (change === "before-timer") replace();
+    if (change === "expired") lapseOwnerLease(f);
+    if (change === "socket-permissions") chmodSync(socket.path, 0o666);
+    if (change === "disabled")
+      f.profiles.createProfile({
+        claudeIdleWake: false,
+        displayName: "off",
+        profileId: "driffs",
+        projectRoots: [],
+      });
+    if (change === "closed") service.close();
+    await settleSocketWake();
+    expect(posted).toEqual([]);
+  });
+
+  test.each([
+    "refused-connect",
+    "ambiguous",
+    "throws",
+  ])("%s is never retried, even after reopening SQLite or a new pending subset", async (mode) => {
+    const f = await openHookServer();
+    const socket = await fakeClaudeSocket(f);
+    enableSocketWake(f);
+    await runHook(f, promptPayload(), { environment: socket.environment });
+    const first = projectOutcome(f, `failure-${mode}`, "first details");
+    projectOutcome(f, `failure-second-${mode}`, "details survive");
+    let attempts = 0;
+    const post: SocketAdapter = async (_path, frames) => {
+      attempts++;
+      if (mode === "throws") throw new Error(`${socket.path}fake-session-secret`);
+      if (mode === "ambiguous") frames();
+      return { status: "ambiguous", reason: "error" };
+    };
+    const service = socketWakeService(f, post);
+    service.schedule(["driffs"]);
+    await settleSocketWake();
+    service.schedule(["driffs"]);
+    await settleSocketWake();
+    expect(attempts).toBe(1);
+    service.close();
+    // A hook can consume part of an attempted batch. The remaining subset
+    // must not become a different retry merely because its hash changed.
+    f.sqlite
+      .prepare("update delivery_obligations set state = 'acked' where agent_event_id = ?")
+      .run(first);
+    const reopened = openSqlite(join(f.dir, "test.sqlite")).sqlite;
+    openDbs.push(reopened);
+    const restarted = socketWakeService(f, post, reopened);
+    restarted.start();
+    await settleSocketWake();
+    expect(attempts).toBe(1);
+    expect(f.obligations.list({ profileId: "driffs", state: "pending" })).toHaveLength(1);
+    const delivered = await runHook(f, promptPayload({ prompt_id: "failure-details" }), {
+      environment: socket.environment,
+    });
+    expect(delivered.stdout).toContain("details survive");
+  });
+});
 
 /**
  * Task B2 gate — `shepy claude-hook` end to end against a REAL daemon socket,
@@ -72,8 +419,19 @@ const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const tempDirs: string[] = [];
 const servers: ObservabilityRpcServer[] = [];
 const openDbs: { close(): void }[] = [];
+const messagingServers: Server[] = [];
+const wakeServices: ClaudeIdleWakeService[] = [];
 
 afterEach(async () => {
+  for (const service of wakeServices.splice(0)) service.close();
+  await Promise.all(
+    messagingServers.splice(0).map(
+      (server) =>
+        new Promise<void>((resolve, reject) => {
+          server.close((error) => (error ? reject(error) : resolve()));
+        }),
+    ),
+  );
   await Promise.all(servers.splice(0).map((server) => server.stop()));
   for (const db of openDbs.splice(0)) db.close();
   for (const dir of tempDirs.splice(0)) rmSync(dir, { force: true, recursive: true });
@@ -88,6 +446,7 @@ type Fixture = {
   owners: ProfileOwnerStore;
   profiles: OrchestratorProfileStore;
   socketPath: string;
+  sqlite: DatabaseSync;
 };
 
 async function openHookServer(): Promise<Fixture> {
@@ -144,7 +503,7 @@ async function openHookServer(): Promise<Fixture> {
   });
 
   const history = createAgentHistoryService({ cache: new AgentHistoryCacheStore(sqlite) });
-  const owners = new ProfileOwnerStore({ sqlite });
+  const owners = new ProfileOwnerStore({ sqlite, socketDirectory: join(dir, "cc-socks") });
   const obligations = new DeliveryObligationStore(sqlite);
   const delivery = new ProfileDeliveryService({
     agentEvents: stores.agentEvents,
@@ -183,6 +542,7 @@ async function openHookServer(): Promise<Fixture> {
     owners,
     profiles,
     socketPath,
+    sqlite,
   };
 }
 
@@ -429,7 +789,7 @@ describe("claude-hook UserPromptSubmit", () => {
     expect(owner?.harnessKind).toBe("claude");
     expect(owner?.subscriberId).toBe(SESSION_ID);
     expect(owner?.paneId).toBe("w1:p1");
-    expect(owner?.terminalId).toBe("w1:p1");
+    expect(owner?.terminalId).toBe("t1");
     expect(owner?.workspaceId).toBe("w1");
     expect(owner?.herdrSessionName).toBe("lane-b");
     expect(JSON.parse(owner?.harnessSessionRefJson ?? "{}")).toEqual({

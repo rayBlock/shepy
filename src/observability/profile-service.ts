@@ -60,6 +60,7 @@ export class ProfileService {
   }
 
   ensureProfile(input: {
+    claudeIdleWake?: boolean;
     displayName: string;
     profileId: string;
     projectRoots: string[];

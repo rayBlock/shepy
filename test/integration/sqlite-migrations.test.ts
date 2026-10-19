@@ -165,18 +165,24 @@ describe("SQLite migrations", () => {
     invalid.close();
   });
 
-  test("the neutral-owner forward migration preserves owners/tokens, obligations, indexes and journal; safe reapply", () => {
+  test.each([
+    "0011_real_lenny_balinger",
+    "0012_cheerful_venom",
+  ])("forward upgrade at %s preserves owners/tokens, obligations, indexes and journal; safe reapply", (tag) => {
     const dir = mkdtempSync(join(tmpdir(), "shepy-neutral-owner-migration-"));
     tempDirs.push(dir);
     const prior = join(dir, "prior");
     mkdirSync(join(prior, "meta"), { recursive: true });
     const journal = JSON.parse(readFileSync("drizzle/meta/_journal.json", "utf8"));
-    const newest = journal.entries.at(-1) as { idx: number; tag: string };
+    const newest = journal.entries.find((entry: { tag: string }) => entry.tag === tag) as {
+      idx: number;
+      tag: string;
+    };
+    if (!newest) throw new Error("forward migration missing");
     journal.entries = journal.entries.filter((entry: { idx: number }) => entry.idx < newest.idx);
     writeFileSync(join(prior, "meta/_journal.json"), JSON.stringify(journal));
-    const pad = String(newest.idx).padStart(4, "0");
     for (const name of readdirSync("drizzle").filter((n) => /^\d{4}_.*\.sql$/.test(n))) {
-      if (name.startsWith(`${pad}_`)) continue;
+      if (Number.parseInt(name.slice(0, 4), 10) >= newest.idx) continue;
       copyFileSync(join("drizzle", name), join(prior, name));
     }
     const { sqlite } = openSqlite(join(dir, "forward.sqlite"));
@@ -239,6 +245,19 @@ describe("SQLite migrations", () => {
     });
     // Nothing pre-existing may be lost by the rebuild; the resulting index set
     // must then be stable across a safe reapply.
+    expect(
+      sqlite
+        .prepare("select claude_idle_wake from orchestrator_profiles where profile_id='engine'")
+        .get(),
+    ).toEqual({ claude_idle_wake: 0 });
+    expect(
+      sqlite
+        .prepare(
+          "select claude_messaging_socket_json from profile_owners where profile_id='engine'",
+        )
+        .get(),
+    ).toEqual({ claude_messaging_socket_json: null });
+    expect(sqlite.prepare("select count(*) as n from claude_idle_wakes").get()).toEqual({ n: 0 });
     const afterOwnerIndexes = sqlite.prepare("pragma index_list(profile_owners)").all() as Array<{
       name: string;
     }>;
@@ -303,6 +322,7 @@ describe("SQLite migrations", () => {
       "agent_history_cache",
       "agent_orchestrator_scopes",
       "agents",
+      "claude_idle_wakes",
       "delivery_obligations",
       "herdr_sessions",
       "herdr_workspaces",
@@ -327,6 +347,14 @@ describe("SQLite migrations", () => {
         "workspace_id",
       ]),
     );
+    const profileColumns = sqlite
+      .prepare("pragma table_info(orchestrator_profiles)")
+      .all()
+      .map((row) => row as { dflt_value: string | null; name: string; notnull: number });
+    expect(profileColumns.find((column) => column.name === "claude_idle_wake")).toMatchObject({
+      dflt_value: "false",
+      notnull: 1,
+    });
     const eventColumns = sqlite
       .prepare("pragma table_info(agent_events)")
       .all()

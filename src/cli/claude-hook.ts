@@ -522,7 +522,11 @@ async function handlePromptSubmit(
       source: "herdr:claude",
       value: payload.session_id,
     });
-    const herdrSessionName = await resolveHerdrSessionName(request, paneId, workspaceId);
+    const { herdrSessionName, terminalId } = await resolveHerdrLocation(
+      request,
+      paneId,
+      workspaceId,
+    );
     // One decision for this whole invocation: the claim below and the lease
     // after it name the same source kinds, so the lease is never refused
     // for a kind the claim did not accept.
@@ -555,13 +559,14 @@ async function handlePromptSubmit(
         ? { currentLeaseToken: previous.leaseToken }
         : {}),
       ...claimSourceKinds(demandCapable),
+      ...claimMessagingSocket(input.environment),
       harnessKind: "claude",
       harnessSessionRefJson: ownerSessionRefJson,
       herdrSessionName,
       paneId,
       profileId: input.profileId,
       subscriberId: payload.session_id,
-      terminalId: paneId,
+      terminalId,
       workspaceId,
     });
     const result = claim.result ?? {};
@@ -873,7 +878,11 @@ async function handleStop(
       // rejection.
       if (!(error instanceof ExpectedHookError) || error.code !== "owner_lapsed") throw error;
       const { paneId, workspaceId } = requireHerdrIdentity(input.environment, input.profileId);
-      const herdrSessionName = await resolveHerdrSessionName(request, paneId, workspaceId);
+      const { herdrSessionName, terminalId } = await resolveHerdrLocation(
+        request,
+        paneId,
+        workspaceId,
+      );
       const reclaim = await request<{
         result?: {
           kind?: string;
@@ -886,13 +895,14 @@ async function handleStop(
         // An omitted field would persist agent-only and silently drop the
         // demand kind this pane claimed at the prompt.
         ...claimSourceKinds(demandCapable),
+        ...claimMessagingSocket(input.environment),
         harnessKind: "claude",
         harnessSessionRefJson: file.ownerSessionRefJson,
         herdrSessionName,
         paneId,
         profileId: input.profileId,
         subscriberId: payload.session_id,
-        terminalId: paneId,
+        terminalId,
         workspaceId,
       });
       const reclaimResult = reclaim.result ?? {};
@@ -1067,26 +1077,34 @@ async function withDeadline<T>(promise: Promise<T>): Promise<T> {
   }
 }
 
-/**
- * The claim's herdrSessionName comes from the agent index when the pane is
- * indexed there; any failure falls back to the same "default" the Pi
- * extension uses. Index resolution is best-effort — the claim itself is the
- * authoritative ownership step.
- */
-async function resolveHerdrSessionName(
+/** Carry the session's capability only on the private claim request. */
+function claimMessagingSocket(environment: NodeJS.ProcessEnv): {
+  claudeMessagingSocket?: { path: string; token: string };
+} {
+  const path = environment.CLAUDE_CODE_MESSAGING_SOCKET;
+  const token = environment.CLAUDE_CODE_MESSAGING_TOKEN;
+  // The daemon validates the path, ownership and permissions at claim and
+  // again before send. Never borrow the daemon's own messaging environment.
+  return path && token ? { claudeMessagingSocket: { path, token } } : {};
+}
+
+/** Resolve descriptive host identity from the index when available. A legacy
+ * fallback does not authenticate a claimant or route a socket wake. */
+async function resolveHerdrLocation(
   request: (method: string, params: unknown) => Promise<unknown>,
   paneId: string,
   workspaceId: string,
-): Promise<string> {
+): Promise<{ herdrSessionName: string; terminalId: string }> {
   try {
     const listed = (await request("agent.list", { workspaceId })) as {
-      agents?: Array<{ herdrSessionName?: string; paneId?: string }>;
+      agents?: Array<{ herdrSessionName?: string; paneId?: string; terminalId?: string }>;
     };
     const match = (listed.agents ?? []).find((agent) => agent.paneId === paneId);
     const name = match?.herdrSessionName?.trim();
-    return name ? name : "default";
+    return { herdrSessionName: name || "default", terminalId: match?.terminalId || paneId };
   } catch {
-    return "default";
+    // Legacy fallback is descriptive only: socket wakes never route by this id.
+    return { herdrSessionName: "default", terminalId: paneId };
   }
 }
 

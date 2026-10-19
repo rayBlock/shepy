@@ -158,6 +158,32 @@ describe("shepy CLI", () => {
     expect(() => parseCliArgs(["operation", "frobnicate"])).toThrow("Unknown operation command");
   });
 
+  test("profile ensure can opt a Claude owner into idle wakes without changing the default", () => {
+    expect(parseCliArgs(["profile", "ensure", "engine-coordinator"])).toMatchObject({
+      command: "profile-ensure",
+      profileId: "engine-coordinator",
+    });
+    expect(
+      parseCliArgs(["profile", "ensure", "engine-coordinator", "--wake-idle-claude"]),
+    ).toMatchObject({
+      claudeIdleWake: true,
+    });
+    expect(
+      parseCliArgs(["profile", "ensure", "engine-coordinator", "--no-wake-idle-claude"]),
+    ).toMatchObject({
+      claudeIdleWake: false,
+    });
+    expect(() =>
+      parseCliArgs([
+        "profile",
+        "ensure",
+        "engine-coordinator",
+        "--wake-idle-claude",
+        "--no-wake-idle-claude",
+      ]),
+    ).toThrow("choose only one");
+  });
+
   test("parses profile owner", () => {
     expect(parseCliArgs(["profile", "owner", "battle"])).toEqual({
       command: "profile-owner",

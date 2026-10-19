@@ -1,4 +1,4 @@
-import { existsSync, unlinkSync } from "node:fs";
+import { chmodSync, existsSync, unlinkSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,6 +18,7 @@ import type { AgentStore } from "@/db/agents.js";
 import type { HerdrSessionStore } from "@/db/herdr-sessions.js";
 import type { HerdrWorkspaceStore } from "@/db/herdr-workspaces.js";
 import type { OperationStore } from "@/db/operations.js";
+import { toPublicProfileOwner } from "@/db/profile-owners.js";
 import type { HerdrOrchestrationTransport } from "@/herdr/orchestration-transport.js";
 import { HerdrWaitTimeoutError } from "@/herdr/orchestration-transport-adapter.js";
 import {
@@ -235,7 +236,13 @@ export class ObservabilityRpcServer {
       this.#server.once("error", reject);
       this.#server.listen(this.#socketPath, () => {
         this.#server.off("error", reject);
-        resolve();
+        try {
+          chmodSync(this.#socketPath, 0o600);
+          resolve();
+        } catch (error) {
+          this.#server.close();
+          reject(error);
+        }
       });
     });
     this.#armStartupGrace();
@@ -441,7 +448,12 @@ export class ObservabilityRpcServer {
       }
       case "profile.ensure": {
         assertSchema(profileEnsureInputSchema, params);
-        const input = params as { displayName: string; profileId: string; projectRoots: string[] };
+        const input = params as {
+          claudeIdleWake?: boolean;
+          displayName: string;
+          profileId: string;
+          projectRoots: string[];
+        };
         const profile = this.#requireProfiles().ensureProfile(input);
         return { profile };
       }
@@ -565,6 +577,7 @@ export class ObservabilityRpcServer {
       case "profile.claim": {
         assertSchema(profileClaimInputSchema, params);
         const input = params as {
+          claudeMessagingSocket?: { path: string; token: string };
           currentLeaseToken?: string;
           acceptedSourceKinds?: ("agent" | "profile-demand")[];
           harnessKind: string;
@@ -576,7 +589,14 @@ export class ObservabilityRpcServer {
           terminalId?: string;
           workspaceId?: string;
         };
-        return { result: this.#requireDelivery().claim(input) };
+        const result = this.#requireDelivery().claim(input);
+        // Even the claimant gets only presence, never the stored socket capability.
+        return {
+          result:
+            result.kind === "claimed" || result.kind === "reclaimed"
+              ? { ...result, owner: toPublicProfileOwner(result.owner) }
+              : result,
+        };
       }
       case "profile.owner": {
         assertSchema(profileShowInputSchema, params);

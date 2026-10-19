@@ -11,6 +11,7 @@ import { AgentHistoryCacheStore } from "@/db/agent-history-cache.js";
 import { AgentOrchestratorScopeStore } from "@/db/agent-orchestrator-scopes.js";
 import { AgentStore } from "@/db/agents.js";
 import { applyMigrations } from "@/db/apply-migrations.js";
+import { ClaudeIdleWakeStore } from "@/db/claude-idle-wakes.js";
 import { openSqlite } from "@/db/client.js";
 import { DeliveryObligationStore } from "@/db/delivery-obligations.js";
 import { HerdrSessionStore } from "@/db/herdr-sessions.js";
@@ -32,6 +33,7 @@ import { ProfileDeliveryService } from "@/observability/profile-delivery-service
 import { ProfileDemandService } from "@/observability/profile-demand-service.js";
 import { ProfileDiagnoseService } from "@/observability/profile-diagnose-service.js";
 import { ProfileService } from "@/observability/profile-service.js";
+import { ClaudeIdleWakeService } from "./claude-idle-wake-service.js";
 import { HerdrSessionWatchManager } from "./herdr-session-watch-manager.js";
 import { ObservabilityRpcServer } from "./observability-server.js";
 
@@ -84,6 +86,13 @@ export async function runObservabilityDaemonService(
   const operationWait = new OperationWaitService({ operations: operationStore });
   const obligations = new DeliveryObligationStore(sqlite);
   const profileOwners = new ProfileOwnerStore({ sqlite });
+  const idleWakeService = new ClaudeIdleWakeService({
+    events: agentEvents,
+    obligations,
+    owners: profileOwners,
+    profiles: orchestratorProfiles,
+    wakes: new ClaudeIdleWakeStore(sqlite),
+  });
   const demandService = new ProfileDemandService(
     new DemandEventStore(sqlite),
     profileOwners,
@@ -151,7 +160,8 @@ export async function runObservabilityDaemonService(
     onAgentContextChanged: (scope) => server.publishAgentContext(scope),
     onAgentEvent: (event) => {
       server.publishAgentEvent(event);
-      deliveryService.projectAgentEvent(event);
+      const wakeProfiles = deliveryService.projectAgentEvent(event);
+      idleWakeService.schedule(wakeProfiles);
     },
     onAgentIndexRefreshed: (refreshed) => server.reconcileAgentLocations(refreshed),
     sessionList: createHerdrSessionListRunner({ env: runtime.environment }),
@@ -159,9 +169,11 @@ export async function runObservabilityDaemonService(
 
   await server.start();
   await watchManager.start();
+  idleWakeService.start();
   console.log(`Shepy daemon listening on ${runtime.paths.socketPath}`);
 
   const stop = async () => {
+    idleWakeService.close();
     await watchManager.stop();
     await server.stop();
     sqlite.close();

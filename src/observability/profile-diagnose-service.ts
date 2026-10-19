@@ -5,6 +5,7 @@ import {
   isLeaseAlive,
   type ProfileOwnerStore,
 } from "@/db/profile-owners.js";
+import { validateClaudeMessagingSocket } from "@/shared/claude-messaging-socket.js";
 import type { ProfileService, SubscriptionResolution } from "./profile-service.js";
 
 /**
@@ -245,7 +246,11 @@ export class ProfileDiagnoseService {
     }
     const ownerReport: DiagnosedOwner | null = owner
       ? {
-          canWakeIdle: canWakeIdle(owner.harnessKind),
+          canWakeIdle:
+            owner.harnessKind === "claude"
+              ? profile.claudeIdleWake &&
+                !!validateClaudeMessagingSocket(owner.claudeMessagingSocket)
+              : canWakeIdle(owner.harnessKind),
           claimedAt: owner.claimedAt,
           harnessKind: owner.harnessKind,
           lastSeenAt: owner.lastSeenAt,
@@ -278,7 +283,7 @@ export class ProfileDiagnoseService {
           ),
         );
       }
-      if (owner.harnessKind === "claude") {
+      if (owner.harnessKind === "claude" && !ownerReport?.canWakeIdle) {
         findings.push(
           finding(
             "info",

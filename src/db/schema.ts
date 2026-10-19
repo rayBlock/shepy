@@ -134,6 +134,7 @@ export const agentOrchestratorScopes = sqliteTable(
  * candidate exists (fail closed).
  */
 export const orchestratorProfiles = sqliteTable("orchestrator_profiles", {
+  claudeIdleWake: integer("claude_idle_wake", { mode: "boolean" }).notNull().default(false),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   displayName: text("display_name").notNull(),
   profileId: text("profile_id").primaryKey(),
@@ -171,6 +172,7 @@ export const profileSubscriptions = sqliteTable(
  * claim by a new terminal replaces it and invalidates the old lease token.
  */
 export const profileOwners = sqliteTable("profile_owners", {
+  claudeMessagingSocketJson: text("claude_messaging_socket_json"),
   acceptedSourceKindsJson: text("accepted_source_kinds_json").notNull().default('["agent"]'),
   claimedAt: integer("claimed_at", { mode: "timestamp_ms" }).notNull(),
   harnessKind: text("harness_kind").notNull(),
@@ -266,6 +268,20 @@ export const deliveryObligations = sqliteTable(
     ),
     index("delivery_obligations_profile_state_idx").on(table.profileId, table.state),
   ],
+);
+
+/** Durable once-per-batch fence for best-effort Claude socket wakes. */
+export const claudeIdleWakes = sqliteTable(
+  "claude_idle_wakes",
+  {
+    batchKey: text("batch_key").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    obligationIdsJson: text("obligation_ids_json").notNull(),
+    profileId: text("profile_id")
+      .notNull()
+      .references(() => orchestratorProfiles.profileId, { onDelete: "cascade" }),
+  },
+  (table) => [primaryKey({ columns: [table.profileId, table.batchKey] })],
 );
 
 /** One durable OpenCode projection stamp per source part, content, and owner profile. */

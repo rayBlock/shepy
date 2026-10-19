@@ -128,6 +128,7 @@ export type CliCommand =
   | { command: "profile-diagnose"; json: boolean; profileId: string }
   | {
       command: "profile-ensure";
+      claudeIdleWake?: boolean;
       displayName: string;
       json: boolean;
       profileId: string;
@@ -406,11 +407,21 @@ function parseProfileCommand(args: string[]): CliCommand {
   if (subcommand === "ensure") {
     const displayName = takeOption(rest, "--display-name", helpTopic);
     const roots = takeOption(rest, "--roots", helpTopic);
+    const enableIdleWake = takeFlag(rest, "--wake-idle-claude");
+    const disableIdleWake = takeFlag(rest, "--no-wake-idle-claude");
+    if (enableIdleWake && disableIdleWake) {
+      throw new CliUsageError(
+        "choose only one of --wake-idle-claude or --no-wake-idle-claude",
+        helpTopic,
+      );
+    }
     const [profileId, ...ensureExtra] = rest;
     if (!profileId) throw new CliUsageError("profile ensure requires <profileId>", helpTopic);
     rejectExtra(ensureExtra, helpTopic);
     return {
       command: "profile-ensure",
+      ...(enableIdleWake ? { claudeIdleWake: true } : {}),
+      ...(disableIdleWake ? { claudeIdleWake: false } : {}),
       displayName: displayName ?? profileId,
       json,
       profileId,
@@ -736,11 +747,13 @@ Options:
       return `Create or update a profile.
 
 Usage:
-  shepy profile ensure <profileId> [options]
+  shepy profile ensure <profileId> [--display-name <name>] [--roots <paths>] [--wake-idle-claude | --no-wake-idle-claude]
 
 Options:
   --display-name <name>    Human-readable profile name
   --roots <path,path>      Comma-separated project roots
+  --wake-idle-claude       Opt in to one-time Claude messaging socket wakes
+  --no-wake-idle-claude    Disable Claude idle wakes for this profile
   --json                   Print JSON
   -h, --help               Show help
 `;
@@ -1115,6 +1128,7 @@ async function dispatchRpcCommand(
   }
   if (command.command === "profile-ensure") {
     return client.request("profile.ensure", {
+      ...(command.claudeIdleWake !== undefined ? { claudeIdleWake: command.claudeIdleWake } : {}),
       displayName: command.displayName,
       profileId: command.profileId,
       projectRoots: command.projectRoots,
