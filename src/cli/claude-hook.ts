@@ -1261,7 +1261,14 @@ function outcomeLine(obligation: LeasedObligation): string {
   const agent = safeToken(outcome.agent, HERDR_AGENT_TOKEN) ?? "unknown";
   const name = safeToken(outcome.name, HERDR_AGENT_TOKEN) ?? agent;
   const paneId = safeToken(outcome.paneId, PANE_ID_TOKEN) ?? "unknown";
-  const status = outcome.type === "agent.blocked" ? "blocked" : "done";
+  const status =
+    outcome.type === "agent.blocked"
+      ? "blocked"
+      : outcome.type === "agent.tool.failed"
+        ? "tool failed"
+        : outcome.type === "agent.idle"
+          ? "idle"
+          : "done";
   const excerpt = outcome.excerpt?.text
     ? stripControlChars(outcome.excerpt.text).replace(/\s+/g, " ").trim()
     : "(no assistant message)";

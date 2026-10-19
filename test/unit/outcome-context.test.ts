@@ -582,7 +582,7 @@ describe("Claude hook short outcome notices", () => {
     const formatted = formatHookContext("driffs", [
       { agentEventId: 31, id: "00000031-0000-4000-8000-000000000000", outcome: legacy },
     ]);
-    expect(formatted.context).toContain("worker-a done (pi, wA:p1):");
+    expect(formatted.context).toContain("worker-a idle (pi, wA:p1):");
     expect(formatted.context).not.toContain("context_not_provided");
   });
 });

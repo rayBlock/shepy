@@ -1804,6 +1804,31 @@ describe("claude-hook formatter representation sets", () => {
     expect(doneLine).toMatch(/: x{199}… \[truncated; use shepy agent read before acting\]$/);
   });
 
+  test("tool failures, blocked outcomes, completions, and idle outcomes keep their status", () => {
+    const blocked = obligationWith(1, 10);
+    const toolFailed = obligationWith(2, 10);
+    const done = obligationWith(3, 10);
+    const idle = obligationWith(4, 10);
+    if (!blocked.outcome || !toolFailed.outcome || !done.outcome || !idle.outcome) {
+      throw new Error("fixture: missing outcome");
+    }
+    blocked.outcome.type = "agent.blocked";
+    blocked.outcome.paneId = "w2:p1";
+    toolFailed.outcome.type = "agent.tool.failed";
+    toolFailed.outcome.paneId = "w2:p2";
+    done.outcome.type = "agent.done";
+    done.outcome.paneId = "w2:p3";
+    idle.outcome.type = "agent.idle";
+    idle.outcome.paneId = "w2:p4";
+
+    const context = formatHookContext("driffs", [blocked, toolFailed, done, idle]).context;
+    expect(context).toContain("builder blocked (hermes, w2:p1):");
+    expect(context).toContain("builder tool failed (hermes, w2:p2):");
+    expect(context).not.toContain("builder done (hermes, w2:p2):");
+    expect(context).toContain("builder done (hermes, w2:p3):");
+    expect(context).toContain("builder idle (hermes, w2:p4):");
+  });
+
   test("the read hint appears for the hook cap and source truncation", () => {
     const exactly200 = obligationWith(1, 200);
     const over200 = obligationWith(2, 201);
