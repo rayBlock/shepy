@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
+  existsSync,
   fchmodSync,
   constants as fsConstants,
   fstatSync,
@@ -12,6 +13,7 @@ import {
   renameSync,
   statSync,
   unlinkSync,
+  writeFileSync,
   writeSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -263,9 +265,28 @@ function writeAllSync(fd: number, payload: string): void {
 }
 
 // Test-only fault injection, exercised by the cross-process durability tests.
-// Both knobs default to off and are never set outside those tests.
+// All knobs default to off and are never set outside those tests.
 const CAS_WINDOW_PAUSE_MS = parseTestPauseMs(process.env.SHEPY_HOOK_TEST_CAS_PAUSE_MS);
 const CRASH_PAUSE_POINT = parseCrashPausePoint(process.env.SHEPY_HOOK_TEST_WRITE_PAUSE);
+const CAS_TEST_GATE = process.env.SHEPY_HOOK_TEST_CAS_GATE;
+const LOCK_TEST_CONTENDED = process.env.SHEPY_HOOK_TEST_LOCK_CONTENDED;
+
+/** Explicit parent/child handshake at the locked, checked, pre-write phase. */
+function waitForTestCasRelease(): void {
+  if (!CAS_TEST_GATE) return;
+  writeTestMarker(`${CAS_TEST_GATE}.ready`);
+  const deadline = Date.now() + 10_000;
+  while (!existsSync(`${CAS_TEST_GATE}.release`)) {
+    if (Date.now() >= deadline) throw new Error("test CAS gate was not released");
+    syncSleep(OWNER_LOCK_POLL_MS);
+  }
+}
+
+function writeTestMarker(path: string): void {
+  if (existsSync(path)) return;
+  writeFileSync(`${path}.tmp`, `${process.pid}\n`, { mode: 0o600 });
+  renameSync(`${path}.tmp`, path);
+}
 
 function parseTestPauseMs(raw: string | undefined): number {
   const parsed = Number(raw ?? "0");
@@ -357,6 +378,7 @@ function acquireOwnerLock(lockPath: string, profileId: string): number | null {
           profileId,
         );
       }
+      if (LOCK_TEST_CONTENDED) writeTestMarker(LOCK_TEST_CONTENDED);
       if (Date.now() >= deadline) return null;
       // Contended. A lock far older than any real hold belongs to a crashed
       // hook: steal it so one kill -9 cannot mute a pane forever. Losing the
@@ -453,6 +475,7 @@ export function casOwnerRecord(input: {
     if (!sameUnsettledRecord(readOwnerRecord(homeDir, sessionId, profileId), handled)) {
       return false;
     }
+    waitForTestCasRelease();
     if (CAS_WINDOW_PAUSE_MS > 0) syncSleep(CAS_WINDOW_PAUSE_MS);
     writeOwnerRecordAtomic(path, serializeOwnerRecord(next));
     return true;

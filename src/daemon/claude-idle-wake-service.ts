@@ -92,8 +92,9 @@ export class ClaudeIdleWakeService {
           return false;
         try {
           const event = this.#options.events.get(row.agentEventId);
-          // The hook may have claimed before Herdr indexed its real terminal.
-          // Match pane as well; never depend on a pane id posing as a terminal id.
+          // Unresolved hook claims carry no socket capability. For admitted
+          // claims, keep legacy pane-as-terminal matching scoped to the same
+          // Herdr session; pane ids can repeat in other sessions.
           return !(
             event.herdrSessionName === owner.herdrSessionName &&
             ((event.terminalId !== null && event.terminalId === owner.terminalId) ||

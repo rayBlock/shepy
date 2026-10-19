@@ -311,6 +311,128 @@ describe("Claude socket wake through the real hook claim", () => {
     expect(new ClaudeIdleWakeStore(f.sqlite).attemptedObligationIds("driffs").size).toBe(0);
   });
 
+  test("a matching pane id in another Herdr session is not the owner's own outcome", async () => {
+    const f = await openHookServer();
+    const socket = await fakeClaudeSocket(f);
+    enableSocketWake(f);
+    await runHook(f, promptPayload(), { environment: socket.environment });
+    new HerdrSessionStore(f.sqlite).upsertRunning({
+      name: "lane-other",
+      sessionDir: "/tmp/unused-other-herdr",
+      socketPath: join(f.dir, "unused-herdr.sock"),
+    });
+    const other = f.agentEvents.append({
+      herdrSessionName: "lane-other",
+      paneId: "w1:p1",
+      terminalId: "t1",
+      workspaceId: "w1",
+      type: "agent.done",
+      payload: { name: "other-session-worker" },
+    });
+    f.obligations.project({ profileId: "driffs", subscriptionId: 99, agentEventId: other.id });
+    socketWakeService(f).schedule(["driffs"]);
+    await vi.waitFor(() => expect(socket.frames).toHaveLength(2));
+    expect(socket.frames[1]).toMatchObject({
+      message: { content: "shepy: 1 finished: other-session-worker" },
+    });
+  });
+
+  test.each([
+    ["UserPromptSubmit", "empty"],
+    ["UserPromptSubmit", "lookup-failure"],
+    ["UserPromptSubmit", "ambiguous"],
+    ["Stop", "empty"],
+    ["Stop", "lookup-failure"],
+    ["Stop", "ambiguous"],
+  ])("%s claim with %s identity cannot self-wake after later named-session projection", async (hook, mode) => {
+    const f = await openHookServer();
+    const socket = await fakeClaudeSocket(f);
+    enableSocketWake(f);
+    f.profiles.addSubscription({
+      agentSelectorJson: JSON.stringify({ kind: "name", value: "owner" }),
+      herdrSessionName: "lane-b",
+      profileId: "driffs",
+      workspaceSelectorJson: JSON.stringify({ herdrSession: "lane-b", workspaceId: "w1" }),
+    });
+    // Recovery and failed re-claims must also clear a previously admitted socket.
+    if (hook === "Stop" || mode === "lookup-failure") {
+      await runHook(f, promptPayload(), { environment: socket.environment });
+      expect(f.owners.get("driffs")?.claudeMessagingSocket).not.toBeNull();
+    }
+    if (hook === "Stop") lapseOwnerLease(f);
+    const indexed = f.agents.list();
+    let failedLookup: ReturnType<typeof vi.spyOn> | undefined;
+    if (mode === "empty") {
+      f.agents.replaceForSession({ herdrSessionName: "lane-b", agents: [] });
+    } else if (mode === "lookup-failure") {
+      failedLookup = vi.spyOn(f.agents, "list").mockImplementationOnce(() => {
+        throw new Error("synthetic index lookup failure");
+      });
+    } else {
+      new HerdrSessionStore(f.sqlite).upsertRunning({
+        name: "lane-other",
+        sessionDir: "/tmp/unused-other-herdr",
+        socketPath: join(f.dir, "unused-herdr.sock"),
+      });
+      const indexedOwner = indexed.find((agent) => agent.paneId === "w1:p1");
+      if (!indexedOwner) throw new Error("fixture owner missing");
+      f.agents.replaceForSession({ herdrSessionName: "lane-other", agents: [indexedOwner] });
+    }
+    const claimed = await runHook(f, hook === "Stop" ? stopPayload() : promptPayload(), {
+      environment: socket.environment,
+    });
+    if (failedLookup) {
+      expect(failedLookup).toHaveBeenCalled();
+      failedLookup.mockRestore();
+    }
+    expect(claimed.code).toBe(0);
+    expect(f.owners.get("driffs")).toMatchObject({
+      herdrSessionName: "default",
+      claudeMessagingSocket: null,
+    });
+    f.agents.replaceForSession({ herdrSessionName: "lane-other", agents: [] });
+    f.agents.replaceForSession({
+      herdrSessionName: "lane-b",
+      agents: indexed.map((agent) => ({
+        ...agent,
+        name: agent.paneId === "w1:p1" ? "owner" : agent.name,
+      })),
+    });
+    const owner = f.agents.list().find((agent) => agent.paneId === "w1:p1");
+    if (!owner) throw new Error("fixture owner missing after indexing");
+    const own = f.agentEvents.append({
+      agentId: owner.id,
+      herdrSessionName: "lane-b",
+      paneId: "w1:p1",
+      terminalId: "t1",
+      workspaceId: "w1",
+      type: "agent.done",
+      payload: { name: "owner", agent: "claude", from: "working", to: "done" },
+    });
+    const projected = f.delivery.projectAgentEvent(own);
+    expect(projected).toEqual(["driffs"]);
+    const service = socketWakeService(f);
+    service.schedule(projected);
+    await settleSocketWake();
+    expect(socket.frames).toEqual([]);
+    expect(new ClaudeIdleWakeStore(f.sqlite).attemptedObligationIds("driffs").size).toBe(0);
+    expect(f.obligations.list({ profileId: "driffs", state: "pending" })).toHaveLength(1);
+    projectOutcome(f, `unresolved-${hook}-${mode}`, "ordinary hook details still work");
+    const delivered = await runHook(f, promptPayload({ prompt_id: "resolved-claim" }), {
+      environment: socket.environment,
+    });
+    expect(delivered.stdout).toContain("ordinary hook details still work");
+    expect(f.owners.get("driffs")).toMatchObject({
+      herdrSessionName: "lane-b",
+      terminalId: "t1",
+      claudeMessagingSocket: { path: socket.path },
+    });
+    projectOutcome(f, `resolved-${hook}-${mode}`, "next worker completion");
+    service.schedule(["driffs"]);
+    await vi.waitFor(() => expect(socket.frames).toHaveLength(2));
+    expect(socket.frames[1]).toMatchObject({ message: { content: "shepy: 1 finished: builder" } });
+  });
+
   test.each([
     "before-timer",
     "after-connect",
@@ -2552,9 +2674,10 @@ describe("claude-hook owner-file cross-process durability", () => {
    * record under REAL cross-process conditions — two separate `shepy
    * claude-hook` OS processes against the same daemon socket and the same
    * owners directory — because sequential in-process calls can never observe
-   * a check→write interleave. `SHEPY_HOOK_TEST_CAS_PAUSE_MS` widens the
-   * check→write window of the compare-and-write so the race is deterministic
-   * instead of statistical; it defaults to 0 and is set only here.
+   * a check→write interleave. The test-only CAS gate witnesses the held lock
+   * and completed check before releasing the competing child. A contention
+   * marker proves that child reached the same lock before the writer proceeds;
+   * an earlier RPC observation is not evidence of reaching the file write.
    */
 
   type HookChildExit = {
@@ -2582,6 +2705,9 @@ describe("claude-hook owner-file cross-process durability", () => {
           HERDR_PANE_ID: "w1:p1",
           HERDR_WORKSPACE_ID: "w1",
           SHEPY_HOOK_TEST_CAS_PAUSE_MS: "",
+          SHEPY_HOOK_TEST_CAS_GATE: "",
+          SHEPY_HOOK_TEST_LOCK_CONTENDED: "",
+          SHEPY_HOOK_TEST_WRITE_PAUSE: "",
           ...extraEnv,
         },
         stdio: ["pipe", "pipe", "pipe"],
@@ -2654,15 +2780,15 @@ describe("claude-hook owner-file cross-process durability", () => {
         return realAck(input);
       },
     });
+    const contended = join(fixture.dir, "stop-lock-contended");
     const stopChild = spawnHookChild(fixture, stopPayload({ prompt_id: "race-stop" }), {
-      SHEPY_HOOK_TEST_CAS_PAUSE_MS: "300",
+      SHEPY_HOOK_TEST_LOCK_CONTENDED: contended,
     });
     await vi.waitFor(() => expect(ackCalls).toBe(1), { timeout: 30_000, interval: 20 });
 
-    // Gate 2: park the prompt child at inbox.delivered. The prompt child's
-    // settle-ack is the SECOND ack and passes straight through — once it is
-    // observed, the prompt child is inside its own widened check→write
-    // window, holding a record it has not written yet.
+    // Gate 2: park the prompt child at inbox.delivered after it wins the CAS.
+    // Its second ACK does NOT prove it holds the file lock: the ACK response
+    // and inbox.lease still precede that write. Use a locked-write handshake.
     const realDelivered = fixture.delivery.inboxDelivered.bind(fixture.delivery);
     let releaseDelivered!: () => void;
     const deliveredGate = new Promise<void>((resolve) => {
@@ -2676,24 +2802,41 @@ describe("claude-hook owner-file cross-process durability", () => {
         return realDelivered(input);
       },
     });
+    const casGate = join(fixture.dir, "prompt-cas");
     const upsChild = spawnHookChild(fixture, promptPayload({ prompt_id: "race-ups" }), {
-      SHEPY_HOOK_TEST_CAS_PAUSE_MS: "300",
+      SHEPY_HOOK_TEST_CAS_GATE: casGate,
     });
-    await vi.waitFor(() => expect(ackCalls).toBe(2), { timeout: 30_000, interval: 20 });
-
-    // Both processes are now between check and write on the same record.
-    // Let the Stop child proceed: it re-checks (still R0 — the prompt child
-    // has not written), passes, and pauses inside its own window.
-    releaseAck();
-    // The prompt child's pause lapses first (it started earlier): it wins
-    // the file, writes { leased [O2], T1 }, and parks at inbox.delivered.
-    await vi.waitFor(() => expect(deliveredCalls).toBe(1), { timeout: 30_000, interval: 20 });
-
-    // The Stop child now finishes its stale write against the record the
-    // prompt child just installed. Then both drain.
-    const stop = await stopChild.exit;
-    releaseDelivered();
-    const ups = await upsChild.exit;
+    let stop: HookChildExit;
+    let ups: HookChildExit;
+    try {
+      await pollUntil("prompt holds the checked pre-write lock", 30_000, () =>
+        existsSync(`${casGate}.ready`),
+      );
+      expect(ackCalls).toBe(2);
+      expect(readFileSync(lockFilePath(fixture), "utf8")).toBe(
+        readFileSync(`${casGate}.ready`, "utf8"),
+      );
+      expect(readOwnerFile(fixture).delivered?.ids).toEqual([o1Id]);
+      releaseAck();
+      await pollUntil("Stop contends on the prompt's held lock", 30_000, () =>
+        existsSync(contended),
+      );
+      expect(readFileSync(contended, "utf8")).not.toBe(readFileSync(`${casGate}.ready`, "utf8"));
+      // The prompt writer is demonstrably first, and the stale Stop writer
+      // is demonstrably competing. Release the write, not a guessed delay.
+      writeFileSync(`${casGate}.release`, "release", { mode: 0o600 });
+      await vi.waitFor(() => expect(deliveredCalls).toBe(1), { timeout: 30_000, interval: 20 });
+      stop = await stopChild.exit;
+      releaseDelivered();
+      ups = await upsChild.exit;
+    } finally {
+      writeFileSync(`${casGate}.release`, "release", { mode: 0o600 });
+      releaseAck();
+      releaseDelivered();
+      stopChild.kill("SIGKILL");
+      upsChild.kill("SIGKILL");
+      await Promise.all([stopChild.exit, upsChild.exit]);
+    }
 
     expect(stop.code).toBe(0);
     expect(stop.stdout).toBe("");
@@ -2717,6 +2860,83 @@ describe("claude-hook owner-file cross-process durability", () => {
     ).toEqual([o2Id]);
     expect(fixture.delivery.inboxList({ profileId: "driffs", state: "pending" })).toHaveLength(0);
     expect(fixture.delivery.inboxList({ profileId: "driffs", state: "leased" })).toHaveLength(0);
+  });
+
+  test("second ACK is not a write-phase witness: Stop can win before the prompt leases, without unseen ACKs", {
+    timeout: 90_000,
+  }, async () => {
+    const fixture = await openHookServer();
+    projectOutcome(fixture, "ack-not-write-a", "already seen outcome");
+    await runHook(fixture, promptPayload({ prompt_id: "witness-p0" }));
+    const o1Id = readOwnerFile(fixture).delivered?.ids[0];
+    expect(o1Id).toBeTruthy();
+    projectOutcome(fixture, "ack-not-write-b", "unseen outcome survives");
+    const o2Id = fixture.delivery.inboxList({ profileId: "driffs", state: "pending" })[0]?.id;
+    expect(o2Id).toBeTruthy();
+
+    const realAck = fixture.delivery.inboxAck.bind(fixture.delivery);
+    let releaseAck!: () => void;
+    const ackGate = new Promise<void>((resolve) => {
+      releaseAck = resolve;
+    });
+    let ackCalls = 0;
+    Object.assign(fixture.delivery, {
+      inboxAck: async (input: Parameters<ProfileDeliveryService["inboxAck"]>[0]) => {
+        if (++ackCalls === 1) await ackGate;
+        return realAck(input);
+      },
+    });
+    const stopChild = spawnHookChild(fixture, stopPayload({ prompt_id: "witness-stop" }));
+    await vi.waitFor(() => expect(ackCalls).toBe(1), { timeout: 30_000, interval: 20 });
+    const realLease = fixture.delivery.inboxLease.bind(fixture.delivery);
+    let releaseLease!: () => void;
+    const leaseGate = new Promise<void>((resolve) => {
+      releaseLease = resolve;
+    });
+    let leaseCalls = 0;
+    Object.assign(fixture.delivery, {
+      inboxLease: async (input: Parameters<ProfileDeliveryService["inboxLease"]>[0]) => {
+        if (++leaseCalls === 1) await leaseGate;
+        return realLease(input);
+      },
+    });
+    const delivered = vi.spyOn(fixture.delivery, "inboxDelivered");
+    const upsChild = spawnHookChild(fixture, promptPayload({ prompt_id: "witness-ups" }));
+    try {
+      await vi.waitFor(() => expect(leaseCalls).toBe(1), { timeout: 30_000, interval: 20 });
+      // The old test's trigger has fired, but the prompt has not reached CAS.
+      expect(ackCalls).toBe(2);
+      expect(readOwnerFile(fixture).delivered?.ids).toEqual([o1Id]);
+      expect(existsSync(lockFilePath(fixture))).toBe(false);
+      releaseAck();
+      const stop = await stopChild.exit;
+      expect(stop.code).toBe(0);
+      expect(stop.stdout).toBe("");
+      // Stop's checked write completed first, clearing only the seen record.
+      expect(readOwnerFile(fixture).delivered).toBeNull();
+      releaseLease();
+      const ups = await upsChild.exit;
+      expect(ups.code).toBe(0);
+      expect(ups.stdout).toBe("");
+      expect(delivered).not.toHaveBeenCalled();
+      expect(readOwnerFile(fixture).delivered).toBeNull();
+      expect(
+        fixture.delivery.inboxList({ profileId: "driffs", state: "acked" }).map((r) => r.id),
+      ).toEqual([o1Id]);
+      expect(
+        fixture.delivery.inboxList({ profileId: "driffs", state: "leased" }).map((r) => r.id),
+      ).toEqual([o2Id]);
+      expect(fixture.delivery.inboxList({ profileId: "driffs", state: "delivered" })).toHaveLength(
+        0,
+      );
+      expect(fixture.delivery.inboxList({ profileId: "driffs", state: "pending" })).toHaveLength(0);
+    } finally {
+      releaseAck();
+      releaseLease();
+      stopChild.kill("SIGKILL");
+      upsChild.kill("SIGKILL");
+      await Promise.all([stopChild.exit, upsChild.exit]);
+    }
   });
 
   test("profiles a:b and a_b in one session get two distinct owner files (no filename collision)", async () => {

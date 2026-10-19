@@ -62,14 +62,14 @@ const sourceId = "fixture-router";
 const kinds = ["agent", "profile-demand"];
 const digest = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 const pins: Record<string, string> = {
-  "src/cli/claude-hook.ts": "60344f37b4ca9a859f3f7442ca07af9e875bbb128ba08fc9e236eca268ecdd8b",
+  "src/cli/claude-hook.ts": "08aeb882d0a5bccbfcadde6b783b8547e3a2216f52d756420f9b03ee07f138a8",
   "src/cli/shepy.ts": "28c467f975e86df6a8a018975f0d171e57726ff0c836c2aa230da22b0fa7d7e7",
   "test/integration/claude-hook.test.ts":
-    "1258dcdcbd74262fa293fdc8544ba9c940d785617bd354e94543c52e7c5e5be0",
+    "e316e54beb9e8c663626695b52cf45d9afbaf959c672d741dbb29aa36e4f463a",
   "test/unit/cli.test.ts": "02ed2f3ffdecf05ec76c97bd664a5125e42ed27623be92839e8024d47bce800b",
   "test/unit/claude-hook-lapsed-recovery-warning.test.ts":
     "84fbbf1660216d758d15984ce17c88dccc9d3e8496a307b8dcded4588c45e156",
-  "README.md": "bfbee791354cb661c72920e1002824254c9afa1ef54e1b5ce4df9bd1d07ba294",
+  "README.md": "9392d5225ed707b9012a92b7d70b6559c2dc08e7622f031508e961c3d033e7e6",
   "src/observability/profile-demand-ingress.ts":
     "62c8bf43a39253fb34b37b91d4a09c1d495b074be034fea6fb576d156a4a0454",
 };

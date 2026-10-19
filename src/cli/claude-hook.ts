@@ -522,7 +522,7 @@ async function handlePromptSubmit(
       source: "herdr:claude",
       value: payload.session_id,
     });
-    const { herdrSessionName, terminalId } = await resolveHerdrLocation(
+    const { herdrSessionName, terminalId, resolved } = await resolveHerdrLocation(
       request,
       paneId,
       workspaceId,
@@ -559,7 +559,7 @@ async function handlePromptSubmit(
         ? { currentLeaseToken: previous.leaseToken }
         : {}),
       ...claimSourceKinds(demandCapable),
-      ...claimMessagingSocket(input.environment),
+      ...(resolved ? claimMessagingSocket(input.environment) : {}),
       harnessKind: "claude",
       harnessSessionRefJson: ownerSessionRefJson,
       herdrSessionName,
@@ -878,7 +878,7 @@ async function handleStop(
       // rejection.
       if (!(error instanceof ExpectedHookError) || error.code !== "owner_lapsed") throw error;
       const { paneId, workspaceId } = requireHerdrIdentity(input.environment, input.profileId);
-      const { herdrSessionName, terminalId } = await resolveHerdrLocation(
+      const { herdrSessionName, terminalId, resolved } = await resolveHerdrLocation(
         request,
         paneId,
         workspaceId,
@@ -895,7 +895,7 @@ async function handleStop(
         // An omitted field would persist agent-only and silently drop the
         // demand kind this pane claimed at the prompt.
         ...claimSourceKinds(demandCapable),
-        ...claimMessagingSocket(input.environment),
+        ...(resolved ? claimMessagingSocket(input.environment) : {}),
         harnessKind: "claude",
         harnessSessionRefJson: file.ownerSessionRefJson,
         herdrSessionName,
@@ -1088,24 +1088,29 @@ function claimMessagingSocket(environment: NodeJS.ProcessEnv): {
   return path && token ? { claudeMessagingSocket: { path, token } } : {};
 }
 
-/** Resolve descriptive host identity from the index when available. A legacy
- * fallback does not authenticate a claimant or route a socket wake. */
+/** Resolve a unique scoped host identity before admitting socket wakes.
+ * The legacy fallback keeps hook delivery working, but cannot exclude self
+ * outcomes safely. Retry resolution on the next claim, including Stop recovery. */
 async function resolveHerdrLocation(
   request: (method: string, params: unknown) => Promise<unknown>,
   paneId: string,
   workspaceId: string,
-): Promise<{ herdrSessionName: string; terminalId: string }> {
+): Promise<{ herdrSessionName: string; terminalId: string; resolved: boolean }> {
   try {
     const listed = (await request("agent.list", { workspaceId })) as {
       agents?: Array<{ herdrSessionName?: string; paneId?: string; terminalId?: string }>;
     };
-    const match = (listed.agents ?? []).find((agent) => agent.paneId === paneId);
+    // Pane ids repeat across Herdr sessions. A first-match lookup would
+    // silently choose another session when the scoped index is ambiguous.
+    const matches = (listed.agents ?? []).filter((agent) => agent.paneId === paneId);
+    const match = matches.length === 1 ? matches[0] : undefined;
     const name = match?.herdrSessionName?.trim();
-    return { herdrSessionName: name || "default", terminalId: match?.terminalId || paneId };
+    const terminalId = match?.terminalId?.trim();
+    if (name && terminalId) return { herdrSessionName: name, terminalId, resolved: true };
   } catch {
-    // Legacy fallback is descriptive only: socket wakes never route by this id.
-    return { herdrSessionName: "default", terminalId: paneId };
+    // Lookup failure must clear any previous socket capability on re-claim.
   }
+  return { herdrSessionName: "default", terminalId: paneId, resolved: false };
 }
 
 /**
