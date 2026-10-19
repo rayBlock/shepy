@@ -221,7 +221,9 @@ async function leaseOverRpc(workerKind: string, reportedAt?: string) {
 describe("row 15.309 correction: real store -> inbox.lease / agent.events RPC -> renderers", () => {
   test("healthy Pi worker: exact per-call line in both renderers; served DTOs carry no path", async () => {
     const { leasedOutcome, obligation, wire } = await leaseOverRpc("pi");
-    expect(formatHookContext("review", [obligation]).context).toContain(LINE);
+    expect(formatHookContext("review", [obligation]).context).toContain(
+      "review-worker done (pi, wV:p1): synthetic completion",
+    );
     expect(
       formatProfileObligationUpdates([
         {
@@ -249,8 +251,9 @@ describe("row 15.309 correction: real store -> inbox.lease / agent.events RPC ->
       expect(JSON.stringify(served)).not.toContain(PATH);
     }
     expect(formatHookContext("review", [obligation]).context).toContain(
-      "context: unavailable — source_mismatch",
+      "review-worker done (claude, wV:p1): synthetic completion",
     );
+    expect(formatHookContext("review", [obligation]).context).not.toContain("context:");
   });
 
   test("calendar: an impossible reading date reaches the lease and event wire as unknown, never printed", async () => {
@@ -275,10 +278,11 @@ describe("row 15.309 correction: real store -> inbox.lease / agent.events RPC ->
         outcome: leasedOutcome,
       },
     ]);
-    for (const text of [hook, pi]) {
-      expect(text).toContain("context: stale — reading_time_unknown; last 300 prompt tokens");
-      expect(text).toContain("reported time unknown");
-      expect(text).not.toContain("2026-02-30");
-    }
+    expect(hook).toContain("review-worker done (pi, wV:p1): synthetic completion");
+    expect(hook).not.toContain("2026-02-30");
+    expect(hook).not.toContain("context:");
+    expect(pi).toContain("context: stale — reading_time_unknown; last 300 prompt tokens");
+    expect(pi).toContain("reported time unknown");
+    expect(pi).not.toContain("2026-02-30");
   });
 });

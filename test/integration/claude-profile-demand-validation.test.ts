@@ -62,10 +62,10 @@ const sourceId = "fixture-router";
 const kinds = ["agent", "profile-demand"];
 const digest = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 const pins: Record<string, string> = {
-  "src/cli/claude-hook.ts": "27c5898c967a3e22e6a6675db4f05c2b978fb8dfb697e34c93d3524aea5a0eee",
+  "src/cli/claude-hook.ts": "a1ed9e9462f85ca1ec7ee0d42ce7bf80b797d2ade7dec36cbb2223788b1ca838",
   "src/cli/shepy.ts": "510a4fe822aadb3b62f4d75f67b6fb100053a2e6c5ca31bde814db77104d9333",
   "test/integration/claude-hook.test.ts":
-    "cea38067550bfd25807176fdce98dcfef7d2b7ed405e90e27417e1ac406bf665",
+    "3ccf4edea554321d4295106b47c8b42c98a68bfa360bf8c8cc877463dd3b19bd",
   "test/unit/cli.test.ts": "2e527fe6e4bd9f653ecb4651c8efefdfa9ac4c348f65b9557b6b3882bf221b6c",
   "test/unit/claude-hook-lapsed-recovery-warning.test.ts":
     "84fbbf1660216d758d15984ce17c88dccc9d3e8496a307b8dcded4588c45e156",
@@ -784,9 +784,11 @@ describe.sequential("real demand publication, CLI main and custody (AUTHORED NOT
   test("default opt-out consumes a real legacy agent but neither advertises nor consumes demand", async () => {
     const h = await fixture();
     const demand = published(h, h.request());
-    const worker = h.agent();
+    h.agent();
     const result = await h.child("UserPromptSubmit", false);
-    expect(context(result)).toContain(worker.obligation.id);
+    expect(context(result)).toContain(
+      "fixture-builder done (hermes, fixture:p2): synthetic worker done",
+    );
     expect(context(result)).not.toContain(demand.obligationId);
     expect(calls(h, "daemon.info")).toEqual([]);
     expect(calls(h, "profile.claim")[0]).not.toHaveProperty("acceptedSourceKinds");
@@ -881,7 +883,9 @@ describe.sequential("real demand publication, CLI main and custody (AUTHORED NOT
     const demand = published(h, h.request());
     const worker = h.agent();
     h.faults.probe = probe;
-    expect(context(await h.child())).toContain(worker.obligation.id);
+    expect(context(await h.child())).toContain(
+      "fixture-builder done (hermes, fixture:p2): synthetic worker done",
+    );
     expect(calls(h, "daemon.info")).toHaveLength(1);
     expect(calls(h, "profile.claim")[0]).not.toHaveProperty("acceptedSourceKinds");
     expect(calls(h, "inbox.lease")[0]).not.toHaveProperty("sourceKinds");
