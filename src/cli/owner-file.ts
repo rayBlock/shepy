@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
-  existsSync,
   fchmodSync,
   constants as fsConstants,
   fstatSync,
@@ -13,7 +12,6 @@ import {
   renameSync,
   statSync,
   unlinkSync,
-  writeFileSync,
   writeSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -264,47 +262,20 @@ function writeAllSync(fd: number, payload: string): void {
   }
 }
 
-// Test-only fault injection, exercised by the cross-process durability tests.
-// All knobs default to off and are never set outside those tests.
-const CAS_WINDOW_PAUSE_MS = parseTestPauseMs(process.env.SHEPY_HOOK_TEST_CAS_PAUSE_MS);
-const CRASH_PAUSE_POINT = parseCrashPausePoint(process.env.SHEPY_HOOK_TEST_WRITE_PAUSE);
-const CAS_TEST_GATE = process.env.SHEPY_HOOK_TEST_CAS_GATE;
-const LOCK_TEST_CONTENDED = process.env.SHEPY_HOOK_TEST_LOCK_CONTENDED;
-
-/** Explicit parent/child handshake at the locked, checked, pre-write phase. */
-function waitForTestCasRelease(): void {
-  if (!CAS_TEST_GATE) return;
-  writeTestMarker(`${CAS_TEST_GATE}.ready`);
-  const deadline = Date.now() + 10_000;
-  while (!existsSync(`${CAS_TEST_GATE}.release`)) {
-    if (Date.now() >= deadline) throw new Error("test CAS gate was not released");
-    syncSleep(OWNER_LOCK_POLL_MS);
-  }
-}
-
-function writeTestMarker(path: string): void {
-  if (existsSync(path)) return;
-  writeFileSync(`${path}.tmp`, `${process.pid}\n`, { mode: 0o600 });
-  renameSync(`${path}.tmp`, path);
-}
-
-function parseTestPauseMs(raw: string | undefined): number {
-  const parsed = Number(raw ?? "0");
-  return Number.isFinite(parsed) && parsed > 0 ? Math.min(Math.floor(parsed), 10_000) : 0;
-}
-
-function parseCrashPausePoint(raw: string | undefined): "after-rename" | "before-rename" | null {
-  if (raw === "before-rename" || raw === "after-rename") return raw;
-  return null;
-}
+/**
+ * Explicit write-phase observers for cross-process storage tests. The shipped
+ * hook never supplies these; only the test-owned entry injects callbacks.
+ * No environment variable selects an observer or changes storage behavior.
+ */
+export type OwnerFileWriteHooks = {
+  checked?: () => void;
+  lockContended?: () => void;
+  beforeRename?: () => void;
+  afterRename?: () => void;
+};
 
 function syncSleep(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
-/** Blocks the event loop forever — a real-process crash is simulated by SIGKILL. */
-function blockUntilKilled(): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number.POSITIVE_INFINITY);
 }
 
 /**
@@ -318,7 +289,7 @@ function blockUntilKilled(): void {
  * the explicit symlink refusal below preserve the old rule that a planted
  * symlink at the owner-file path is never written through.
  */
-function writeOwnerRecordAtomic(path: string, payload: string): void {
+function writeOwnerRecordAtomic(path: string, payload: string, hooks: OwnerFileWriteHooks): void {
   const tempPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
   // Anything already at the target is replaced wholesale by the rename below
   // — EXCEPT a symlink: refuse it the way the old O_NOFOLLOW open did, so a
@@ -348,9 +319,9 @@ function writeOwnerRecordAtomic(path: string, payload: string): void {
   } finally {
     closeSync(fd);
   }
-  if (CRASH_PAUSE_POINT === "before-rename") blockUntilKilled();
+  hooks.beforeRename?.();
   renameSync(tempPath, path);
-  if (CRASH_PAUSE_POINT === "after-rename") blockUntilKilled();
+  hooks.afterRename?.();
 }
 
 /**
@@ -361,7 +332,11 @@ function writeOwnerRecordAtomic(path: string, payload: string): void {
  * non-contention error is a storage failure. Runs synchronously; hold times
  * are filesystem-operation-scale, so the poll is a handful of iterations.
  */
-function acquireOwnerLock(lockPath: string, profileId: string): number | null {
+function acquireOwnerLock(
+  lockPath: string,
+  profileId: string,
+  hooks: OwnerFileWriteHooks,
+): number | null {
   const deadline = Date.now() + OWNER_LOCK_BUDGET_MS;
   for (;;) {
     let fd: number;
@@ -378,7 +353,7 @@ function acquireOwnerLock(lockPath: string, profileId: string): number | null {
           profileId,
         );
       }
-      if (LOCK_TEST_CONTENDED) writeTestMarker(LOCK_TEST_CONTENDED);
+      hooks.lockContended?.();
       if (Date.now() >= deadline) return null;
       // Contended. A lock far older than any real hold belongs to a crashed
       // hook: steal it so one kill -9 cannot mute a pane forever. Losing the
@@ -451,13 +426,16 @@ function releaseOwnerLock(lockPath: string, fd: number): void {
  * re-deliver). Throws OwnerFileStorageError on unusable storage, which the
  * hook reports to the operator and exits 0.
  */
-export function casOwnerRecord(input: {
-  homeDir: string;
-  sessionId: string;
-  profileId: string;
-  next: OwnerRecord;
-  handled: HandledRecord;
-}): boolean {
+export function casOwnerRecord(
+  input: {
+    homeDir: string;
+    sessionId: string;
+    profileId: string;
+    next: OwnerRecord;
+    handled: HandledRecord;
+  },
+  hooks: OwnerFileWriteHooks = {},
+): boolean {
   const { homeDir, sessionId, profileId, next, handled } = input;
   const path = ownerRecordPath(homeDir, sessionId, profileId);
   const lockPath = ownerLockPath(homeDir, sessionId, profileId);
@@ -469,15 +447,14 @@ export function casOwnerRecord(input: {
       profileId,
     );
   }
-  const lockFd = acquireOwnerLock(lockPath, profileId);
+  const lockFd = acquireOwnerLock(lockPath, profileId, hooks);
   if (lockFd === null) return false;
   try {
     if (!sameUnsettledRecord(readOwnerRecord(homeDir, sessionId, profileId), handled)) {
       return false;
     }
-    waitForTestCasRelease();
-    if (CAS_WINDOW_PAUSE_MS > 0) syncSleep(CAS_WINDOW_PAUSE_MS);
-    writeOwnerRecordAtomic(path, serializeOwnerRecord(next));
+    hooks.checked?.();
+    writeOwnerRecordAtomic(path, serializeOwnerRecord(next), hooks);
     return true;
   } catch (error) {
     if (error instanceof OwnerFileStorageError) throw error;

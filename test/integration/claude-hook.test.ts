@@ -2691,12 +2691,21 @@ describe("claude-hook owner-file cross-process durability", () => {
     fixture: Fixture,
     payload: unknown,
     extraEnv: Record<string, string> = {},
+    injectStorageHooks = true,
   ): { exit: Promise<HookChildExit>; kill: (signal: NodeJS.Signals) => boolean } {
     const stdout: string[] = [];
     const stderr: string[] = [];
     const child = spawn(
       process.execPath,
-      ["--import", "tsx", "src/cli/shepy.ts", "claude-hook", "--profile", "driffs"],
+      [
+        "--import",
+        "tsx",
+        ...(injectStorageHooks ? ["--import", "./test/support/claude-hook-loader.ts"] : []),
+        "src/cli/shepy.ts",
+        "claude-hook",
+        "--profile",
+        "driffs",
+      ],
       {
         cwd: repoRoot,
         env: {
@@ -2749,6 +2758,66 @@ describe("claude-hook owner-file cross-process durability", () => {
   function lockFilePath(fixture: Fixture): string {
     return ownerLockPath(fixture.dir, SESSION_ID, "driffs");
   }
+
+  test.each([
+    false,
+    true,
+  ])("production hook ignores inherited synchronization variables (contended=%s)", {
+    timeout: 15_000,
+  }, async (contended) => {
+    const fixture = await openHookServer();
+    projectOutcome(fixture, "production-env", "normal production delivery");
+    const gate = join(fixture.dir, "production-cas");
+    const marker = join(fixture.dir, "production-contended");
+    if (contended) {
+      mkdirSync(dirname(lockFilePath(fixture)), { recursive: true });
+      writeFileSync(lockFilePath(fixture), `${process.pid}\n`, { mode: 0o600 });
+    }
+    const started = performance.now();
+    const child = spawnHookChild(
+      fixture,
+      promptPayload({ prompt_id: "production-env" }),
+      {
+        NODE_ENV: "production",
+        SHEPY_HOOK_TEST_CAS_GATE: gate,
+        SHEPY_HOOK_TEST_LOCK_CONTENDED: marker,
+        SHEPY_HOOK_TEST_CAS_PAUSE_MS: "10000",
+        SHEPY_HOOK_TEST_WRITE_PAUSE: "before-rename",
+      },
+      false,
+    );
+    try {
+      const result = await child.exit;
+      expect(result.code).toBe(0);
+      // Bound includes CLI startup, but excludes either former 10-second pause.
+      expect(performance.now() - started).toBeLessThan(8_000);
+      expect(existsSync(`${gate}.ready`)).toBe(false);
+      expect(existsSync(marker)).toBe(false);
+      expect(existsSync(ownerFilePath(fixture))).toBe(!contended);
+      expect(fixture.delivery.inboxList({ profileId: "driffs", state: "acked" })).toHaveLength(0);
+      if (contended) {
+        expect(result.stdout).toBe("");
+        expect(fixture.delivery.inboxList({ profileId: "driffs", state: "leased" })).toHaveLength(
+          1,
+        );
+        expect(
+          fixture.delivery.inboxList({ profileId: "driffs", state: "delivered" }),
+        ).toHaveLength(0);
+      } else {
+        expect(result.stdout).toContain("normal production delivery");
+        expect(readOwnerFile(fixture).delivered?.phase).toBe("delivered");
+        expect(
+          fixture.delivery.inboxList({ profileId: "driffs", state: "delivered" }),
+        ).toHaveLength(1);
+        expect(fixture.delivery.inboxList({ profileId: "driffs", state: "leased" })).toHaveLength(
+          0,
+        );
+      }
+    } finally {
+      child.kill("SIGKILL");
+      await child.exit;
+    }
+  });
 
   test("two real hook processes race the same owner record: the later write must not destroy the other's record and no batch is acked unseen", {
     timeout: 90_000,

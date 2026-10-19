@@ -65,7 +65,7 @@ const pins: Record<string, string> = {
   "src/cli/claude-hook.ts": "08aeb882d0a5bccbfcadde6b783b8547e3a2216f52d756420f9b03ee07f138a8",
   "src/cli/shepy.ts": "28c467f975e86df6a8a018975f0d171e57726ff0c836c2aa230da22b0fa7d7e7",
   "test/integration/claude-hook.test.ts":
-    "e316e54beb9e8c663626695b52cf45d9afbaf959c672d741dbb29aa36e4f463a",
+    "325f2d759c85ade58942a8b61ab73a91ce12894c97dadbfd575d36111ca49c13",
   "test/unit/cli.test.ts": "02ed2f3ffdecf05ec76c97bd664a5125e42ed27623be92839e8024d47bce800b",
   "test/unit/claude-hook-lapsed-recovery-warning.test.ts":
     "84fbbf1660216d758d15984ce17c88dccc9d3e8496a307b8dcded4588c45e156",
