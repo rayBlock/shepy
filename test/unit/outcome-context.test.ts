@@ -509,7 +509,7 @@ describe("projectOutcomeContext: identity binding and honest absence", () => {
   });
 });
 
-describe("every delivered done/idle block carries the context line", () => {
+describe("Claude hook short outcome notices", () => {
   const bound = history(projectPiContextHealth(PI_PATH, PI_BASE), piRef, "x".repeat(5_000));
   const record = (id: number, type: string, from = "working") => ({
     agentId: "agent-a",
@@ -560,7 +560,7 @@ describe("every delivered done/idle block carries the context line", () => {
     expect(second).toContain("context: unavailable — snapshot_unavailable");
   });
 
-  test("Claude hook: full lines, budget stubs and missing snapshots all keep context", () => {
+  test("one line per outcome retains the excerpt and truncation hint but omits machine ids and context telemetry", () => {
     const outcome = projectInboxOutcome(record(21, "agent.done"));
     const obligations: LeasedObligation[] = Array.from({ length: 12 }, (_, index) => ({
       agentEventId: 21 + index,
@@ -568,24 +568,22 @@ describe("every delivered done/idle block carries the context line", () => {
       outcome: index === 11 ? null : { ...outcome, eventId: 21 + index },
     }));
     const formatted = formatHookContext("driffs", obligations);
-    const blocks = formatted.context
-      .split("\n- ")
-      .slice(1)
-      .filter((block) => !block.startsWith("…"));
-    expect(blocks.length).toBeGreaterThan(1);
-    const stubs = blocks.filter((block) => block.includes("excerpt omitted for budget"));
-    expect(stubs.length).toBeGreaterThan(0);
-    for (const block of blocks) expect(block).toMatch(/\n {2}context: /);
-    for (const stub of stubs) expect(stub).toContain(line300);
-    expect(formatted.representedIds.length + formatted.deferredIds.length).toBe(12);
+    expect(formatted.representedIds).toHaveLength(12);
+    expect(formatted.deferredIds).toEqual([]);
+    expect(formatted.context).toContain("worker-a done (pi, wA:p1):");
+    expect(formatted.context).toContain("truncated; use shepy agent read before acting");
+    expect(formatted.context).not.toContain("event:");
+    expect(formatted.context).not.toContain("obligation:");
+    expect(formatted.context).not.toContain(line300);
   });
 
-  test("an old daemon that sends no context still renders an explicit reason in the hook", () => {
+  test("a legacy snapshot absence gets a short fallback notice", () => {
     const { context: _drop, ...legacy } = projectInboxOutcome(record(31, "agent.idle"));
     const formatted = formatHookContext("driffs", [
       { agentEventId: 31, id: "00000031-0000-4000-8000-000000000000", outcome: legacy },
     ]);
-    expect(formatted.context).toContain("context: unavailable — context_not_provided");
+    expect(formatted.context).toContain("worker-a done (pi, wA:p1):");
+    expect(formatted.context).not.toContain("context_not_provided");
   });
 });
 

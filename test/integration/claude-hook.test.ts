@@ -382,8 +382,10 @@ describe("claude-hook UserPromptSubmit", () => {
     expect(context).toContain("[SHEPY WAKE POLICY]");
     expect(context).toContain("[SHEPY PROFILE OUTCOMES]");
     expect(context).toContain("builder");
-    expect(context).toContain("working→done");
-    expect(context).toContain("migration applied cleanly");
+    expect(context).toContain("builder done (hermes, w2:p1): migration applied cleanly");
+    expect(context).not.toContain("event:");
+    expect(context).not.toContain("obligation:");
+    expect(context).not.toContain(`event: ${firstEventId}`);
     expect(context.length).toBeLessThanOrEqual(12_000);
 
     // The lease token is a credential: never on stdout, only in the owner file.
@@ -1559,6 +1561,25 @@ describe("claude-hook owner-record crash consistency", () => {
 });
 
 describe("claude-hook injected-context budget", () => {
+  test("policy appears on the first delivery only; notices are concise and omit machine ids", async () => {
+    const fixture = await openHookServer();
+    const firstEvent = projectOutcome(fixture, "notice-first", "first result");
+    const first = await runHook(fixture, promptPayload());
+    const firstContext = contextOf(first.stdout);
+    expect(firstContext).toContain("[SHEPY WAKE POLICY]");
+    expect(firstContext).toContain("builder done (hermes, w2:p1): first result");
+    expect(firstContext).not.toContain(`event: ${firstEvent}`);
+    expect(firstContext).not.toContain("obligation:");
+    expect(readOwnerFile(fixture)).toMatchObject({ policyShown: true });
+
+    await runHook(fixture, stopPayload({ stop_hook_active: true }));
+    projectOutcome(fixture, "notice-second", "second result");
+    const second = await runHook(fixture, promptPayload({ prompt_id: "notice-p2" }));
+    const secondContext = contextOf(second.stdout);
+    expect(secondContext).not.toContain("[SHEPY WAKE POLICY]");
+    expect(secondContext).toContain("builder done (hermes, w2:p1): second result");
+  });
+
   test("the budget stays under Claude Code's 8 000-char / 200-line caps", () => {
     // Claude Code truncates additionalContext at 8 000 chars AND 200 lines.
     // These pins exist because the first cap (12 000) shipped above the real
@@ -1586,20 +1607,10 @@ describe("claude-hook injected-context budget", () => {
     expect(context.length).toBeLessThanOrEqual(CONTEXT_MAX_CHARS);
     expect(context.split("\n").length).toBeLessThanOrEqual(CONTEXT_MAX_LINES);
 
-    // The escape hatch must survive the overflow — and it is only useful if
-    // it is actually inside the emitted budget, not past it.
-    expect(context).toContain("run shepy inbox list driffs");
-    const noteIndex = context.indexOf("… [");
-    expect(noteIndex).toBeGreaterThan(0);
-    expect(noteIndex + context.slice(noteIndex).indexOf("\n")).toBeLessThanOrEqual(
-      CONTEXT_MAX_CHARS,
-    );
-
-    // Some outcomes rendered, the rest dropped and counted honestly.
     const bullets = context.split("\n").filter((line) => line.startsWith("- ")).length;
-    expect(bullets).toBeGreaterThanOrEqual(1);
-    expect(bullets).toBeLessThan(20);
-    expect(context).toContain("more outcome(s)");
+    expect(bullets).toBe(20);
+    expect(context).not.toContain("event:");
+    expect(context).not.toContain("obligation:");
   });
 
   test("the line budget is enforced even when every line is short", () => {
@@ -1621,7 +1632,7 @@ describe("claude-hook injected-context budget", () => {
     const formatted = formatHookContext("driffs", obligations);
     expect(formatted.context.length).toBeLessThanOrEqual(CONTEXT_MAX_CHARS);
     expect(formatted.context.split("\n").length).toBeLessThanOrEqual(CONTEXT_MAX_LINES);
-    expect(formatted.context).toContain("run shepy inbox list driffs");
+    expect(formatted.context.split("\n").filter((line) => line.startsWith("- "))).toHaveLength(100);
   });
 });
 
@@ -1655,20 +1666,10 @@ describe("claude-hook represented set equals acknowledged set", () => {
     // outcomes the injection actually rendered may be delivered and acked.
     const representedIds = readOwnerFile(fixture).delivered?.ids ?? [];
     expect(representedIds.length).toBeGreaterThan(0);
-    expect(representedIds.length).toBeLessThan(20);
-    for (const id of representedIds) {
-      expect(context).toContain(id);
-    }
-    // And no id outside the represented set may appear anywhere in the
-    // injection — an id in the text the model saw is a claim of visibility.
+    expect(representedIds).toHaveLength(20);
+    for (const id of representedIds) expect(context).not.toContain(id);
     const deferredIds = leasedIds.filter((id) => !representedIds.includes(id));
-    expect(deferredIds.length).toBeGreaterThan(0);
-    for (const id of deferredIds) {
-      expect(context).not.toContain(id);
-    }
-    // Union holds by construction here, but pin it anyway.
-    expect(representedIds.length + deferredIds.length).toBe(20);
-    expect(context).toContain(`${deferredIds.length} more outcome(s) deferred`);
+    expect(deferredIds).toEqual([]);
     expect(context.length).toBeLessThanOrEqual(CONTEXT_MAX_CHARS);
     expect(context.split("\n").length).toBeLessThanOrEqual(CONTEXT_MAX_LINES);
 
@@ -1736,8 +1737,8 @@ describe("claude-hook represented set equals acknowledged set", () => {
     expect(record?.phase).toBe("delivered");
     const representedIds = record?.ids ?? [];
     expect(representedIds.length).toBeGreaterThan(0);
-    expect(representedIds.length).toBeLessThan(20);
-    for (const id of representedIds) expect(context).toContain(id);
+    expect(representedIds).toHaveLength(20);
+    for (const id of representedIds) expect(context).not.toContain(id);
     const deliveredRows = fixture.obligations.list({ profileId: "driffs", state: "delivered" });
     expect(new Set(deliveredRows.map((row) => row.id))).toEqual(new Set(representedIds));
     // inbox.delivered only ever saw the represented ids.
@@ -1746,11 +1747,9 @@ describe("claude-hook represented set equals acknowledged set", () => {
       expect(ids.every((id) => representedIds.includes(id))).toBe(true);
     }
 
-    // Every id the injection did NOT name was deferred, never claimed.
+    // Compact one-line notices fit the entire agent batch.
     const deferredIds = leasedIds.filter((id) => !representedIds.includes(id));
-    expect(deferredIds.length).toBeGreaterThan(0);
-    for (const id of deferredIds) expect(context).not.toContain(id);
-    expect(context).toContain(`${deferredIds.length} more outcome(s) deferred`);
+    expect(deferredIds).toEqual([]);
 
     // The deferred tail: pending again, attempts restored, honest error code.
     const pending = fixture.obligations.list({ profileId: "driffs", state: "pending" });
@@ -1789,12 +1788,28 @@ describe("claude-hook formatter representation sets", () => {
     },
   });
 
+  test("blocked outcomes lead and the short excerpt is capped at 200 characters", () => {
+    const done = obligationWith(1, 240);
+    const blocked = obligationWith(2, 40);
+    if (!blocked.outcome) throw new Error("fixture: missing outcome");
+    blocked.outcome.type = "agent.blocked";
+    const formatted = formatHookContext("driffs", [done, blocked], { includePolicy: false });
+    const blockedLine = "builder blocked (hermes, w2:p1):";
+    expect(formatted.context.indexOf(blockedLine)).toBeGreaterThanOrEqual(0);
+    expect(formatted.context.indexOf(blockedLine)).toBeLessThan(
+      formatted.context.indexOf("builder done (hermes, w2:p1):"),
+    );
+    expect(formatted.context).not.toContain("[SHEPY WAKE POLICY]");
+    const doneLine = formatted.context.split("\n").find((line) => line.includes("builder done"));
+    expect(doneLine).toMatch(/: x{199}…$/);
+  });
+
   test("(a) everything fits: full lines only, nothing deferred", () => {
     const obligations = [1, 2, 3].map((i) => obligationWith(i, 50));
     const formatted = formatHookContext("driffs", obligations);
     expect(formatted.representedIds).toEqual(obligations.map((o) => o.id));
     expect(formatted.deferredIds).toEqual([]);
-    expect(formatted.context).toContain("last assistant:");
+    expect(formatted.context).toContain("builder done (hermes, w2:p1):");
     expect(formatted.context).not.toContain("excerpt omitted for budget");
     expect(formatted.context).not.toContain("… [");
   });
@@ -1806,9 +1821,9 @@ describe("claude-hook formatter representation sets", () => {
     const formatted = formatHookContext("driffs", obligations);
     expect(formatted.representedIds).toEqual(obligations.map((o) => o.id));
     expect(formatted.deferredIds).toEqual([]);
-    expect(formatted.context).toContain("last assistant:");
-    expect(formatted.context).toContain("excerpt omitted for budget");
-    expect(formatted.context).toContain("shepy inbox get");
+    expect(formatted.context).toContain("builder done (hermes, w2:p1):");
+    expect(formatted.context).not.toContain("excerpt omitted for budget");
+    expect(formatted.context).not.toContain("shepy inbox get");
     expect(formatted.context).not.toContain("… [");
   });
 
@@ -1816,25 +1831,20 @@ describe("claude-hook formatter representation sets", () => {
     const obligations = Array.from({ length: 20 }, (_, i) => obligationWith(i + 1, 2_000));
     const formatted = formatHookContext("driffs", obligations);
     expect(formatted.representedIds.length).toBeGreaterThan(0);
-    expect(formatted.representedIds.length).toBeLessThan(20);
-    expect(formatted.deferredIds.length).toBeGreaterThan(0);
-    expect([...formatted.representedIds, ...formatted.deferredIds].sort()).toEqual(
-      obligations.map((o) => o.id).sort(),
-    );
-    expect(formatted.context).toContain(
-      `${formatted.deferredIds.length} more outcome(s) deferred to your next turn; run shepy inbox list driffs --state pending`,
-    );
+    expect(formatted.representedIds).toHaveLength(20);
+    expect(formatted.deferredIds).toEqual([]);
+    expect(formatted.context).not.toContain("event:");
+    expect(formatted.context).not.toContain("obligation:");
     expect(formatted.context.length).toBeLessThanOrEqual(CONTEXT_MAX_CHARS);
     expect(formatted.context.split("\n").length).toBeLessThanOrEqual(CONTEXT_MAX_LINES);
   });
 
-  test("(d) the ids in the text are exactly the represented ids", () => {
+  test("(d) machine event and obligation ids are not shown in the short notices", () => {
     const obligations = Array.from({ length: 20 }, (_, i) => obligationWith(i + 1, 2_000));
     const formatted = formatHookContext("driffs", obligations);
-    const idsInText = new Set(
-      formatted.context.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g),
+    expect(formatted.context).not.toMatch(
+      /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/,
     );
-    expect(idsInText).toEqual(new Set(formatted.representedIds));
   });
   test("(e) an ESC inside an excerpt never reaches the rendered context", () => {
     // Defense in depth: the daemon strips control bytes at projection, but
@@ -2862,7 +2872,7 @@ describe("claude-hook profile-demand delivery", () => {
     const context = contextOf(stdout);
     expect(context).toContain("[SHEPY PROFILE OUTCOMES]");
     expect(context).toContain("explicit agent outcome");
-    expect(context).toContain(agentId);
+    expect(context).not.toContain(agentId);
     expect(context).not.toContain("[SHEPY DUTY DEMANDS]");
     expect(readOwnerFile(fixture).delivered?.ids).toEqual([agentId]);
     expect(callsOf(calls, "inbox.nack")).toHaveLength(0);
@@ -3148,10 +3158,9 @@ describe("claude-hook profile-demand delivery", () => {
     const { stdout } = await runHook(fixture, promptPayload(), { profileDemand: true });
     const context = contextOf(stdout);
     const representedIds = readOwnerFile(fixture).delivered?.ids ?? [];
-    expect(representedIds.length).toBeGreaterThan(0);
-    expect(representedIds).not.toContain(demandId);
-    expect(context).not.toContain(demandId);
-    expect(context).toMatch(/\d+ more update\(s\) deferred to your next turn/);
+    expect(representedIds).toContain(demandId);
+    expect(context).toContain("[SHEPY DUTY DEMANDS]");
+    expect(context).toContain(demandId);
     expect(context.length).toBeLessThanOrEqual(CONTEXT_MAX_CHARS);
     expect(context.split("\n").length).toBeLessThanOrEqual(CONTEXT_MAX_LINES);
 
@@ -3161,10 +3170,9 @@ describe("claude-hook profile-demand delivery", () => {
     expect(stop.stdout).toBe("");
     const acked = fixture.obligations.list({ profileId: "driffs", state: "acked" });
     expect(new Set(acked.map((row) => row.id))).toEqual(new Set(representedIds));
-    const deferredDemand = fixture.obligations
-      .list({ profileId: "driffs", state: "pending" })
-      .find((row) => row.id === demandId);
-    expect(deferredDemand?.lastErrorCode).toBe("deferred_over_budget");
+    expect(
+      fixture.obligations.list({ profileId: "driffs", state: "acked" }).map((row) => row.id),
+    ).toContain(demandId);
   });
 });
 
@@ -3252,17 +3260,14 @@ describe("claude-hook demand formatter", () => {
     expect(formatted.deferredIds).toEqual([]);
     expect(formatted.representedIds).toContain(demandObligation(5).id);
     expect(formatted.context).toContain(
-      `- queue-claimable · reason owned-ready-capacity · obligation ${demandObligation(5).id} · demand event ${demandObligation(5).profileDemandEventId} — refs omitted for budget; run shepy inbox get ${demandObligation(5).id}`,
+      `- queue-claimable · episode ${demandObligation(5).demand.episodeId} · revision ${demandObligation(5).demand.activationRevision}`,
     );
     expect(formatted.context).toContain("[SHEPY DUTY DEMANDS]");
     expect(formatted.context.length).toBeLessThanOrEqual(CONTEXT_MAX_CHARS);
   });
 
-  test("a demand that fits nowhere is deferred with an honest update(s) note; the ids in the text are exactly the represented ones", () => {
-    const obligations = [
-      ...Array.from({ length: 19 }, (_, i) => agentObligation(i + 1, 2_000)),
-      demandObligation(20),
-    ];
+  test("a long demand batch defers its tail while rendered notices omit machine ids", () => {
+    const obligations = Array.from({ length: 20 }, (_, i) => demandObligation(i + 1));
     const formatted = formatHookContext("driffs", obligations);
     expect(formatted.deferredIds).toContain(demandObligation(20).id);
     expect([...formatted.representedIds, ...formatted.deferredIds].sort()).toEqual(
@@ -3271,12 +3276,12 @@ describe("claude-hook demand formatter", () => {
     expect(formatted.context).toContain(
       `${formatted.deferredIds.length} more update(s) deferred to your next turn; run shepy inbox list driffs --state pending`,
     );
-    // The demand heading is charged only when a demand line is placed.
-    expect(formatted.context).not.toContain("[SHEPY DUTY DEMANDS]");
-    const idsInText = new Set(
-      formatted.context.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g),
-    );
-    expect(idsInText).toEqual(new Set(formatted.representedIds));
+    expect(formatted.context).toContain("[SHEPY DUTY DEMANDS]");
+    for (const obligation of obligations.filter((row) =>
+      formatted.representedIds.includes(row.id),
+    )) {
+      expect(formatted.context).toContain(obligation.id);
+    }
     expect(formatted.context.length).toBeLessThanOrEqual(CONTEXT_MAX_CHARS);
     expect(formatted.context.split("\n").length).toBeLessThanOrEqual(CONTEXT_MAX_LINES);
   });
@@ -3286,7 +3291,8 @@ describe("claude-hook demand formatter", () => {
     const formatted = formatHookContext("driffs", obligations);
     expect(formatted.context).toContain("\n\n[SHEPY PROFILE OUTCOMES]\n");
     expect(formatted.context).not.toContain("[SHEPY DUTY DEMANDS]");
-    expect(formatted.context).toContain(`${formatted.deferredIds.length} more outcome(s) deferred`);
-    expect(formatted.context).not.toContain("update(s)");
+    expect(formatted.deferredIds).toEqual([]);
+    expect(formatted.context).not.toContain("event:");
+    expect(formatted.context).not.toContain("obligation:");
   });
 });

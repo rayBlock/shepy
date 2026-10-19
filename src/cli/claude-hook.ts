@@ -9,10 +9,7 @@ import {
   readOwnerRecord,
 } from "@/cli/owner-file.js";
 import { ObservabilityRpcClient } from "@/daemon/client.js";
-import {
-  formatOutcomeContextLine,
-  SNAPSHOT_UNAVAILABLE_CONTEXT,
-} from "@/observability/outcome-context.js";
+import { SNAPSHOT_UNAVAILABLE_CONTEXT } from "@/observability/outcome-context.js";
 import { type DemandRequest, demandRequestSchema } from "@/observability/profile-demand-ingress.js";
 import { inboxLeaseInputSchema, profileClaimInputSchema } from "@/observability/schemas.js";
 
@@ -651,6 +648,7 @@ async function handlePromptSubmit(
       delivered: null,
       leaseToken,
       ownerSessionRefJson,
+      policyShown: previous?.policyShown ?? false,
       profileId: input.profileId,
     };
     const lease = await request<unknown>("inbox.lease", {
@@ -708,7 +706,10 @@ async function handlePromptSubmit(
     // record, the delivery and the ack must all name exactly that set. It is
     // pure and cannot throw on daemon data, so composing it before the
     // phase-1 write only strengthens the two-phase protocol.
-    const formatted = formatHookContext(input.profileId, obligations);
+    const formatted = formatHookContext(input.profileId, obligations, {
+      includePolicy: !cleared.policyShown,
+    });
+    cleared.policyShown = true;
     const represented = formatted.representedIds;
     const deferred = formatted.deferredIds;
     if (represented.length === 0) {
@@ -964,7 +965,10 @@ async function handleStop(
     // Render FIRST — the represented set defines the record, the delivery
     // and the ack (same as UserPromptSubmit). Pure, cannot throw on daemon
     // data, so composing before the phase-1 write is safe.
-    const formatted = formatHookContext(input.profileId, obligations);
+    const formatted = formatHookContext(input.profileId, obligations, {
+      includePolicy: !file.policyShown,
+    });
+    file.policyShown = true;
     const represented = formatted.representedIds;
     const deferred = formatted.deferredIds;
     if (represented.length === 0) {
@@ -1159,21 +1163,28 @@ function isDemandObligation(
 export function formatHookContext(
   profileId: string,
   input: RenderableObligation[],
+  options: { includePolicy?: boolean } = {},
 ): FormattedHookContext {
   // Agent outcomes first, then demands (the Pi card's section order). The
   // represented and deferred sets are sets of ids, so reordering for display
   // changes nothing about what is delivered or acked.
   const agentRows = input.filter((obligation) => !isDemandObligation(obligation));
+  agentRows.sort((left, right) => {
+    const leftBlocked = left.outcome?.type === "agent.blocked" ? 0 : 1;
+    const rightBlocked = right.outcome?.type === "agent.blocked" ? 0 : 1;
+    return leftBlocked - rightBlocked || left.agentEventId - right.agentEventId;
+  });
   const demandRows = input.filter(isDemandObligation);
   const obligations: RenderableObligation[] = [...agentRows, ...demandRows];
   // An all-agent batch renders byte-identically to the agent-only hook. A
   // demand-only batch takes the demand heading as its section header; a
   // mixed batch opens the demand section with its own heading, charged to
   // the budget when the first demand line (full or stub) is placed.
+  const policyPrefix = options.includePolicy === false ? "" : `${WAKE_POLICY}\n\n`;
   const header =
     agentRows.length === 0 && demandRows.length > 0
-      ? `${WAKE_POLICY}\n\n${DEMANDS_HEADING}\n`
-      : `${WAKE_POLICY}\n\n[SHEPY PROFILE OUTCOMES]\n`;
+      ? `${policyPrefix}${DEMANDS_HEADING}\n`
+      : `${policyPrefix}[SHEPY PROFILE OUTCOMES]\n`;
   const innerHeading = agentRows.length > 0 && demandRows.length > 0 ? `\n${DEMANDS_HEADING}` : "";
   const noun = demandRows.length > 0 ? "update(s)" : "outcome(s)";
   // Reserve the note's worst-case space up front (every obligation deferred
@@ -1239,9 +1250,7 @@ export function formatHookContext(
  * dropped ("unknown"), never escaped or trimmed.
  */
 const HERDR_AGENT_TOKEN = /^[a-z][a-z0-9_-]{0,31}$/;
-const EVENT_TYPE_TOKEN = /^[a-z][a-z0-9_.-]{0,63}$/;
 const PANE_ID_TOKEN = /^[a-z0-9][a-z0-9:_.-]{0,63}$/i;
-const ASSISTANT_REF_TOKEN = /^[a-z0-9][a-z0-9:._/=+-]{0,127}$/i;
 const OBLIGATION_ID_TOKEN = /^[0-9a-f-]{1,64}$/i;
 
 function safeToken(value: string | null | undefined, pattern: RegExp): string | null {
@@ -1260,52 +1269,24 @@ function stripControlChars(text: string): string {
 
 function outcomeLine(obligation: LeasedObligation): string {
   const outcome = obligation.outcome ?? null;
-  const id = safeToken(obligation.id, OBLIGATION_ID_TOKEN) ?? "unavailable";
-  if (!outcome) {
-    // Honest fallback, matching the Pi wake card: the lease proves the event
-    // and obligation identity even when the snapshot is gone.
-    return `- event ${obligation.agentEventId} · obligation ${id} — snapshot unavailable (no pane known; run shepy agent list to locate the worker)\n  ${SNAPSHOT_UNAVAILABLE_CONTEXT}`;
-  }
+  if (!outcome) return `- worker outcome: snapshot unavailable; ${SNAPSHOT_UNAVAILABLE_CONTEXT}`;
   const agent = safeToken(outcome.agent, HERDR_AGENT_TOKEN) ?? "unknown";
-  const name = safeToken(outcome.name, HERDR_AGENT_TOKEN);
-  const identity = name ? `${name} · ${agent}` : agent;
-  const from = safeToken(outcome.from, HERDR_AGENT_TOKEN);
-  const to = safeToken(outcome.to, HERDR_AGENT_TOKEN);
-  const type = safeToken(outcome.type, EVENT_TYPE_TOKEN);
-  const transition = from && to ? `${from}→${to}` : (type ?? "event");
+  const name = safeToken(outcome.name, HERDR_AGENT_TOKEN) ?? agent;
   const paneId = safeToken(outcome.paneId, PANE_ID_TOKEN) ?? "unknown";
-  const excerpt =
-    outcome.excerpt && outcome.excerpt.text.length > 0
-      ? stripControlChars(outcome.excerpt.text)
-      : "(no assistant message)";
-  const assistantRef = safeToken(outcome.lastAssistantRef, ASSISTANT_REF_TOKEN);
-  const ref = assistantRef ? ` · assistantRef: ${assistantRef}` : "";
-  return `- ${type ?? "event"} ${identity} ${paneId} ${transition}\n  last assistant: ${excerpt}\n  ${formatOutcomeContextLine(outcome.context)}\n  event: ${outcome.eventId} · obligation: ${id}${ref}`;
+  const status = outcome.type === "agent.blocked" ? "blocked" : "done";
+  const excerpt = outcome.excerpt?.text
+    ? stripControlChars(outcome.excerpt.text).replace(/\s+/g, " ").trim()
+    : "(no assistant message)";
+  const shortExcerpt = excerpt.length > 200 ? `${excerpt.slice(0, 199)}…` : excerpt;
+  const truncation = outcome.excerpt?.truncated
+    ? " [truncated; use shepy agent read before acting]"
+    : "";
+  return `- ${name} ${status} (${agent}, ${paneId}): ${shortExcerpt}${truncation}`;
 }
 
-/**
- * The one-line stand-in for an outcome whose excerpt did not fit: type,
- * identity, pane, transition, both ids — no excerpt. Same untrusted-token
- * policy as outcomeLine. The read hint lives here (WAKE_POLICY stays
- * byte-identical with the Pi extension), pointing at `shepy inbox get <ID>`
- * for the full excerpt.
- */
+/** Agent outcomes already have a bounded one-line excerpt, so no ids or separate budget stub are needed. */
 function stubLine(obligation: LeasedObligation): string {
-  const outcome = obligation.outcome ?? null;
-  const id = safeToken(obligation.id, OBLIGATION_ID_TOKEN) ?? "unavailable";
-  if (!outcome) {
-    // The honest fallback IS the stub (identity line plus its context line).
-    return `- event ${obligation.agentEventId} · obligation ${id} — snapshot unavailable (no pane known; run shepy agent list to locate the worker)\n  ${SNAPSHOT_UNAVAILABLE_CONTEXT}`;
-  }
-  const agent = safeToken(outcome.agent, HERDR_AGENT_TOKEN) ?? "unknown";
-  const name = safeToken(outcome.name, HERDR_AGENT_TOKEN);
-  const identity = name ? `${name} · ${agent}` : agent;
-  const from = safeToken(outcome.from, HERDR_AGENT_TOKEN);
-  const to = safeToken(outcome.to, HERDR_AGENT_TOKEN);
-  const type = safeToken(outcome.type, EVENT_TYPE_TOKEN);
-  const transition = from && to ? `${from}→${to}` : (type ?? "event");
-  const paneId = safeToken(outcome.paneId, PANE_ID_TOKEN) ?? "unknown";
-  return `- ${type ?? "event"} ${identity} ${paneId} ${transition} · event ${obligation.agentEventId} · obligation ${id} — excerpt omitted for budget; run shepy inbox get ${id}\n  ${formatOutcomeContextLine(outcome.context)}`;
+  return outcomeLine(obligation);
 }
 
 /**

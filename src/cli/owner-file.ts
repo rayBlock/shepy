@@ -113,6 +113,7 @@ const ownerRecordSchema = Type.Object(
         { additionalProperties: false },
       ),
     ),
+    policyShown: Type.Optional(Type.Boolean()),
     leaseToken: Type.String({ minLength: 1 }),
     ownerSessionRefJson: Type.String({ minLength: 1 }),
     profileId: Type.String({ minLength: 1 }),
@@ -127,6 +128,7 @@ export type OwnerRecord = {
     promptId: string | null;
   } | null;
   failedDelivery?: { attempts: number; ids: string[] } | undefined;
+  policyShown?: boolean | undefined;
   leaseToken: string;
   ownerSessionRefJson: string;
   profileId: string;
