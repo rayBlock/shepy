@@ -3,7 +3,7 @@ import type { AgentEventStore } from "@/db/agent-events.js";
 import type { ClaudeIdleWakeStore } from "@/db/claude-idle-wakes.js";
 import type { DeliveryObligationStore } from "@/db/delivery-obligations.js";
 import type { OrchestratorProfileStore } from "@/db/orchestrator-profiles.js";
-import { isLeaseAlive, type ProfileOwner, type ProfileOwnerStore } from "@/db/profile-owners.js";
+import type { ProfileOwner, ProfileOwnerStore } from "@/db/profile-owners.js";
 import {
   createSocketAdapter,
   type SocketAdapter,
@@ -70,8 +70,10 @@ export class ClaudeIdleWakeService {
     return (
       !this.#closed &&
       !!this.#options.profiles.getProfile(owner.profileId)?.claudeIdleWake &&
-      current?.leaseToken === owner.leaseToken &&
-      isLeaseAlive(current, Date.now())
+      // Expiry makes the profile claimable; it does not replace its recorded
+      // owner. A nudge grants no lease or delivery authority. Token equality
+      // fences this generation until a new claim or explicit release.
+      current?.leaseToken === owner.leaseToken
     );
   }
 

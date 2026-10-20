@@ -434,10 +434,175 @@ describe("Claude socket wake through the real hook claim", () => {
   });
 
   test.each([
+    "live",
+    "grace",
+    "already-expired",
+    "expires-before-timer",
+    "expires-after-connect",
+  ])("the unchanged owner wakes with a %s lease without renewing or delivering", async (timing) => {
+    const f = await openHookServer();
+    const socket = await fakeClaudeSocket(f);
+    enableSocketWake(f);
+    await runHook(f, promptPayload(), { environment: socket.environment });
+    if (timing === "grace")
+      f.sqlite
+        .prepare("update profile_owners set lease_expires_at = ? where profile_id = 'driffs'")
+        .run(Date.now() - 1_000);
+    if (timing === "already-expired") lapseOwnerLease(f);
+    projectOutcome(f, `lease-${timing}`, "details stay pending");
+    const posted: string[] = [];
+    let expectedOwner = f.owners.get("driffs");
+    const service = socketWakeService(f, async (_path, frames) => {
+      if (timing === "expires-after-connect") {
+        lapseOwnerLease(f);
+        expectedOwner = f.owners.get("driffs");
+      }
+      posted.push(...frames());
+      return { status: "posted-unacknowledged", reason: "local-writes-complete" };
+    });
+    service.schedule(["driffs"]);
+    if (timing === "expires-before-timer") {
+      lapseOwnerLease(f);
+      expectedOwner = f.owners.get("driffs");
+    }
+    await vi.waitFor(() => expect(posted).toHaveLength(2));
+    expect(JSON.parse(posted[1] ?? "")).toMatchObject({
+      message: { content: "shepy: 1 finished: builder" },
+    });
+    expect(f.owners.get("driffs")).toEqual(expectedOwner);
+    expect(f.obligations.list({ profileId: "driffs", state: "pending" })).toHaveLength(1);
+    service.schedule(["driffs"]);
+    await settleSocketWake();
+    expect(posted).toHaveLength(2);
+    if (timing.includes("expired") || timing.startsWith("expires-")) {
+      const leaseToken = expectedOwner?.leaseToken ?? "missing";
+      expect(f.owners.renew({ profileId: "driffs", leaseToken })).toBe(false);
+      expect(() => f.delivery.inboxLease({ profileId: "driffs", leaseToken })).toThrow(
+        /lapsed past lease \+ grace/,
+      );
+    }
+  });
+
+  test("restart recovers an unattempted expired-owner wake, never resends it, and admits new outcomes", async () => {
+    const f = await openHookServer();
+    const socket = await fakeClaudeSocket(f);
+    enableSocketWake(f);
+    await runHook(f, promptPayload(), { environment: socket.environment });
+    const stopped = socketWakeService(f);
+    stopped.close();
+    lapseOwnerLease(f);
+    const owner = f.owners.get("driffs");
+    projectOutcome(f, "expired-restart", "first details");
+    const reopened = openSqlite(join(f.dir, "test.sqlite")).sqlite;
+    openDbs.push(reopened);
+    const restarted = socketWakeService(f, undefined, reopened);
+    restarted.start();
+    await vi.waitFor(() => expect(socket.frames).toHaveLength(2));
+    restarted.close();
+    const reopenedAgain = openSqlite(join(f.dir, "test.sqlite")).sqlite;
+    openDbs.push(reopenedAgain);
+    const restartedAgain = socketWakeService(f, undefined, reopenedAgain);
+    restartedAgain.start();
+    await settleSocketWake();
+    expect(socket.frames).toHaveLength(2);
+    projectOutcome(f, "expired-restart-new", "new details", "new-worker");
+    restartedAgain.schedule(["driffs"]);
+    await vi.waitFor(() => expect(socket.frames).toHaveLength(4));
+    expect(socket.frames[3]).toMatchObject({
+      message: { content: "shepy: 1 finished: new-worker" },
+    });
+    expect(f.owners.get("driffs")).toEqual(owner);
+    expect(f.obligations.list({ profileId: "driffs", state: "pending" })).toHaveLength(2);
+    expect(new ClaudeIdleWakeStore(f.sqlite).attemptedObligationIds("driffs").size).toBe(2);
+  });
+
+  test.each([
     "before-timer",
     "after-connect",
-    "expired",
+  ])("a different session claiming an expired owner's profile fences the old wake %s", async (timing) => {
+    const f = await openHookServer();
+    const socket = await fakeClaudeSocket(f);
+    const replacementSocket = await fakeClaudeSocket(f, "new-owner.sock");
+    enableSocketWake(f);
+    await runHook(f, promptPayload(), { environment: socket.environment });
+    lapseOwnerLease(f);
+    const oldToken = f.owners.get("driffs")?.leaseToken;
+    projectOutcome(f, `expired-replaced-${timing}`, "done");
+    const posted: string[] = [];
+    const replace = () => {
+      const result = f.owners.claim({
+        profileId: "driffs",
+        harnessKind: "claude",
+        harnessSessionRefJson: JSON.stringify({ kind: "id", value: "new-session" }),
+        subscriberId: "new-session",
+        claudeMessagingSocket: { path: replacementSocket.path, token: "new-secret" },
+        herdrSessionName: "lane-b",
+        paneId: "w1:p9",
+        terminalId: "t9",
+      });
+      expect(result.kind).toBe("reclaimed");
+      expect(f.owners.get("driffs")?.leaseToken).not.toBe(oldToken);
+    };
+    const service = socketWakeService(f, async (_path, frames) => {
+      if (timing === "after-connect") replace();
+      posted.push(...frames());
+      return { status: "posted-unacknowledged", reason: "local-writes-complete" };
+    });
+    service.schedule(["driffs"]);
+    if (timing === "before-timer") replace();
+    await settleSocketWake();
+    expect(posted).toEqual([]);
+    expect(socket.frames).toEqual([]);
+    expect(replacementSocket.frames).toEqual([]);
+    expect(f.obligations.list({ profileId: "driffs", state: "pending" })).toHaveLength(1);
+  });
+
+  test.each([
+    ["gone", "before-timer"],
+    ["file", "before-timer"],
+    ["symlink", "before-timer"],
+    ["gone", "after-connect"],
+    ["file", "after-connect"],
+    ["symlink", "after-connect"],
+  ])("an expired owner's socket %s %s fails closed", async (replacement, timing) => {
+    const f = await openHookServer();
+    const socket = await fakeClaudeSocket(f);
+    const other = await fakeClaudeSocket(f, "other.sock");
+    enableSocketWake(f);
+    await runHook(f, promptPayload(), { environment: socket.environment });
+    lapseOwnerLease(f);
+    projectOutcome(f, `socket-replaced-${replacement}-${timing}`, "done");
+    const posted: string[] = [];
+    let attempts = 0;
+    const replace = () => {
+      rmSync(socket.path);
+      if (replacement === "file") writeFileSync(socket.path, "not a socket", { mode: 0o600 });
+      if (replacement === "symlink") symlinkSync(other.path, socket.path);
+    };
+    const service = socketWakeService(f, async (_path, frames) => {
+      attempts++;
+      if (timing === "after-connect") replace();
+      posted.push(...frames());
+      return { status: "posted-unacknowledged", reason: "local-writes-complete" };
+    });
+    service.schedule(["driffs"]);
+    if (timing === "before-timer") replace();
+    await settleSocketWake();
+    expect(attempts).toBe(timing === "before-timer" ? 0 : 1);
+    expect(posted).toEqual([]);
+    expect(socket.frames).toEqual([]);
+    expect(other.frames).toEqual([]);
+    expect(f.obligations.list({ profileId: "driffs", state: "pending" })).toHaveLength(1);
+    expect(new ClaudeIdleWakeStore(f.sqlite).attemptedObligationIds("driffs").size).toBe(
+      timing === "before-timer" ? 0 : 1,
+    );
+  });
+
+  test.each([
+    "before-timer",
+    "after-connect",
     "socket-permissions",
+    "released-after-expiry",
     "disabled",
     "closed",
   ])("fences %s before any frames", async (change) => {
@@ -462,8 +627,12 @@ describe("Claude socket wake through the real hook claim", () => {
     });
     service.schedule(["driffs"]);
     if (change === "before-timer") replace();
-    if (change === "expired") lapseOwnerLease(f);
     if (change === "socket-permissions") chmodSync(socket.path, 0o666);
+    if (change === "released-after-expiry") {
+      lapseOwnerLease(f);
+      const leaseToken = f.owners.get("driffs")?.leaseToken ?? "missing";
+      expect(f.owners.release({ profileId: "driffs", leaseToken })).toBe(true);
+    }
     if (change === "disabled")
       f.profiles.createProfile({
         claudeIdleWake: false,

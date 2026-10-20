@@ -65,11 +65,11 @@ const pins: Record<string, string> = {
   "src/cli/claude-hook.ts": "08aeb882d0a5bccbfcadde6b783b8547e3a2216f52d756420f9b03ee07f138a8",
   "src/cli/shepy.ts": "28c467f975e86df6a8a018975f0d171e57726ff0c836c2aa230da22b0fa7d7e7",
   "test/integration/claude-hook.test.ts":
-    "325f2d759c85ade58942a8b61ab73a91ce12894c97dadbfd575d36111ca49c13",
+    "19b5b5a2e99e5cfe5aad88c907d3f4cc822bc54fba0f4ce195b43a9cc63e91fa",
   "test/unit/cli.test.ts": "02ed2f3ffdecf05ec76c97bd664a5125e42ed27623be92839e8024d47bce800b",
   "test/unit/claude-hook-lapsed-recovery-warning.test.ts":
     "84fbbf1660216d758d15984ce17c88dccc9d3e8496a307b8dcded4588c45e156",
-  "README.md": "9392d5225ed707b9012a92b7d70b6559c2dc08e7622f031508e961c3d033e7e6",
+  "README.md": "d679bc3f31a92b085a2e0fd3163ebe5a4231c7a9db58861bbb3297d0d3f52d44",
   "src/observability/profile-demand-ingress.ts":
     "62c8bf43a39253fb34b37b91d4a09c1d495b074be034fea6fb576d156a4a0454",
 };
