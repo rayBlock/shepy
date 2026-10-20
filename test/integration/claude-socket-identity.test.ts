@@ -133,14 +133,19 @@ async function fixture(expired: boolean) {
     services.push(wake);
     return wake;
   };
-  const replace = async (connected = false) => {
-    renameSync(path, join(socketDirectory, "retired.sock"));
-    if (!connected) await stop(first.child);
-    const second = await receiver(path);
+  const prepareReplacement = async () => {
+    // Start the other process before the transport's one-second deadline. Only
+    // the pathname swap belongs inside the before/after-connect race window.
+    const stagedPath = join(socketDirectory, "replacement.sock");
+    const second = await receiver(stagedPath);
     receivers.push(second);
     expect(second.child.pid).not.toBe(first.child.pid);
     expect(second.ino).not.toBe(first.ino);
-    return second;
+    return () => {
+      renameSync(path, join(socketDirectory, "retired.sock"));
+      renameSync(stagedPath, path);
+      return second;
+    };
   };
   return {
     first,
@@ -149,7 +154,7 @@ async function fixture(expired: boolean) {
     claim,
     obligations,
     service,
-    replace,
+    prepareReplacement,
     attempts: () => new ClaudeIdleWakeStore(sqlite).attemptedObligationIds("p").size,
     async close() {
       for (const wake of services) wake.close();
@@ -173,8 +178,10 @@ test.each([
   const f = await fixture(expired);
   try {
     const ownerBefore = f.owners.get("p");
+    const replace = await f.prepareReplacement();
     let second: Awaited<ReturnType<typeof receiver>> | undefined;
     let posts = 0;
+    let writes = 0;
     let result: Awaited<ReturnType<SocketAdapter>> | undefined;
     const transport = createSocketAdapter(() => {
       const socket = new Socket();
@@ -183,25 +190,26 @@ test.each([
         connect: (path, listener) =>
           socket.connect(path, () => {
             if (timing === "after-connect") {
-              void f.replace(true).then((replacement) => {
-                second = replacement;
-                listener();
-              });
+              second = replace();
+              listener();
             } else listener();
           }),
-        write: (line, callback) => socket.write(line, callback),
+        write: (line, callback) => {
+          writes++;
+          return socket.write(line, callback);
+        },
         destroy: () => socket.destroy(),
       };
     });
     const post: SocketAdapter = async (path, frames) => {
       posts++;
-      if (timing === "before-connect") second = await f.replace();
+      if (timing === "before-connect") second = replace();
       result = await transport(path, frames);
       return result;
     };
     // Reopen SQLite BEFORE scheduling: the socket binding must survive restart.
     const wake = f.service(post, true);
-    if (timing === "before-timer") second = await f.replace();
+    if (timing === "before-timer") second = replace();
     wake.start();
     if (timing === "before-timer") await settle();
     else {
@@ -211,6 +219,7 @@ test.each([
     expect(second).toBeDefined();
     expect(second?.frames).toEqual([]);
     expect(f.first.frames).toEqual([]);
+    expect(writes).toBe(0);
     expect(posts).toBe(timing === "before-timer" ? 0 : 1);
     expect(f.attempts()).toBe(timing === "before-timer" ? 0 : 1);
     expect(f.owners.get("p")).toEqual(ownerBefore);
@@ -222,6 +231,7 @@ test.each([
     expect(posts).toBe(timing === "before-timer" ? 0 : 1);
     expect(second?.frames).toEqual([]);
     expect(f.first.frames).toEqual([]);
+    expect(writes).toBe(0);
   } finally {
     await f.close();
   }
