@@ -69,7 +69,7 @@ const pins: Record<string, string> = {
   "test/unit/cli.test.ts": "02ed2f3ffdecf05ec76c97bd664a5125e42ed27623be92839e8024d47bce800b",
   "test/unit/claude-hook-lapsed-recovery-warning.test.ts":
     "84fbbf1660216d758d15984ce17c88dccc9d3e8496a307b8dcded4588c45e156",
-  "README.md": "d679bc3f31a92b085a2e0fd3163ebe5a4231c7a9db58861bbb3297d0d3f52d44",
+  "README.md": "e0977c84eebf7da6203f96b15e1a4c103d10683a5fe65575444d5587a077455d",
   "src/observability/profile-demand-ingress.ts":
     "62c8bf43a39253fb34b37b91d4a09c1d495b074be034fea6fb576d156a4a0454",
 };

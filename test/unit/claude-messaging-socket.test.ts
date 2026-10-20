@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import {
   createSocketAdapter,
+  parseRegisteredClaudeMessagingSocket,
+  registerClaudeMessagingSocket,
   type SocketConnection,
   safeSocketPost,
   validateClaudeMessagingSocket,
@@ -151,9 +153,34 @@ test("socket admission refuses foreign uid, missing auth, noncanonical, nested a
   chmodSync(path, 0o600);
   const capability = { path, token: "fake-secret" };
   try {
-    expect(validateClaudeMessagingSocket(capability, expected)).toEqual(capability);
-    expect(validateClaudeMessagingSocket(capability)).toBeNull(); // Not the production directory.
-    expect(validateClaudeMessagingSocket({ ...capability, token: "" }, expected)).toBeNull();
+    const registered = registerClaudeMessagingSocket(capability, expected);
+    expect(registered).toMatchObject(capability);
+    expect(registered?.identity).toEqual({
+      dev: expect.stringMatching(/^\d+$/),
+      ino: expect.stringMatching(/^\d+$/),
+      birthtimeNs: expect.stringMatching(/^\d+$/),
+      ctimeNs: expect.stringMatching(/^\d+$/),
+    });
+    expect(validateClaudeMessagingSocket(registered, expected)).toEqual(registered);
+    expect(validateClaudeMessagingSocket(capability, expected)).toBeNull(); // Legacy cannot rebind.
+    expect(registerClaudeMessagingSocket(capability)).toBeNull(); // Not the production directory.
+    expect(registerClaudeMessagingSocket({ ...capability, token: "" }, expected)).toBeNull();
+    if (!registered) throw new Error("socket not registered");
+    for (const key of ["dev", "ino", "birthtimeNs", "ctimeNs"] as const) {
+      const changed = {
+        ...registered,
+        identity: { ...registered.identity, [key]: "999999999999999999999" },
+      };
+      expect(validateClaudeMessagingSocket(changed, expected)).toBeNull();
+      expect(
+        parseRegisteredClaudeMessagingSocket({
+          ...registered,
+          identity: { ...registered.identity, [key]: 1 },
+        }),
+      ).toBeNull();
+    }
+    for (const identity of [undefined, null, {}, "bad", { dev: "1", ino: "1" }])
+      expect(parseRegisteredClaudeMessagingSocket({ ...registered, identity })).toBeNull();
     for (const bad of [
       "relative.sock",
       `${expected}/../cc-socks/fake.sock`,
@@ -161,17 +188,17 @@ test("socket admission refuses foreign uid, missing auth, noncanonical, nested a
       `${path}\n`,
       `${path}\0`,
     ])
-      expect(validateClaudeMessagingSocket({ ...capability, path: bad }, expected)).toBeNull();
+      expect(registerClaudeMessagingSocket({ ...capability, path: bad }, expected)).toBeNull();
     const uid = process.getuid?.();
     if (uid === undefined) throw new Error("Unix uid required for socket test");
     vi.spyOn(process, "getuid").mockReturnValue(uid + 1);
-    expect(validateClaudeMessagingSocket(capability, expected)).toBeNull();
+    expect(registerClaudeMessagingSocket(capability, expected)).toBeNull();
     vi.restoreAllMocks();
     const nested = join(expected, "nested");
     mkdirSync(nested);
     symlinkSync(path, join(nested, "alias.sock"));
     expect(
-      validateClaudeMessagingSocket({ ...capability, path: join(nested, "alias.sock") }, expected),
+      registerClaudeMessagingSocket({ ...capability, path: join(nested, "alias.sock") }, expected),
     ).toBeNull();
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));

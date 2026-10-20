@@ -4,12 +4,15 @@ import { dirname, isAbsolute, normalize } from "node:path";
 
 export const CLAUDE_SOCKET_DIRECTORY = "/tmp/cc-socks";
 export type ClaudeMessagingSocket = { path: string; token: string };
+export type RegisteredClaudeMessagingSocket = ClaudeMessagingSocket & {
+  identity: { dev: string; ino: string; birthtimeNs: string; ctimeNs: string };
+};
 
-/** Admission is fail-closed. A missing or invalid capability never disables hook delivery. */
-export function validateClaudeMessagingSocket(
+/** Capture identity only at registration, never upgrade an old capability during a wake. */
+export function registerClaudeMessagingSocket(
   value: ClaudeMessagingSocket | undefined | null,
   directory = CLAUDE_SOCKET_DIRECTORY,
-): ClaudeMessagingSocket | null {
+): RegisteredClaudeMessagingSocket | null {
   if (
     !value ||
     typeof value.path !== "string" ||
@@ -28,12 +31,69 @@ export function validateClaudeMessagingSocket(
     const parent = lstatSync(expected);
     if (!parent.isDirectory() || parent.uid !== process.getuid() || (parent.mode & 0o022) !== 0)
       return null;
-    const stat = lstatSync(path);
-    if (!stat.isSocket() || stat.uid !== process.getuid() || (stat.mode & 0o077) !== 0) return null;
-    return { path, token: value.token };
+    // Decimal strings retain the full device/inode and nanosecond timestamp
+    // precision through JSON persistence (JSON cannot encode bigint).
+    const stat = lstatSync(path, { bigint: true });
+    if (!stat.isSocket() || stat.uid !== BigInt(process.getuid()) || (stat.mode & 0o077n) !== 0n)
+      return null;
+    return {
+      path,
+      token: value.token,
+      identity: {
+        dev: String(stat.dev),
+        ino: String(stat.ino),
+        birthtimeNs: String(stat.birthtimeNs),
+        ctimeNs: String(stat.ctimeNs),
+      },
+    };
   } catch {
     return null;
   }
+}
+
+/** Legacy/unbound or malformed persisted capabilities are absent until a new claim. */
+export function parseRegisteredClaudeMessagingSocket(
+  value: unknown,
+): RegisteredClaudeMessagingSocket | null {
+  if (!value || typeof value !== "object") return null;
+  const socket = value as Partial<RegisteredClaudeMessagingSocket>;
+  if (
+    typeof socket.path !== "string" ||
+    typeof socket.token !== "string" ||
+    !socket.token ||
+    !socket.identity ||
+    typeof socket.identity !== "object" ||
+    ![
+      socket.identity.dev,
+      socket.identity.ino,
+      socket.identity.birthtimeNs,
+      socket.identity.ctimeNs,
+    ].every((part) => typeof part === "string" && /^\d+$/.test(part))
+  )
+    return null;
+  return socket as RegisteredClaudeMessagingSocket;
+}
+
+/** Recheck admission AND the registered instance before connect and before frames.
+ * Path metadata is not connected-peer authentication: replacement after the last
+ * check (or inode/metadata reuse) can still race it. Claude's token is the second fence.
+ */
+export function validateClaudeMessagingSocket(
+  value: unknown,
+  directory = CLAUDE_SOCKET_DIRECTORY,
+): RegisteredClaudeMessagingSocket | null {
+  const registered = parseRegisteredClaudeMessagingSocket(value);
+  if (!registered) return null;
+  const current = registerClaudeMessagingSocket(registered, directory);
+  if (
+    !current ||
+    current.identity.dev !== registered.identity.dev ||
+    current.identity.ino !== registered.identity.ino ||
+    current.identity.birthtimeNs !== registered.identity.birthtimeNs ||
+    current.identity.ctimeNs !== registered.identity.ctimeNs
+  )
+    return null;
+  return registered;
 }
 
 export type SocketOutcome =

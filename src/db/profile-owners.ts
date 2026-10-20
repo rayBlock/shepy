@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import {
   type ClaudeMessagingSocket,
-  validateClaudeMessagingSocket,
+  parseRegisteredClaudeMessagingSocket,
+  type RegisteredClaudeMessagingSocket,
+  registerClaudeMessagingSocket,
 } from "@/shared/claude-messaging-socket.js";
 
 /**
@@ -49,7 +51,7 @@ export type OwnerRow = {
 };
 
 export type ProfileOwner = {
-  claudeMessagingSocket: ClaudeMessagingSocket | null;
+  claudeMessagingSocket: RegisteredClaudeMessagingSocket | null;
   acceptedSourceKinds: ("agent" | "profile-demand")[];
   claimedAt: number;
   harnessKind: string;
@@ -174,7 +176,7 @@ export class ProfileOwnerStore {
     }
     const socket =
       input.harnessKind === "claude"
-        ? validateClaudeMessagingSocket(input.claudeMessagingSocket, this.#socketDirectory)
+        ? registerClaudeMessagingSocket(input.claudeMessagingSocket, this.#socketDirectory)
         : null;
     const leaseToken = randomUUID();
     this.#sqlite
@@ -260,7 +262,7 @@ function toOwner(row: OwnerRow): ProfileOwner {
     throw new Error("owner:invalid-source-capability");
   return {
     claudeMessagingSocket: row.claude_messaging_socket_json
-      ? (JSON.parse(row.claude_messaging_socket_json) as ClaudeMessagingSocket)
+      ? parseRegisteredClaudeMessagingSocket(JSON.parse(row.claude_messaging_socket_json))
       : null,
     acceptedSourceKinds: kinds,
     claimedAt: row.claimed_at,
