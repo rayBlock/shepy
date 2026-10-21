@@ -173,7 +173,8 @@ export type AgentEventType =
   | "agent.done"
   | "agent.idle"
   | "agent.status.changed"
-  | "agent.tool.failed";
+  | "agent.tool.failed"
+  | "agent.gone";
 
 export type AgentEventRecord = {
   agentId: string | null;

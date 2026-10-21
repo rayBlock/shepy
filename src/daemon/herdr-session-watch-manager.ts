@@ -10,6 +10,7 @@ import type { AgentEventRecord, AgentIndexRecord, AgentScope } from "@/observabi
 
 export const ACTIVE_REVISION_POLL_MS = 10_000;
 export const FULL_RESCAN_MS = 60_000;
+export const SUBSCRIPTION_PRUNE_AGE_MS = 120_000;
 
 /** A tick that fails this many times IN A ROW flips the observable health
  * to "degraded". Three tolerates the 2026-10-08 shape — one transient
@@ -52,6 +53,7 @@ export class HerdrSessionWatchManager {
     herdrSessionName: string;
   }) => void;
   readonly #reconnectDelayMs: number;
+  readonly #onSessionRefreshed: (herdrSessionName: string) => void;
   readonly #refreshPublications = new WeakMap<
     Promise<AgentIndexRefreshResult>,
     Promise<AgentIndexRecord[]>
@@ -81,6 +83,7 @@ export class HerdrSessionWatchManager {
     onAgentEvent(event: AgentEventRecord): void;
     onAgentIndexRefreshed?(input: { agents: AgentIndexRecord[]; herdrSessionName: string }): void;
     reconnectDelayMs?: number;
+    onSessionRefreshed?(herdrSessionName: string): void;
     sessionList: HerdrSessionListRunner;
   }) {
     this.#activeRevisionPollMs = options.activeRevisionPollMs ?? ACTIVE_REVISION_POLL_MS;
@@ -94,6 +97,7 @@ export class HerdrSessionWatchManager {
     this.#onAgentIndexRefreshed = options.onAgentIndexRefreshed ?? (() => undefined);
     this.#reconnectDelayMs = options.reconnectDelayMs ?? 1_000;
     this.#sessionList = options.sessionList;
+    this.#onSessionRefreshed = options.onSessionRefreshed ?? (() => undefined);
   }
 
   async start(): Promise<void> {
@@ -295,6 +299,9 @@ export class HerdrSessionWatchManager {
     if (existing) return existing;
     const publication = source.then((result) => {
       this.#publishResult({ herdrSessionName: entry.name, ...result });
+      // The existing tick/rescan drives age pruning. Never prune against a
+      // cached, stopped or failed session, or before its first full refresh.
+      this.#onSessionRefreshed(entry.name);
       return result.agents;
     });
     this.#refreshPublications.set(source, publication);
@@ -331,6 +338,7 @@ async function delay(ms: number, signal: AbortSignal): Promise<void> {
 function shouldRestartSubscription(type: unknown): boolean {
   return (
     type === "pane.agent_detected" ||
+    type === "pane.exited" ||
     type === "pane.closed" ||
     type === "pane.created" ||
     type === "pane.moved" ||

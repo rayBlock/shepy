@@ -73,6 +73,15 @@ export class AgentIndexService {
   }) => Pick<HerdrSocketClient, "close" | "sessionSnapshot">;
   readonly #context: AgentContextService;
   readonly #stores: AgentIndexServiceStores;
+  readonly #onAgentGone: (input: {
+    event: AgentEventRecord;
+    previousAgents: AgentIndexRecord[];
+  }) => void;
+  readonly #onAgentMoved: (input: {
+    previous: AgentIndexRecord;
+    current: AgentIndexRecord;
+    previousAgents: AgentIndexRecord[];
+  }) => void;
   readonly #pendingSettlements = new Map<string, PendingStatus>();
   readonly #mutationEpochBySession = new Map<string, number>();
   readonly #pendingPiSessionRefs = new Map<string, AgentSessionRef>();
@@ -90,9 +99,17 @@ export class AgentIndexService {
     context?: AgentContextService;
     history?: AgentHistoryService;
     stores: AgentIndexServiceStores;
+    onAgentGone?(input: { event: AgentEventRecord; previousAgents: AgentIndexRecord[] }): void;
+    onAgentMoved?(input: {
+      previous: AgentIndexRecord;
+      current: AgentIndexRecord;
+      previousAgents: AgentIndexRecord[];
+    }): void;
   }) {
     this.#clientFactory = options.clientFactory ?? ((input) => new HerdrSocketClient(input));
     this.#stores = options.stores;
+    this.#onAgentGone = options.onAgentGone ?? (() => undefined);
+    this.#onAgentMoved = options.onAgentMoved ?? (() => undefined);
     if (options.context) {
       this.#context = options.context;
     } else {
@@ -191,7 +208,25 @@ export class AgentIndexService {
           agent.terminalId ? ([[agent.terminalId, agent]] as const) : [],
         ),
       );
-      const snapshot = normalizeHerdrSessionSnapshot(await client.sessionSnapshot());
+      const rawSnapshot = await client.sessionSnapshot();
+      const body = record(record(rawSnapshot).snapshot ?? rawSnapshot);
+      // Missing data is not proof that every worker disappeared. In particular,
+      // never turn a malformed or partial transport reply into mass cleanup.
+      if (![body.agents, body.panes, body.workspaces].every(Array.isArray)) {
+        throw new Error("Incomplete Herdr session snapshot; lifecycle reconciliation refused");
+      }
+      const snapshot = normalizeHerdrSessionSnapshot(rawSnapshot);
+      if (
+        snapshot.agents.some((value) => {
+          const agent = record(value);
+          return (
+            !(stringValue(agent.pane_id) ?? stringValue(agent.paneId)) ||
+            !(stringValue(agent.workspace_id) ?? stringValue(agent.workspaceId)) ||
+            !stringValue(agent.agent)
+          );
+        })
+      )
+        throw new Error("Invalid Herdr agent snapshot; lifecycle reconciliation refused");
       const revisionByPane = new Map(
         snapshot.panes.flatMap((pane) => {
           const value = record(pane);
@@ -218,11 +253,65 @@ export class AgentIndexService {
           parseAgentStatus(agent.agent_status),
         ]),
       );
+      const departureEvents: AgentEventRecord[] = [];
+      const flushed = new Map<PendingStatus, AgentEventRecord>();
       const indexedAgents = this.#stores.agents.replaceForSession({
         agents: snapshotAgents,
+        beforeRemove: (removed, previousAgents) => {
+          for (const prior of removed) {
+            const pending = this.#pendingSettlements.get(prior.id);
+            if (pending && !pending.supersededEvent) {
+              const final = this.#appendStatusEvents(
+                {
+                  ...pending,
+                  compactHistory: pending.compactHistory
+                    ? { ...pending.compactHistory, lastAssistantMessage: null }
+                    : undefined,
+                },
+                false,
+              );
+              if (final) {
+                departureEvents.push(final);
+                flushed.set(pending, final);
+              }
+            }
+            const event = this.#stores.agentEvents.append({
+              agentId: prior.id,
+              compactHistory: this.#context.getAgentSnapshot(prior.id)?.compactHistory ?? null,
+              herdrSessionName: prior.herdrSessionName,
+              idempotencyKey: `agent.gone:${prior.id}:${prior.firstSeenAt.getTime()}`,
+              paneId: prior.paneId,
+              payload: { ...payload(prior, prior.agentStatus, prior.agentStatus), to: "gone" },
+              terminalId: prior.terminalId,
+              type: "agent.gone",
+              workspaceId: prior.workspaceId,
+            });
+            // Projection and subscription removal share the replacement
+            // transaction. A crash can leave neither half committed alone.
+            this.#onAgentGone({ event, previousAgents });
+            departureEvents.push(event);
+          }
+        },
+        afterReplace: (currentAgents) => {
+          for (const current of currentAgents) {
+            const prior = previous.find((row) => row.id === current.id);
+            if (
+              prior &&
+              prior.terminalId &&
+              prior.terminalId === current.terminalId &&
+              (prior.paneId !== current.paneId || prior.workspaceId !== current.workspaceId)
+            ) {
+              this.#onAgentMoved({ previous: prior, current, previousAgents: previous });
+            }
+          }
+        },
         deferStatusChanges: true,
         herdrSessionName: input.herdrSessionName,
       });
+      for (const [pending, event] of flushed) {
+        pending.superseded = true;
+        pending.supersededEvent = event;
+      }
       const agents = indexedAgents
         .map((agent) => {
           if (!agent.terminalId) return agent;
@@ -243,7 +332,7 @@ export class AgentIndexService {
           agentStatus: observedStatuses.get(agent.paneId) ?? agent.agentStatus,
         }));
       const scopes = new Map<string, AgentScope>();
-      const events: AgentEventRecord[] = [];
+      const events: AgentEventRecord[] = departureEvents;
       const pendingStatuses: PendingStatus[] = [];
       const currentIds = new Set(agents.map((agent) => agent.id));
       for (const prior of previous) {
@@ -323,6 +412,17 @@ export class AgentIndexService {
     socketPath: string;
   }): Promise<PendingResult<AgentEventHandlingResult>> {
     const event = record(input.event);
+    if (
+      [
+        "pane.agent_detected",
+        "pane.exited",
+        "pane.closed",
+        "pane.moved",
+        "workspace.closed",
+      ].includes(String(event.type))
+    ) {
+      return this.#refreshHerdrSessionNow(input);
+    }
     if (event.type !== "pane.agent_status_changed")
       return { contextChangedScopes: [], events: [], pendingStatuses: [] };
     const paneId = stringValue(event.pane_id) ?? stringValue(event.paneId);

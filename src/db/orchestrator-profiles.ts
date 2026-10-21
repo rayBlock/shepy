@@ -160,6 +160,19 @@ export class OrchestratorProfileStore {
     return result.changes > 0;
   }
 
+  moveSubscription(input: {
+    id: number;
+    workspaceSelectorJson: string;
+    agentSelectorJson: string;
+  }): void {
+    // Preserve age and row identity: pending obligations still name this row.
+    this.#sqlite
+      .prepare(
+        "update profile_subscriptions set workspace_selector_json = ?, agent_selector_json = ? where id = ?",
+      )
+      .run(input.workspaceSelectorJson, input.agentSelectorJson, input.id);
+  }
+
   listSubscriptions(profileId: string): ProfileSubscriptionRecord[] {
     const rows = this.#sqlite
       .prepare(`select * from profile_subscriptions where profile_id = ? order by id`)

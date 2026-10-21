@@ -34,7 +34,10 @@ import { ProfileDemandService } from "@/observability/profile-demand-service.js"
 import { ProfileDiagnoseService } from "@/observability/profile-diagnose-service.js";
 import { ProfileService } from "@/observability/profile-service.js";
 import { ClaudeIdleWakeService } from "./claude-idle-wake-service.js";
-import { HerdrSessionWatchManager } from "./herdr-session-watch-manager.js";
+import {
+  HerdrSessionWatchManager,
+  SUBSCRIPTION_PRUNE_AGE_MS,
+} from "./herdr-session-watch-manager.js";
 import { ObservabilityRpcServer } from "./observability-server.js";
 
 export async function runObservabilityDaemonService(
@@ -129,6 +132,10 @@ export async function runObservabilityDaemonService(
   const index = new AgentIndexService({
     context: daemonServices.context,
     stores: { agentEvents, agentHistoryCache, agents, herdrSessions, herdrWorkspaces },
+    onAgentGone: (departure) => {
+      idleWakeService.schedule(deliveryService.projectGoneAgent(departure));
+    },
+    onAgentMoved: (move) => deliveryService.moveSubscriptions(move),
   });
 
   let watchManager: HerdrSessionWatchManager | undefined;
@@ -164,6 +171,15 @@ export async function runObservabilityDaemonService(
       idleWakeService.schedule(wakeProfiles);
     },
     onAgentIndexRefreshed: (refreshed) => server.reconcileAgentLocations(refreshed),
+    onSessionRefreshed: (herdrSessionName) => {
+      for (const profile of profileService.listProfiles()) {
+        profileService.pruneSubscriptions({
+          ageMs: SUBSCRIPTION_PRUNE_AGE_MS,
+          herdrSessionName,
+          profileId: profile.profileId,
+        });
+      }
+    },
     sessionList: createHerdrSessionListRunner({ env: runtime.environment }),
   });
 

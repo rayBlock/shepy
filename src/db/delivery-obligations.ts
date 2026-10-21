@@ -116,7 +116,9 @@ export class DeliveryObligationStore {
     contentSha256: string;
     subscriptionId: number;
   }): boolean {
-    this.#sqlite.exec("begin");
+    // May run inside lifecycle replacement while recovering a pending final.
+    // A savepoint composes with that transaction and remains atomic alone.
+    this.#sqlite.exec("savepoint shepy_source_entry");
     try {
       const stamp = this.#sqlite
         .prepare(
@@ -131,14 +133,14 @@ export class DeliveryObligationStore {
           Date.now(),
         );
       if (stamp.changes === 0) {
-        this.#sqlite.exec("commit");
+        this.#sqlite.exec("release shepy_source_entry");
         return false;
       }
       this.project(input);
-      this.#sqlite.exec("commit");
+      this.#sqlite.exec("release shepy_source_entry");
       return true;
     } catch (error) {
-      this.#sqlite.exec("rollback");
+      this.#sqlite.exec("rollback to shepy_source_entry; release shepy_source_entry");
       throw error;
     }
   }

@@ -148,7 +148,12 @@ export class ProfileService {
    * age gate is reported as too young. Disabled subscriptions sit outside
    * resolveSubscriptions entirely and are not this verb's business.
    */
-  pruneSubscriptions(input: { ageMs: number; now?: number; profileId: string }): {
+  pruneSubscriptions(input: {
+    ageMs: number;
+    now?: number;
+    profileId: string;
+    herdrSessionName?: string;
+  }): {
     kept: number;
     refused: Array<{ detail: string; id: number; label: string }>;
     removed: Array<{ id: number; label: string; updatedAt: number }>;
@@ -162,6 +167,11 @@ export class ProfileService {
     let kept = 0;
     for (const resolution of this.resolveSubscriptions(input.profileId)) {
       const subscription = resolution.subscription;
+      // Automatic callers supply ONLY the session whose snapshot just
+      // succeeded. Stopped, unreachable and not-yet-refreshed sessions are
+      // never evidence of absence. Manual prune retains its explicit scope.
+      if (input.herdrSessionName && subscription.herdrSessionName !== input.herdrSessionName)
+        continue;
       const label = subscriptionLabel(subscription);
       if (resolution.kind === "matched") {
         kept += 1;

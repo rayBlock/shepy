@@ -11,7 +11,7 @@ import {
   type PublicProfileOwner,
   toPublicProfileOwner,
 } from "@/db/profile-owners.js";
-import type { AgentEventRecord, AgentEventType } from "./contracts.js";
+import type { AgentEventRecord, AgentEventType, AgentIndexRecord } from "./contracts.js";
 import { type OutcomeContext, projectOutcomeContext } from "./outcome-context.js";
 import type { ProfileDemandService } from "./profile-demand-service.js";
 import { resolveSelectorInWorkspaceScope } from "./profile-selector-scope.js";
@@ -33,16 +33,15 @@ import { RpcRefusedError } from "./rpc-refused-error.js";
  * obligations, 97 were `agent.status.changed` — 96 of them transitions to
  * `working`. The remaining 127 were semantic and are unaffected.
  *
- * Known gap: a transition to `unknown` (agent lost) currently emits only the
- * generic event, so it no longer produces an obligation. Losing an agent is
- * arguably news; the right fix is a dedicated semantic event rather than
- * re-admitting the generic one, which would restore the double-wake.
+ * A healthy refresh that loses an indexed worker emits `agent.gone` using
+ * the prior identity, not an `unknown` status guess.
  */
 export const NOTIFIABLE_EVENT_TYPES: ReadonlySet<AgentEventType> = new Set([
   "agent.blocked",
   "agent.done",
   "agent.idle",
   "agent.tool.failed",
+  "agent.gone",
 ]);
 
 /**
@@ -53,6 +52,17 @@ export const INBOX_OUTCOME_EXCERPT_CHARS = 2_000;
 /** Replayed final content can recur on an idle-status flap; only deliveries
  * within this window count as evidence against a new obligation. */
 export const FINAL_REPLAY_TTL_MS = 24 * 60 * 60 * 1_000;
+
+function frozenAgentSource(records: AgentIndexRecord[]): Pick<AgentStore, "list"> {
+  return {
+    list: (scope = {}) =>
+      records.filter(
+        (row) =>
+          (!scope.herdrSessionName || row.herdrSessionName === scope.herdrSessionName) &&
+          (!scope.workspaceId || row.workspaceId === scope.workspaceId),
+      ),
+  };
+}
 
 function finalFingerprint(history: AgentEventRecord["compactHistory"]): string | null {
   const session = history?.historyRef;
@@ -205,6 +215,72 @@ export class ProfileDeliveryService {
 
   /** Project one agent event into obligations for every matching subscription. */
   projectAgentEvent(event: AgentEventRecord): string[] {
+    return this.#projectAgentEvent(event, this.#agents);
+  }
+
+  /** Called inside index replacement, while the prior identity is still in
+   * hand. Never resolve a gone worker through the new live name holder. */
+  projectGoneAgent(input: {
+    event: AgentEventRecord;
+    previousAgents: AgentIndexRecord[];
+  }): string[] {
+    const { event, previousAgents } = input;
+    if (event.type !== "agent.gone" || !event.agentId) return [];
+    const source = frozenAgentSource(previousAgents);
+    const subscriptions = this.#profiles.listProfiles().flatMap((profile) =>
+      this.#profiles.listSubscriptions(profile.profileId).filter((subscription) => {
+        if (!subscription.enabled) return false;
+        const workspace = parseWorkspaceSelector(subscription.workspaceSelectorJson);
+        const selector = parseAgentSelector(subscription.agentSelectorJson);
+        if ("error" in workspace || "error" in selector) return false;
+        const resolved = resolveSelectorInWorkspaceScope({ agents: source, selector, workspace });
+        return resolved.kind === "matched" && resolved.agent.id === event.agentId;
+      }),
+    );
+    // A final may still be waiting for publication when close arrives. Replay
+    // durable outcomes first; obligation uniqueness makes this idempotent.
+    const outcomes = this.#agentEvents?.outcomesForAgent(event.agentId) ?? [];
+    for (const outcome of outcomes) this.#projectAgentEvent(outcome, source, true);
+    const profiles = this.#projectAgentEvent(event, source);
+    for (const subscription of subscriptions) this.#profiles.removeSubscription(subscription);
+    return profiles;
+  }
+
+  /** A terminal survives pane movement. Carry only subscriptions that uniquely
+   * selected its prior identity, including legacy pane selectors. */
+  moveSubscriptions(input: {
+    previous: AgentIndexRecord;
+    current: AgentIndexRecord;
+    previousAgents: AgentIndexRecord[];
+  }): void {
+    const source = frozenAgentSource(input.previousAgents);
+    for (const profile of this.#profiles.listProfiles()) {
+      for (const subscription of this.#profiles.listSubscriptions(profile.profileId)) {
+        if (!subscription.enabled) continue;
+        const workspace = parseWorkspaceSelector(subscription.workspaceSelectorJson);
+        const selector = parseAgentSelector(subscription.agentSelectorJson);
+        if ("error" in workspace || "error" in selector) continue;
+        const resolved = resolveSelectorInWorkspaceScope({ agents: source, selector, workspace });
+        if (resolved.kind !== "matched" || resolved.agent.id !== input.previous.id) continue;
+        this.#profiles.moveSubscription({
+          id: subscription.id,
+          workspaceSelectorJson: JSON.stringify({
+            herdrSession: input.current.herdrSessionName,
+            workspaceId: input.current.workspaceId,
+          }),
+          agentSelectorJson: JSON.stringify(
+            selector.kind === "paneId" ? { kind: "paneId", value: input.current.paneId } : selector,
+          ),
+        });
+      }
+    }
+  }
+
+  #projectAgentEvent(
+    event: AgentEventRecord,
+    agents: Pick<AgentStore, "list">,
+    recovering = false,
+  ): string[] {
     if (!event.agentId) return [];
     // Filter at projection, not emission: the event log stays a complete
     // audit record, but only notifiable outcomes become owner obligations.
@@ -212,7 +288,8 @@ export class ProfileDeliveryService {
     // Only the OpenCode reader's source entry is a stable delivery identity:
     // a V1 part id (prt_) or, for the V2 store, the session_message row id (msg_).
     // An absent/malformed entry is UNKNOWN, not a new deliverable outcome.
-    const openCode = event.compactHistory?.source === "opencode-sqlite";
+    const openCode =
+      event.type !== "agent.gone" && event.compactHistory?.source === "opencode-sqlite";
     const sourceRef = event.compactHistory?.lastAssistantMessage?.ref;
     const sourceEntryId = openCode
       ? /#entry=((?:prt|msg)_[a-zA-Z0-9]+)$/.exec(sourceRef ?? "")?.[1]
@@ -253,7 +330,7 @@ export class ProfileDeliveryService {
     // index can never be projected below (no scoped candidate can name it).
     // The real gate is the scoped resolution + identity check per
     // subscription.
-    const agentIndexed = this.#agents
+    const agentIndexed = agents
       .list({ herdrSessionName: event.herdrSessionName })
       .some((row) => row.id === event.agentId);
     if (!agentIndexed) return [];
@@ -261,6 +338,7 @@ export class ProfileDeliveryService {
     for (const profile of this.#profiles.listProfiles()) {
       for (const subscription of this.#profiles.listSubscriptions(profile.profileId)) {
         if (!subscription.enabled) continue;
+        if (recovering && event.createdAt.getTime() < subscription.createdAt) continue;
         const workspace = parseWorkspaceSelector(subscription.workspaceSelectorJson);
         if ("error" in workspace) continue;
         // Structural scope first (§6.1.2): exact session + workspace.
@@ -276,7 +354,7 @@ export class ProfileDeliveryService {
         // naming THIS event's agent projects; ambiguous, unmatched, invalid
         // selector, and a unique match of a different in-scope agent do not.
         const resolution = resolveSelectorInWorkspaceScope({
-          agents: this.#agents,
+          agents,
           selector,
           workspace,
         });

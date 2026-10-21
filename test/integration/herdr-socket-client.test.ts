@@ -195,7 +195,17 @@ describe("HerdrSocketClient", () => {
     expect(requests[0]).toMatchObject({
       method: "events.subscribe",
       params: {
-        subscriptions: [{ type: "pane.agent_status_changed", pane_id: "w1:p1" }],
+        subscriptions: [
+          ...[
+            "pane.agent_detected",
+            "pane.exited",
+            "pane.closed",
+            "pane.created",
+            "pane.moved",
+            "workspace.closed",
+          ].map((type) => ({ type })),
+          { type: "pane.agent_status_changed", pane_id: "w1:p1" },
+        ],
       },
     });
   });

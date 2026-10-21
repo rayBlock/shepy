@@ -270,10 +270,20 @@ export class HerdrSocketClient {
       await this.#request(
         "events.subscribe",
         {
-          subscriptions: (params.paneIds ?? []).map((pane_id) => ({
-            pane_id,
-            type: "pane.agent_status_changed" as const,
-          })),
+          subscriptions: [
+            ...[
+              "pane.agent_detected",
+              "pane.exited",
+              "pane.closed",
+              "pane.created",
+              "pane.moved",
+              "workspace.closed",
+            ].map((type) => ({ type })),
+            ...(params.paneIds ?? []).map((pane_id) => ({
+              pane_id,
+              type: "pane.agent_status_changed" as const,
+            })),
+          ],
         },
         requestOptions,
       );

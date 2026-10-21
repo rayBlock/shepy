@@ -39,6 +39,9 @@ export class AgentStore {
 
   replaceForSession(input: {
     agents: HerdrAgentLike[];
+    /** Runs inside the replacement transaction, before prior identities vanish. */
+    beforeRemove?(removed: AgentIndexRecord[], previous: AgentIndexRecord[]): void;
+    afterReplace?(current: AgentIndexRecord[]): void;
     deferStatusChanges?: boolean;
     herdrSessionName: string;
   }): AgentIndexRecord[] {
@@ -77,6 +80,11 @@ export class AgentStore {
           snapshot,
         };
       });
+      const retained = new Set(matched.flatMap(({ existing }) => (existing ? [existing.id] : [])));
+      input.beforeRemove?.(
+        existing.filter((row) => !retained.has(row.id)).map(mapAgent),
+        existing.map(mapAgent),
+      );
       const temporaryPaneIds = new Set<string>();
       for (const { existing: current, snapshot } of matched) {
         if (current && current.pane_id !== snapshot.paneId) temporaryPaneIds.add(current.id);
@@ -147,7 +155,9 @@ export class AgentStore {
           )
           .run(input.herdrSessionName, ...retainedIds);
       }
-      return this.listForHerdrSession(input.herdrSessionName);
+      const current = this.listForHerdrSession(input.herdrSessionName);
+      input.afterReplace?.(current);
+      return current;
     });
   }
 

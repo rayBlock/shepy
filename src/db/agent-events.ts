@@ -147,6 +147,17 @@ export class AgentEventStore {
     return row ? mapAgentEvent(row) : null;
   }
 
+  /** Reconcile outcomes appended before a crash but not yet projected. */
+  outcomesForAgent(agentId: string): AgentEventRecord[] {
+    const rows = this.#sqlite
+      .prepare(
+        `select * from agent_events where agent_id = ?
+       and type in ('agent.done', 'agent.idle', 'agent.blocked', 'agent.tool.failed') order by id`,
+      )
+      .all(agentId) as AgentEventRow[];
+    return rows.map(mapAgentEvent);
+  }
+
   get(id: number): AgentEventRecord {
     const row = this.#sqlite.prepare("select * from agent_events where id = ?").get(id) as
       | AgentEventRow

@@ -167,6 +167,12 @@ Pi claims that profile with `/shepy on <profileId>`. The current extension expos
 this claim as a slash command, not a model-callable tool; a new lead needs that
 one user action. No daemon change is needed for subscription management.
 
+## Subscription lifetime
+
+The daemon subscribes to Herdr's global `pane.agent_detected`, `pane.exited`, `pane.closed`, `pane.created`, `pane.moved` and `workspace.closed` events alongside per-pane status events. A successful snapshot reconciles missed events after reconnect or daemon restart. When an indexed worker disappears (including an agent exiting into a shell that stays open), each matching profile gets one `agent.gone` outcome attributed to that worker's prior name, pane and terminal. Pending completion outcomes remain deliverable before gone, even after the subscription is removed. A reused name in another terminal does not inherit the removed subscription. If a terminal moves, its uniquely matched subscriptions follow its new pane and workspace, including legacy pane selectors.
+
+The existing watch tick also age-prunes unmatched subscriptions after successful refreshes, with a two-minute age measured from the subscription's last update, as with `shepy profile prune <profileId> --age 2m`. Stopped, unreachable, malformed or not-yet-refreshed sessions do not trigger automatic cleanup. Invalid and ambiguous selectors remain for inspection. Legacy stale rows whose worker identity was already deleted before upgrade prune silently; the daemon cannot honestly attribute a gone outcome to them. No additional polling loop is added. Gone events and pending obligations remain durable; this cleanup does not introduce event-log retention.
+
 ## Pi extension
 
 Install the extension through Pi:
