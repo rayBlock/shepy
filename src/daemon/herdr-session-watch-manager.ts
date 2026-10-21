@@ -1,6 +1,7 @@
 import type { AgentStore } from "@/db/agents.js";
 import type { HerdrSessionStore } from "@/db/herdr-sessions.js";
 import type { HerdrSessionListEntry, HerdrSessionListRunner } from "@/herdr/session-list.js";
+import type { SessionPanePresence } from "@/herdr/session-snapshot.js";
 import { HerdrSocketClient } from "@/herdr/socket-client.js";
 import type {
   AgentIndexRefreshResult,
@@ -53,7 +54,7 @@ export class HerdrSessionWatchManager {
     herdrSessionName: string;
   }) => void;
   readonly #reconnectDelayMs: number;
-  readonly #onSessionRefreshed: (herdrSessionName: string) => void;
+  readonly #onSessionRefreshed: (herdrSessionName: string, presence?: SessionPanePresence) => void;
   readonly #refreshPublications = new WeakMap<
     Promise<AgentIndexRefreshResult>,
     Promise<AgentIndexRecord[]>
@@ -83,7 +84,7 @@ export class HerdrSessionWatchManager {
     onAgentEvent(event: AgentEventRecord): void;
     onAgentIndexRefreshed?(input: { agents: AgentIndexRecord[]; herdrSessionName: string }): void;
     reconnectDelayMs?: number;
-    onSessionRefreshed?(herdrSessionName: string): void;
+    onSessionRefreshed?(herdrSessionName: string, presence?: SessionPanePresence): void;
     sessionList: HerdrSessionListRunner;
   }) {
     this.#activeRevisionPollMs = options.activeRevisionPollMs ?? ACTIVE_REVISION_POLL_MS;
@@ -301,7 +302,7 @@ export class HerdrSessionWatchManager {
       this.#publishResult({ herdrSessionName: entry.name, ...result });
       // The existing tick/rescan drives age pruning. Never prune against a
       // cached, stopped or failed session, or before its first full refresh.
-      this.#onSessionRefreshed(entry.name);
+      this.#onSessionRefreshed(entry.name, result.presence);
       return result.agents;
     });
     this.#refreshPublications.set(source, publication);

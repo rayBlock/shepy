@@ -135,7 +135,7 @@ export async function runObservabilityDaemonService(
     onAgentGone: (departure) => {
       idleWakeService.schedule(deliveryService.projectGoneAgent(departure));
     },
-    onAgentMoved: (move) => deliveryService.moveSubscriptions(move),
+    onAgentsMoved: (moves) => deliveryService.moveSubscriptions(moves),
   });
 
   let watchManager: HerdrSessionWatchManager | undefined;
@@ -171,11 +171,12 @@ export async function runObservabilityDaemonService(
       idleWakeService.schedule(wakeProfiles);
     },
     onAgentIndexRefreshed: (refreshed) => server.reconcileAgentLocations(refreshed),
-    onSessionRefreshed: (herdrSessionName) => {
+    onSessionRefreshed: (herdrSessionName, presence) => {
       for (const profile of profileService.listProfiles()) {
         profileService.pruneSubscriptions({
           ageMs: SUBSCRIPTION_PRUNE_AGE_MS,
           herdrSessionName,
+          ...(presence ? { presence } : {}),
           profileId: profile.profileId,
         });
       }

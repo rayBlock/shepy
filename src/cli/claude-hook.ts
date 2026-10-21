@@ -1298,6 +1298,7 @@ function outcomeLine(obligation: LeasedObligation): string {
   const agent = safeToken(outcome.agent, HERDR_AGENT_TOKEN) ?? "unknown";
   const name = safeToken(outcome.name, HERDR_AGENT_TOKEN) ?? agent;
   const paneId = safeToken(outcome.paneId, PANE_ID_TOKEN) ?? "unknown";
+  if (outcome.type === "agent.gone") return `- ${name} gone (${agent}, ${paneId})`;
   const status =
     outcome.type === "agent.blocked"
       ? "blocked"

@@ -23,6 +23,7 @@ type SubscriptionRow = {
   enabled: 0 | 1;
   herdr_session_name: string;
   id: number;
+  legacy: 0 | 1;
   profile_id: string;
   updated_at: number;
   workspace_selector_json: string;
@@ -43,6 +44,7 @@ export type ProfileSubscriptionRecord = {
   enabled: boolean;
   herdrSessionName: string;
   id: number;
+  legacy: boolean;
   profileId: string;
   updatedAt: number;
   workspaceSelectorJson: string;
@@ -113,10 +115,10 @@ export class OrchestratorProfileStore {
     const now = Date.now();
     this.#sqlite
       .prepare(
-        `insert into profile_subscriptions (profile_id, herdr_session_name, workspace_selector_json, agent_selector_json, enabled, created_at, updated_at)
-				 values (?, ?, ?, ?, 1, ?, ?)
+        `insert into profile_subscriptions (profile_id, herdr_session_name, workspace_selector_json, agent_selector_json, enabled, created_at, updated_at, legacy)
+				 values (?, ?, ?, ?, 1, ?, ?, 0)
 				 on conflict(profile_id, herdr_session_name, workspace_selector_json, agent_selector_json)
-				 do update set enabled = 1, updated_at = excluded.updated_at`,
+				 do update set enabled = 1, updated_at = excluded.updated_at, legacy = 0`,
       )
       .run(
         input.profileId,
@@ -160,17 +162,67 @@ export class OrchestratorProfileStore {
     return result.changes > 0;
   }
 
-  moveSubscription(input: {
-    id: number;
-    workspaceSelectorJson: string;
-    agentSelectorJson: string;
-  }): void {
-    // Preserve age and row identity: pending obligations still name this row.
-    this.#sqlite
-      .prepare(
-        "update profile_subscriptions set workspace_selector_json = ?, agent_selector_json = ? where id = ?",
-      )
-      .run(input.workspaceSelectorJson, input.agentSelectorJson, input.id);
+  moveSubscriptions(
+    moves: Array<{
+      id: number;
+      workspaceSelectorJson: string;
+      agentSelectorJson: string;
+    }>,
+  ): void {
+    // Vacate all old selector keys before applying any destinations. Otherwise
+    // a shift or swap can collide with another row that is itself moving.
+    this.#sqlite.exec("savepoint shepy_subscription_moves");
+    try {
+      for (const move of moves) {
+        this.#sqlite
+          .prepare("update profile_subscriptions set agent_selector_json = ? where id = ?")
+          .run(`__shepy_moving__:${move.id}`, move.id);
+      }
+      for (const move of moves) {
+        const source = this.#sqlite
+          .prepare("select * from profile_subscriptions where id = ?")
+          .get(move.id) as SubscriptionRow | undefined;
+        if (!source) continue;
+        const duplicate = this.#sqlite
+          .prepare(
+            `select * from profile_subscriptions where profile_id = ? and herdr_session_name = ?
+           and workspace_selector_json = ? and agent_selector_json = ? and id != ?`,
+          )
+          .get(
+            source.profile_id,
+            source.herdr_session_name,
+            move.workspaceSelectorJson,
+            move.agentSelectorJson,
+            move.id,
+          ) as SubscriptionRow | undefined;
+        if (duplicate) {
+          // Keep the destination row. Pending obligations retain both old row
+          // ids independently (there is deliberately no subscription FK).
+          this.#sqlite
+            .prepare(
+              `update profile_subscriptions set enabled = ?, legacy = ?, created_at = ?, updated_at = ? where id = ?`,
+            )
+            .run(
+              Number(Boolean(source.enabled || duplicate.enabled)),
+              Number(Boolean(source.legacy && duplicate.legacy)),
+              Math.min(source.created_at, duplicate.created_at),
+              Math.max(source.updated_at, duplicate.updated_at),
+              duplicate.id,
+            );
+          this.#sqlite.prepare("delete from profile_subscriptions where id = ?").run(move.id);
+        } else {
+          this.#sqlite
+            .prepare(
+              "update profile_subscriptions set workspace_selector_json = ?, agent_selector_json = ? where id = ?",
+            )
+            .run(move.workspaceSelectorJson, move.agentSelectorJson, move.id);
+        }
+      }
+      this.#sqlite.exec("release shepy_subscription_moves");
+    } catch (error) {
+      this.#sqlite.exec("rollback to shepy_subscription_moves; release shepy_subscription_moves");
+      throw error;
+    }
   }
 
   listSubscriptions(profileId: string): ProfileSubscriptionRecord[] {
@@ -208,6 +260,7 @@ function toSubscription(row: SubscriptionRow): ProfileSubscriptionRecord {
     enabled: row.enabled === 1,
     herdrSessionName: row.herdr_session_name,
     id: row.id,
+    legacy: row.legacy === 1,
     profileId: row.profile_id,
     updatedAt: row.updated_at,
     workspaceSelectorJson: row.workspace_selector_json,

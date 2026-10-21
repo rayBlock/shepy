@@ -150,6 +150,9 @@ export const profileSubscriptions = sqliteTable(
     enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
     herdrSessionName: text("herdr_session_name").notNull(),
     id: integer("id").primaryKey({ autoIncrement: true }),
+    // Existing rows predate presence-aware automatic cleanup. New writes
+    // explicitly clear this flag, including an intentional re-subscription.
+    legacy: integer("legacy", { mode: "boolean" }).notNull().default(true),
     profileId: text("profile_id")
       .notNull()
       .references(() => orchestratorProfiles.profileId, { onDelete: "cascade" }),

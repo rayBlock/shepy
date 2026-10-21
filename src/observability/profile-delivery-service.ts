@@ -249,11 +249,15 @@ export class ProfileDeliveryService {
   /** A terminal survives pane movement. Carry only subscriptions that uniquely
    * selected its prior identity, including legacy pane selectors. */
   moveSubscriptions(input: {
-    previous: AgentIndexRecord;
-    current: AgentIndexRecord;
+    moves: Array<{ previous: AgentIndexRecord; current: AgentIndexRecord }>;
     previousAgents: AgentIndexRecord[];
   }): void {
     const source = frozenAgentSource(input.previousAgents);
+    const byAgent = new Map(input.moves.map((move) => [move.previous.id, move.current]));
+    const planned: Parameters<OrchestratorProfileStore["moveSubscriptions"]>[0] = [];
+    // Resolve each original subscription exactly once, before any writes. A
+    // rewritten pane selector must never be mistaken for another worker's old
+    // selector later in the same snapshot's shift or swap.
     for (const profile of this.#profiles.listProfiles()) {
       for (const subscription of this.#profiles.listSubscriptions(profile.profileId)) {
         if (!subscription.enabled) continue;
@@ -261,19 +265,22 @@ export class ProfileDeliveryService {
         const selector = parseAgentSelector(subscription.agentSelectorJson);
         if ("error" in workspace || "error" in selector) continue;
         const resolved = resolveSelectorInWorkspaceScope({ agents: source, selector, workspace });
-        if (resolved.kind !== "matched" || resolved.agent.id !== input.previous.id) continue;
-        this.#profiles.moveSubscription({
+        if (resolved.kind !== "matched") continue;
+        const current = byAgent.get(resolved.agent.id);
+        if (!current) continue;
+        planned.push({
           id: subscription.id,
           workspaceSelectorJson: JSON.stringify({
-            herdrSession: input.current.herdrSessionName,
-            workspaceId: input.current.workspaceId,
+            herdrSession: current.herdrSessionName,
+            workspaceId: current.workspaceId,
           }),
           agentSelectorJson: JSON.stringify(
-            selector.kind === "paneId" ? { kind: "paneId", value: input.current.paneId } : selector,
+            selector.kind === "paneId" ? { kind: "paneId", value: current.paneId } : selector,
           ),
         });
       }
     }
+    if (planned.length) this.#profiles.moveSubscriptions(planned);
   }
 
   #projectAgentEvent(

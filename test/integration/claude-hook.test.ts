@@ -2481,6 +2481,18 @@ describe("claude-hook formatter representation sets", () => {
     expect(context).toContain("builder idle (hermes, w2:p4):");
   });
 
+  test("gone has its own line, never a second done or a repeated final excerpt", () => {
+    const done = obligationWith(1, 10);
+    const gone = obligationWith(2, 10);
+    if (!gone.outcome) throw new Error("fixture: missing outcome");
+    gone.outcome.type = "agent.gone";
+    gone.outcome.to = "gone";
+    const formatted = formatHookContext("seat", [done, gone]);
+    expect(formatted.context.split("\n")).toContain("- builder gone (hermes, w2:p1)");
+    expect(formatted.context.match(/builder done/g)).toHaveLength(1);
+    expect(formatted.representedIds).toEqual([done.id, gone.id]);
+  });
+
   test("the read hint appears for the hook cap and source truncation", () => {
     const exactly200 = obligationWith(1, 200);
     const over200 = obligationWith(2, 201);

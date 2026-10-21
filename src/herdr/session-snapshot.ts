@@ -1,3 +1,9 @@
+export type SessionPanePresence = {
+  paneIds: string[];
+  /** Null when any pane lacks terminal identity: absence is then unproved. */
+  terminalIds: string[] | null;
+};
+
 export type HerdrSessionSnapshot = {
   agents: unknown[];
   focusedPaneId?: string;

@@ -2,7 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, TestRunner, test, vi } from "vitest";
 import type { AgentHistoryService } from "@/agent-history/service.js";
 import { emptyCompactHistory } from "@/agent-history/service.js";
 import {
@@ -43,7 +43,7 @@ function worker(name = "builder", pane = "w1:p1", terminal = "term1", status = "
     revision: 1,
   };
 }
-function snapshot(agents: ReturnType<typeof worker>[], panes: unknown[] = agents) {
+function snapshot(agents: Record<string, unknown>[], panes: unknown[] = agents) {
   return {
     type: "session_snapshot",
     snapshot: {
@@ -100,8 +100,7 @@ function fixture(socketPath?: string) {
             },
       onAgentGone: ({ event, previousAgents }) =>
         delivery.projectGoneAgent({ event, previousAgents }),
-      onAgentMoved: ({ previous, current, previousAgents }) =>
-        delivery.moveSubscriptions({ previous, current, previousAgents }),
+      onAgentsMoved: (moves) => delivery.moveSubscriptions(moves),
     });
   let index = makeIndex();
   const refresh = async () => {
@@ -177,12 +176,17 @@ describe("subscribed worker lifecycle", () => {
     f.sqlite.close();
   });
 
-  test("agent exit with its shell pane still present also gives gone once", async () => {
+  test.each([
+    false,
+    true,
+  ])("agent exit with shell pane present gives gone once; null agent row=%s", async (nullAgent) => {
     const f = fixture();
     await f.refresh();
     f.subscribe();
     f.set(
-      snapshot([], [{ pane_id: "w1:p1", terminal_id: "term1", agent: null, workspace_id: "w1" }]),
+      snapshot(nullAgent ? [{ ...worker(), agent: null, launch_pending: false }] : [], [
+        { pane_id: "w1:p1", terminal_id: "term1", agent: null, workspace_id: "w1" },
+      ]),
     );
     await f.refresh();
     await f.refresh();
@@ -308,6 +312,248 @@ describe("subscribed worker lifecycle", () => {
     f.sqlite.close();
   });
 
+  test("P1 launch-pending null agents preserve presence without freezing another worker's close", async () => {
+    const f = fixture();
+    await f.refresh();
+    f.subscribe();
+    f.subscribe("third", { kind: "terminalId", value: "term3" });
+    f.subscribe("starting", { kind: "terminalId", value: "term5" });
+    const pending = {
+      ...worker("starting", "w1:p5", "term5", "unknown"),
+      agent: null,
+      launch_pending: true,
+    };
+    f.set(
+      snapshot([
+        worker(),
+        worker("reviewer", "w1:p2", "term2"),
+        worker("third", "w1:p3", "term3"),
+        pending,
+      ]),
+    );
+    await f.refresh();
+    expect(
+      f.agents.findByTerminal({ herdrSessionName: "default", terminalId: "term5" }),
+    ).toBeUndefined();
+    f.set(
+      snapshot([worker("reviewer", "w1:p2", "term2"), worker("third", "w1:p3", "term3"), pending]),
+    );
+    const refreshed = await f.refresh();
+    if (!refreshed.presence) throw new Error("missing snapshot presence");
+    expect(refreshed.presence.terminalIds).toContain("term5");
+    expect(
+      f.service.pruneSubscriptions({
+        profileId: "starting",
+        herdrSessionName: "default",
+        ageMs: SUBSCRIPTION_PRUNE_AGE_MS,
+        now: Date.now() + 121000,
+        presence: refreshed.presence,
+      }).removed,
+    ).toHaveLength(0);
+    await f.refresh();
+    expect(f.outcomes().map((o) => o?.type)).toEqual(["agent.gone"]);
+    expect(f.outcomes("third")).toHaveLength(0);
+    expect(
+      f.agents.findByTerminal({ herdrSessionName: "default", terminalId: "term3" })?.agent,
+    ).toBe("pi");
+    expect(f.outcomes("starting")).toHaveLength(0);
+    expect(f.profiles.listSubscriptions("starting")).toHaveLength(1);
+    f.sqlite.close();
+  });
+
+  test.each([
+    "shift",
+    "swap",
+  ])("P2 and P2b compute the entire %s before rewriting any subscriptions", async (mode) => {
+    const f = fixture();
+    f.set(snapshot([worker("a", "w1:p1", "termA"), worker("b", "w1:p2", "termB")]));
+    await f.refresh();
+    const a = f.subscribe("pa", { kind: "paneId", value: "w1:p1" });
+    const b = f.subscribe("pb", { kind: "paneId", value: "w1:p2" });
+    const sameA = f.subscribe("seat", { kind: "paneId", value: "w1:p1" });
+    const sameB = f.subscribe("seat", { kind: "paneId", value: "w1:p2" });
+    f.set(
+      snapshot([
+        worker("a", "w1:p2", "termA"),
+        worker("b", mode === "swap" ? "w1:p1" : "w1:p3", "termB"),
+      ]),
+    );
+    await f.refresh();
+    await f.refresh();
+    for (const [profile, id, terminal] of [
+      ["pa", a.id, "termA"],
+      ["pb", b.id, "termB"],
+      ["seat", sameA.id, "termA"],
+      ["seat", sameB.id, "termB"],
+    ] as const) {
+      const resolved = f.service
+        .resolveSubscriptions(profile)
+        .find((row) => row.subscription.id === id);
+      expect(resolved?.kind === "matched" ? resolved.agent.terminalId : resolved?.kind).toBe(
+        terminal,
+      );
+    }
+    expect(f.profiles.listSubscriptions("seat")).toHaveLength(2);
+    expect(f.outcomes()).toHaveLength(0);
+    f.sqlite.close();
+  });
+
+  test("P7b merges a colliding destination row and every later refresh still succeeds", async () => {
+    const f = fixture();
+    f.set(snapshot([worker(), worker("builder", "w2:p5", "term5")]));
+    await f.refresh();
+    f.subscribe();
+    f.service.addSubscription({
+      ...input,
+      workspaceId: "w2",
+      profileId: "seat",
+      agentSelector: { kind: "name", value: "builder" },
+    });
+    f.set(snapshot([worker("builder", "w2:p8", "term1"), worker("builder", "w2:p5", "term5")]));
+    for (let i = 0; i < 4; i++) await f.refresh();
+    expect(f.profiles.listSubscriptions("seat")).toHaveLength(1);
+    expect(f.service.resolveSubscriptions("seat")[0]?.kind).toBe("ambiguous");
+    f.set(snapshot([worker("builder", "w2:p8", "term1")]));
+    await f.refresh();
+    expect(f.service.resolveSubscriptions("seat")[0]?.kind).toBe("matched");
+    f.set(snapshot([worker("builder", "w2:p8", "term1", "done")]));
+    await f.refresh();
+    expect(f.outcomes().map((o) => o?.type)).toEqual(["agent.done"]);
+    f.sqlite.close();
+  });
+
+  test("a duplicate move retains pending outcomes and the enabled modern subscription", async () => {
+    const f = fixture();
+    await f.refresh();
+    const source = f.subscribe();
+    const target = f.service.addSubscription({
+      ...input,
+      workspaceId: "w2",
+      profileId: "seat",
+      agentSelector: { kind: "name", value: "builder" },
+    }).subscription;
+    f.sqlite
+      .prepare("update profile_subscriptions set enabled = 0, legacy = 1 where id = ?")
+      .run(target.id);
+    const agent = f.agents.findByTerminal({ herdrSessionName: "default", terminalId: "term1" });
+    if (!agent) throw new Error("worker not indexed");
+    const done = f.agentEvents.append({
+      agentId: agent.id,
+      herdrSessionName: "default",
+      paneId: agent.paneId,
+      workspaceId: "w1",
+      terminalId: "term1",
+      type: "agent.done",
+      payload: { agent: "pi", name: "builder", from: "working", to: "done" },
+    });
+    f.delivery.projectAgentEvent(done);
+    expect(f.delivery.inboxList({ profileId: "seat" })[0]?.subscriptionId).toBe(source.id);
+    f.set(snapshot([worker("builder", "w2:p9", "term1")]));
+    await f.refresh();
+    expect(f.profiles.listSubscriptions("seat")).toEqual([
+      expect.objectContaining({ id: target.id, enabled: true, legacy: false }),
+    ]);
+    expect(f.outcomes().map((o) => o?.eventId)).toEqual([done.id]);
+    f.sqlite.close();
+  });
+
+  test("a failed batch move rolls back all temporary selector keys with the agent index", async () => {
+    const f = fixture();
+    await f.refresh();
+    f.subscribe();
+    const before = f.profiles.listSubscriptions("seat");
+    f.sqlite.exec(`create trigger fail_move before update of workspace_selector_json on profile_subscriptions
+      begin select raise(abort, 'injected move failure'); end`);
+    f.set(
+      snapshot([
+        worker("builder", "w2:p9", "term1"),
+        worker("reviewer", "w1:p2", "term2"),
+        worker("third", "w1:p3", "term3"),
+      ]),
+    );
+    await expect(f.refresh()).rejects.toThrow("injected move failure");
+    expect(f.profiles.listSubscriptions("seat")).toEqual(before);
+    expect(
+      f.agents.findByTerminal({ herdrSessionName: "default", terminalId: "term1" })?.paneId,
+    ).toBe("w1:p1");
+    f.sqlite.exec("drop trigger fail_move");
+    await f.refresh();
+    expect(f.service.resolveSubscriptions("seat")[0]?.kind).toBe("matched");
+    f.sqlite.close();
+  });
+
+  test("P4 automatic pruning keeps a modern never-matched subscription until presence proves absence", async () => {
+    const f = fixture();
+    await f.refresh();
+    f.subscribe("seat", { kind: "terminalId", value: "term9" });
+    const aged = {
+      profileId: "seat",
+      herdrSessionName: "default",
+      ageMs: SUBSCRIPTION_PRUNE_AGE_MS,
+      now: Date.now() + 121000,
+    };
+    expect(f.service.pruneSubscriptions(aged).removed).toHaveLength(0);
+    expect(
+      f.service.pruneSubscriptions({
+        ...aged,
+        presence: { paneIds: ["w1:p9"], terminalIds: ["term9"] },
+      }).removed,
+    ).toHaveLength(0);
+    f.set(snapshot([worker(), worker("late", "w1:p9", "term9")]));
+    await f.refresh();
+    f.set(snapshot([worker(), worker("late", "w1:p9", "term9", "done")]));
+    await f.refresh();
+    expect(f.outcomes().map((o) => o?.type)).toEqual(["agent.done"]);
+    f.subscribe("absent", { kind: "paneId", value: "w1:p99" });
+    expect(
+      f.service.pruneSubscriptions({
+        ...aged,
+        profileId: "absent",
+        presence: { paneIds: [], terminalIds: [] },
+      }).removed,
+    ).toHaveLength(1);
+    f.sqlite.close();
+  });
+
+  test("automatic prune refuses unknown identity and missing terminal metadata; explicit prune is unchanged", async () => {
+    const f = fixture();
+    await f.refresh();
+    f.subscribe("seat", { kind: "terminalId", value: "future" });
+    f.subscribe("name", { kind: "name", value: "future" });
+    const aged = {
+      herdrSessionName: "default",
+      ageMs: SUBSCRIPTION_PRUNE_AGE_MS,
+      now: Date.now() + 121000,
+    };
+    expect(
+      f.service.pruneSubscriptions({
+        ...aged,
+        profileId: "seat",
+        presence: { paneIds: [], terminalIds: null },
+      }).removed,
+    ).toHaveLength(0);
+    expect(
+      f.service.pruneSubscriptions({
+        ...aged,
+        profileId: "name",
+        presence: { paneIds: [], terminalIds: [] },
+      }).removed,
+    ).toHaveLength(0);
+    // Complete absence alone does not skip the ordinary age gate.
+    expect(
+      f.service.pruneSubscriptions({
+        ...aged,
+        now: Date.now(),
+        profileId: "seat",
+        presence: { paneIds: [], terminalIds: [] },
+      }).removed,
+    ).toHaveLength(0);
+    expect(
+      f.service.pruneSubscriptions({ profileId: "seat", ageMs: aged.ageMs, now: aged.now }).removed,
+    ).toHaveLength(1);
+    f.sqlite.close();
+  });
+
   test("startup before first refresh, Herdr failure and malformed snapshots never delete", async () => {
     const f = fixture();
     f.subscribe();
@@ -410,11 +656,12 @@ async function socketFixture() {
     onAgentEvent: (event) => {
       f.delivery.projectAgentEvent(event);
     },
-    onSessionRefreshed: (herdrSessionName) => {
+    onSessionRefreshed: (herdrSessionName, presence) => {
       for (const profile of f.service.listProfiles())
         f.service.pruneSubscriptions({
           profileId: profile.profileId,
           herdrSessionName,
+          ...(presence ? { presence } : {}),
           ageMs: SUBSCRIPTION_PRUNE_AGE_MS,
         });
     },
@@ -442,14 +689,37 @@ async function socketFixture() {
   };
 }
 async function until(predicate: () => boolean) {
-  const deadline = Date.now() + 2000;
-  while (!predicate()) {
-    if (Date.now() > deadline) throw new Error("fixture condition not reached");
+  const task = TestRunner.getCurrentTest();
+  if (!task) throw new Error("fixture requires an active test");
+  // Vitest aborts this signal at the configured test timeout (and on cancel).
+  // There is no shorter fixture deadline that defeats a larger gate timeout.
+  for (;;) {
+    task.context.signal.throwIfAborted();
+    if (predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
 }
 
 describe("watcher lifecycle over the Herdr socket", () => {
+  test("fixture polling has no separate two-second deadline before the test signal", async () => {
+    vi.useFakeTimers();
+    try {
+      let ready = false;
+      const settled = vi.fn();
+      const waiting = until(() => ready);
+      const observed = waiting.then(settled, settled);
+      await vi.advanceTimersByTimeAsync(2100);
+      expect(settled).not.toHaveBeenCalled();
+      ready = true;
+      await vi.advanceTimersByTimeAsync(5);
+      await waiting;
+      await observed;
+      expect(settled).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("three workers: a real status event delivers done, then close delivers gone and keeps the others", async () => {
     const f = await socketFixture();
     try {
@@ -547,6 +817,9 @@ describe("watcher lifecycle over the Herdr socket", () => {
       });
       f.subscribe("live", { kind: "terminalId", value: "term1" });
       f.sqlite.exec("update profile_subscriptions set updated_at = 0");
+      f.sqlite.exec(
+        "update profile_subscriptions set legacy = 1 where agent_selector_json like '%pre-upgrade-absent%'",
+      );
       f.unavailable(true);
       await f.manager.start();
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -557,6 +830,38 @@ describe("watcher lifecycle over the Herdr socket", () => {
       expect(f.profiles.listSubscriptions("live")).toHaveLength(1);
       expect(f.outcomes("live")).toHaveLength(0);
       expect(f.outcomes()).toHaveLength(0); // legacy rows without an identity prune silently
+    } finally {
+      await f.close();
+    }
+  });
+
+  test("P4 a subscribed shell can wait past the age gate and later deliver its first done", async () => {
+    const f = await socketFixture();
+    try {
+      f.subscribe("seat", { kind: "terminalId", value: "term9" });
+      f.sqlite.exec("update profile_subscriptions set updated_at = 0");
+      f.set(
+        snapshot([], [{ pane_id: "w1:p9", terminal_id: "term9", workspace_id: "w1", agent: null }]),
+      );
+      await f.manager.start();
+      await until(f.ready);
+      expect(f.profiles.listSubscriptions("seat")).toHaveLength(1);
+      f.set(snapshot([worker("late", "w1:p9", "term9")]));
+      f.broadcast("pane.agent_detected", { pane_id: "w1:p9", workspace_id: "w1" });
+      await until(() => f.service.resolveSubscriptions("seat")[0]?.kind === "matched");
+      f.set(snapshot([worker("late", "w1:p9", "term9", "done")]));
+      f.broadcast("pane.agent_status_changed", {
+        pane_id: "w1:p9",
+        workspace_id: "w1",
+        agent_status: "done",
+      });
+      await until(() => f.outcomes().length === 1);
+      expect(f.outcomes()[0]?.type).toBe("agent.done");
+      f.set(snapshot([]));
+      f.broadcast("pane.closed", { pane_id: "w1:p9", workspace_id: "w1" });
+      await until(() => f.outcomes().length === 2);
+      expect(f.outcomes().map((row) => row?.type)).toEqual(["agent.done", "agent.gone"]);
+      expect(f.profiles.listSubscriptions("seat")).toHaveLength(0);
     } finally {
       await f.close();
     }

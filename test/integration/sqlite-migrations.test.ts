@@ -13,6 +13,7 @@ import { readMigrationFiles } from "drizzle-orm/migrator";
 import { afterEach, describe, expect, test } from "vitest";
 import { applyMigrations } from "@/db/apply-migrations.js";
 import { openSqlite } from "@/db/client.js";
+import { OrchestratorProfileStore } from "@/db/orchestrator-profiles.js";
 
 const tempDirs: string[] = [];
 
@@ -21,6 +22,53 @@ afterEach(() => {
 });
 
 describe("SQLite migrations", () => {
+  test("lifecycle upgrade marks existing subscriptions legacy; new and renewed rows stay modern after reopen", () => {
+    const dir = mkdtempSync(join(tmpdir(), "s2-upgrade-"));
+    tempDirs.push(dir);
+    const prior = join(dir, "prior");
+    mkdirSync(join(prior, "meta"), { recursive: true });
+    const journal = JSON.parse(readFileSync("drizzle/meta/_journal.json", "utf8"));
+    const boundary = journal.entries.findIndex(
+      (entry: { tag: string }) => entry.tag === "0013_subscription-lifecycle-legacy",
+    );
+    if (boundary < 0) throw new Error("lifecycle migration missing");
+    journal.entries = journal.entries.slice(0, boundary);
+    writeFileSync(join(prior, "meta/_journal.json"), JSON.stringify(journal));
+    for (const entry of journal.entries)
+      copyFileSync(join("drizzle", `${entry.tag}.sql`), join(prior, `${entry.tag}.sql`));
+    const path = join(dir, "state.db");
+    const { sqlite } = openSqlite(path);
+    applyMigrations(sqlite, { migrationsFolder: prior });
+    const profiles = new OrchestratorProfileStore(sqlite);
+    profiles.createProfile({ profileId: "seat", displayName: "Seat", projectRoots: [] });
+    const workspaceSelectorJson = JSON.stringify({ herdrSession: "default", workspaceId: "w1" });
+    const oldSelector = JSON.stringify({ kind: "terminalId", value: "old" });
+    sqlite
+      .prepare(`insert into profile_subscriptions (profile_id, herdr_session_name, workspace_selector_json, agent_selector_json, enabled, created_at, updated_at)
+      values ('seat', 'default', ?, ?, 1, 1, 1)`)
+      .run(workspaceSelectorJson, oldSelector);
+    applyMigrations(sqlite, { migrationsFolder: "drizzle" });
+    expect(profiles.listSubscriptions("seat")[0]).toMatchObject({ legacy: true, createdAt: 1 });
+    profiles.addSubscription({
+      profileId: "seat",
+      herdrSessionName: "default",
+      workspaceSelectorJson,
+      agentSelectorJson: oldSelector,
+    });
+    profiles.addSubscription({
+      profileId: "seat",
+      herdrSessionName: "default",
+      workspaceSelectorJson,
+      agentSelectorJson: JSON.stringify({ kind: "terminalId", value: "new" }),
+    });
+    sqlite.close();
+    const reopened = openSqlite(path).sqlite;
+    expect(
+      new OrchestratorProfileStore(reopened).listSubscriptions("seat").map((row) => row.legacy),
+    ).toEqual([false, false]);
+    reopened.close();
+  });
+
   test("backfills delivery_seq and agent source while preserving existing obligations", () => {
     const dir = mkdtempSync(join(tmpdir(), "shepy-db-upgrade-"));
     tempDirs.push(dir);

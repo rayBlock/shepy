@@ -5,6 +5,7 @@ import type {
   ProfileRecord,
   ProfileSubscriptionRecord,
 } from "@/db/orchestrator-profiles.js";
+import type { SessionPanePresence } from "@/herdr/session-snapshot.js";
 import type { AgentIndexRecord } from "./contracts.js";
 import { resolveSelectorInWorkspaceScope } from "./profile-selector-scope.js";
 import {
@@ -127,7 +128,11 @@ export class ProfileService {
   /**
    * Close-on-collect for subscriptions (the graveyard law): remove the
    * ones whose agent selector provably matches NO live agent in their
-   * scoped workspace, older than `ageMs`. Liveness is judged by the SAME
+   * scoped workspace, older than `ageMs`. Automatic calls additionally need
+   * a legacy row or complete snapshot proof that its pane is absent; a new
+   * subscription waiting for its first agent is not merely stale. Explicit
+   * operator prune keeps its original unmatched-row semantics.
+   * Liveness is judged by the SAME
    * scope → candidates → resolve step as inspection and delivery (one
    * helper, no drift), so a subscription this verb calls dead is a
    * subscription that can never project another obligation.
@@ -153,6 +158,7 @@ export class ProfileService {
     now?: number;
     profileId: string;
     herdrSessionName?: string;
+    presence?: SessionPanePresence;
   }): {
     kept: number;
     refused: Array<{ detail: string; id: number; label: string }>;
@@ -162,6 +168,10 @@ export class ProfileService {
       throw new Error(`No such profile: ${input.profileId}`);
     }
     const now = input.now ?? Date.now();
+    const presentPanes = input.presence ? new Set(input.presence.paneIds) : undefined;
+    const presentTerminals = input.presence?.terminalIds
+      ? new Set(input.presence.terminalIds)
+      : undefined;
     const removed: Array<{ id: number; label: string; updatedAt: number }> = [];
     const refused: Array<{ detail: string; id: number; label: string }> = [];
     let kept = 0;
@@ -169,7 +179,8 @@ export class ProfileService {
       const subscription = resolution.subscription;
       // Automatic callers supply ONLY the session whose snapshot just
       // succeeded. Stopped, unreachable and not-yet-refreshed sessions are
-      // never evidence of absence. Manual prune retains its explicit scope.
+      // never evidence of absence. Modern unmatched rows also need pane
+      // absence proof below. Manual prune retains its explicit scope.
       if (input.herdrSessionName && subscription.herdrSessionName !== input.herdrSessionName)
         continue;
       const label = subscriptionLabel(subscription);
@@ -178,6 +189,19 @@ export class ProfileService {
         continue;
       }
       if (resolution.kind === "unmatched") {
+        if (input.herdrSessionName && !subscription.legacy) {
+          const selector = parseAgentSelector(subscription.agentSelectorJson);
+          const absent =
+            !("error" in selector) &&
+            ((selector.kind === "paneId" && presentPanes && !presentPanes.has(selector.value)) ||
+              (selector.kind === "terminalId" &&
+                presentTerminals &&
+                !presentTerminals.has(selector.value)));
+          if (!absent) {
+            kept += 1;
+            continue;
+          }
+        }
         if (now - subscription.updatedAt < input.ageMs) {
           refused.push({
             detail: `unmatched but younger than the age gate: ${resolution.detail}`,

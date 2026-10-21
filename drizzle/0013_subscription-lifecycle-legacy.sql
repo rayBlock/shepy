@@ -1,0 +1,1 @@
+ALTER TABLE `profile_subscriptions` ADD `legacy` integer DEFAULT true NOT NULL;

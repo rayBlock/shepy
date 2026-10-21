@@ -5,7 +5,10 @@ import type { AgentHistoryCacheStore } from "@/db/agent-history-cache.js";
 import type { AgentStore, HerdrAgentLike } from "@/db/agents.js";
 import type { HerdrSessionStore } from "@/db/herdr-sessions.js";
 import type { HerdrWorkspaceStore } from "@/db/herdr-workspaces.js";
-import { normalizeHerdrSessionSnapshot } from "@/herdr/session-snapshot.js";
+import {
+  normalizeHerdrSessionSnapshot,
+  type SessionPanePresence,
+} from "@/herdr/session-snapshot.js";
 import { HerdrSocketClient } from "@/herdr/socket-client.js";
 import { AgentContextService } from "@/observability/agent-context-service.js";
 import {
@@ -20,6 +23,7 @@ import {
 
 export type AgentIndexRefreshResult = {
   agents: AgentIndexRecord[];
+  presence?: SessionPanePresence;
   contextChangedScopes: AgentScope[];
   events: AgentEventRecord[];
 };
@@ -77,9 +81,8 @@ export class AgentIndexService {
     event: AgentEventRecord;
     previousAgents: AgentIndexRecord[];
   }) => void;
-  readonly #onAgentMoved: (input: {
-    previous: AgentIndexRecord;
-    current: AgentIndexRecord;
+  readonly #onAgentsMoved: (input: {
+    moves: Array<{ previous: AgentIndexRecord; current: AgentIndexRecord }>;
     previousAgents: AgentIndexRecord[];
   }) => void;
   readonly #pendingSettlements = new Map<string, PendingStatus>();
@@ -100,16 +103,15 @@ export class AgentIndexService {
     history?: AgentHistoryService;
     stores: AgentIndexServiceStores;
     onAgentGone?(input: { event: AgentEventRecord; previousAgents: AgentIndexRecord[] }): void;
-    onAgentMoved?(input: {
-      previous: AgentIndexRecord;
-      current: AgentIndexRecord;
+    onAgentsMoved?(input: {
+      moves: Array<{ previous: AgentIndexRecord; current: AgentIndexRecord }>;
       previousAgents: AgentIndexRecord[];
     }): void;
   }) {
     this.#clientFactory = options.clientFactory ?? ((input) => new HerdrSocketClient(input));
     this.#stores = options.stores;
     this.#onAgentGone = options.onAgentGone ?? (() => undefined);
-    this.#onAgentMoved = options.onAgentMoved ?? (() => undefined);
+    this.#onAgentsMoved = options.onAgentsMoved ?? (() => undefined);
     if (options.context) {
       this.#context = options.context;
     } else {
@@ -217,12 +219,15 @@ export class AgentIndexService {
       }
       const snapshot = normalizeHerdrSessionSnapshot(rawSnapshot);
       if (
+        snapshot.panes.some(
+          (value) => !(stringValue(record(value).pane_id) ?? stringValue(record(value).paneId)),
+        ) ||
         snapshot.agents.some((value) => {
           const agent = record(value);
           return (
             !(stringValue(agent.pane_id) ?? stringValue(agent.paneId)) ||
             !(stringValue(agent.workspace_id) ?? stringValue(agent.workspaceId)) ||
-            !stringValue(agent.agent)
+            (agent.agent !== null && !stringValue(agent.agent))
           );
         })
       )
@@ -235,9 +240,36 @@ export class AgentIndexService {
           return paneId && revision !== undefined ? ([[paneId, revision]] as const) : [];
         }),
       );
-      const snapshotAgents = snapshot.agents.map((agent) =>
-        withPaneRevision(agent, revisionByPane),
-      );
+      const snapshotAgents = snapshot.agents
+        .filter((agent) => record(agent).agent !== null)
+        .map((agent) => withPaneRevision(agent, revisionByPane));
+      // Empty panes and launch-pending entries count as present even though
+      // they supply no detected worker to index. Missing terminal metadata
+      // cannot prove that an unmatched terminal subscription's pane is gone.
+      const panes = snapshot.panes.map(record);
+      const present = [...panes, ...snapshot.agents.map(record)];
+      const presence: SessionPanePresence = {
+        paneIds: [
+          ...new Set(
+            present.flatMap((pane) => {
+              const id = stringValue(pane.pane_id) ?? stringValue(pane.paneId);
+              return id ? [id] : [];
+            }),
+          ),
+        ],
+        terminalIds: present.every(
+          (pane) => stringValue(pane.terminal_id) ?? stringValue(pane.terminalId),
+        )
+          ? [
+              ...new Set(
+                present.flatMap((pane) => {
+                  const id = stringValue(pane.terminal_id) ?? stringValue(pane.terminalId);
+                  return id ? [id] : [];
+                }),
+              ),
+            ]
+          : null,
+      };
       this.#stores.herdrSessions.upsertRunning({
         name: input.herdrSessionName,
         sessionDir: input.sessionDir,
@@ -293,17 +325,16 @@ export class AgentIndexService {
           }
         },
         afterReplace: (currentAgents) => {
-          for (const current of currentAgents) {
-            const prior = previous.find((row) => row.id === current.id);
-            if (
-              prior &&
-              prior.terminalId &&
+          const previousById = new Map(previous.map((row) => [row.id, row]));
+          const moves = currentAgents.flatMap((current) => {
+            const prior = previousById.get(current.id);
+            return prior?.terminalId &&
               prior.terminalId === current.terminalId &&
               (prior.paneId !== current.paneId || prior.workspaceId !== current.workspaceId)
-            ) {
-              this.#onAgentMoved({ previous: prior, current, previousAgents: previous });
-            }
-          }
+              ? [{ previous: prior, current }]
+              : [];
+          });
+          if (moves.length) this.#onAgentsMoved({ moves, previousAgents: previous });
         },
         deferStatusChanges: true,
         herdrSessionName: input.herdrSessionName,
@@ -396,6 +427,7 @@ export class AgentIndexService {
       }
       return {
         agents: this.#stores.agents.listForHerdrSession(input.herdrSessionName),
+        presence,
         contextChangedScopes: sortedScopes(scopes),
         events,
         pendingStatuses,
