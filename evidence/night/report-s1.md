@@ -1,51 +1,48 @@
-# S1 notice correctness
+# S1: Correction 1
 
-**PARTIAL.** Slice 1 is implemented and focused-test verified; the shared full gate and live acceptance remain open.
-Candidate: `f10cc62df329e99db2132fc914a8dab47e27b00f`, branch `night/s1`, base `07d573552d51690b51750c94f8eaa8fe4be49598`.
-Scope: notice identity, startup suppression, duplicate-session resolution, one bounded history retry, and initial blocked detection only.
-Acceptance was recorded here before coding from `/Users/ray/dev/agent-factory/evidence/20261021-night/brief-S1-notices.md` and binding S1 amendments in `/Users/ray/dev/agent-factory/evidence/night/acceptance-check.md`. No hash-pinned PRIMER was supplied; the current PRIMER and role contract were read.
+**PARTIAL.** All requested fixes are implemented and 14 current review probes pass. The latest nine-file check still has three timing failures; it is not green.
+Candidate: `ff2b52dc878bab8084771d9bd48383f82ba5c504`, branch `night/s1`, correcting `f10cc62` and report `15a0381`.
+Authority: seat's Correction 1 and `git -C /Users/ray/dev/shepy show 8ff2940:evidence/night/report-rev-s1.md`. Original acceptance and preparation evidence remain in `15a0381:evidence/night/report-s1.md`.
 
-## Files changed
-- `README.md`; `src/agent-history/discovery.ts`, `src/agent-history/service.ts`.
-- `src/db/agents.ts`; `src/daemon/herdr-session-watch-manager.ts`.
-- `src/observability/agent-context-service.ts`, `src/observability/agent-index-service.ts`, `src/observability/profile-delivery-service.ts`.
-- `test/integration/notice-correctness.test.ts`, `test/integration/agent-context-service.test.ts`, `test/integration/agent-history-identity.test.ts`, `test/integration/agent-index-service.test.ts`.
-- `test/unit/agent-history-discovery.test.ts`, `test/unit/agent-history-service.test.ts`; this report.
+## Files changed in this correction
+- `src/observability/agent-index-service.ts`; `src/db/agents.ts`; `src/daemon/herdr-session-watch-manager.ts`.
+- `src/agent-history/discovery.ts`; `src/agent-history/service.ts`; `README.md`.
+- `test/integration/notice-correctness.test.ts`; `test/integration/agent-history-identity.test.ts`; this report.
 
-## Acceptance proof
-All proof below is fixture proof through public services, real readers, migrated SQLite, profile obligations, and `projectInboxOutcome`; it is not live Herdr acceptance.
-| Requirement | Proof in `test/integration/notice-correctness.test.ts` |
+## Requested proof
+| Item | Implementation and fixture proof |
 | --- | --- |
-| No foreign fallback, including cached discoveries | No-session agent refuses foreign and same-cwd files; persisted poisoned hint is cleared. Authoritative session control reads its own final. |
-| Refresh native identity before history | Two Pi workers and one Claude worker start without indexed IDs, then finish concurrently; all three profile excerpts equal their own final lines and IDs are refreshed. Failed Herdr lookup refuses history. |
-| Startup idle and done suppression | Both unknown transitions without text produce zero obligations and no retry wait. Real working completions notify. |
-| Duplicate session IDs | Claude project-folder selection wins even when both headers carry the same cwd; a cached old-folder hint is rejected in compact and live reads. Neither matching gives no text; a single main reads normally. Existing ambiguous-main and subagent controls also pass. |
-| One delayed read, not stale text | Real 300 ms writes repair missing, previous-turn, and unreadable histories. Still-old text becomes empty. New-turn text cannot attach to the prior completion. Fresh snapshot finals do not wait; five delayed snapshot finals share one wait. |
-| Initial blocked exactly once | First snapshot and recovered-event paths notify once without assistant text; service restart with persisted rows and three ticks do not repeat it. Leaving and re-entering blocked notifies again. |
-| Other-pane latency | Both the index queue and actual watch-stream path publish the fresh pane before the slow pane; watcher stop drains admitted publications. |
-Live three-worker notices, a real approval prompt, Ray's seat inspection, and independent review were not run: no dispatch, messaging, or real-daemon restart grant was used.
+| P1: superseded retry ordering | Append its empty completion immediately, before the newer status; retain that event for flush publication without another append. The new-turn test now asserts audit order, exactly two outcomes, and the final row status, for both event and snapshot routes. |
+| Crash window, P2 | Status plus both event records commit in one SQLite transaction. Snapshot metadata refresh preserves committed statuses. The row stays working during the retry; duplicate settled observations are ignored. Injected first-append and semantic-twin failures roll back; a restarted index recovers exactly one completion. Both routes, text present and missing, are exercised. Initial blocked append failure also recovers. |
+| P6: ready snapshot outcomes first | The watcher publishes the ready portion before waiting for retries, then publishes only the retry portion. The public watch-manager test asserts the fast notice arrives while the slow notice is absent, no duplicate outcomes, and final context statuses reflect both completions. |
+| Cached Claude main | A unique validated main survives a cwd alias or missing cwd. Multiple mains require the matching project folder; absent cwd fails closed. Tests cover compact and live reads, a new copy, an initially incomplete copy, and removal of that copy. A per-service fingerprint cache avoids reopening unchanged headers; directory enumeration and stats still detect new copies. |
+| P4 and P5 controls | Persisted working becomes blocked once after restart and repeated ticks. A flushed next-user record cannot deliver the previous settled text. Both controls pass. |
+All proof uses synthetic producer-shaped transcripts, real readers, migrated SQLite and profile obligations, not live Herdr workers. Nine selected regressions fail on the reviewed `f10cc62` snapshot. A supplemental missing-cwd cached-ref probe also failed before its guard was corrected.
 
-## Checks and retained failures
-Every test and gate used `env -i`, a new private HOME and TMPDIR, and none of the three prohibited Claude variables. Tools: Node 24.18.0, pnpm 11.9.0, TypeScript 6.0.3, Vitest 4.1.9, Biome 2.5.1, Bun 1.3.14. Existing dependencies were copied locally; no install completed.
-Private scratch, all attempts, measurements and logs: `/private/tmp/s1-notices`.
-| Check | Exit and wall time |
+## Checks and retained red results
+Every test and gate used `env -i`, a fresh private HOME, short TMPDIR, and no Claude messaging variables, CLAUDECODE, REPL_ID or AGENT. Tools remain Node 24.18.0, pnpm 11.9.0, TypeScript 6.0.3, Vitest 4.1.9 and Biome 2.5.1. Automatic pnpm dependency installation was disabled.
+Private scripts, complete attempts, logs and measurements: `/private/tmp/s1-r1`.
+| Check | Exit, wall time and result |
 | --- | --- |
-| Eight focused files through `node scripts/run-tests.mjs --maxWorkers=1` | 0, 14.54 s; 154 tests, including 18 new probes. |
-| `pnpm typecheck`; `bun x --no-install tsc --noEmit` | 0, 3.90 s; 0, 4.42 s. pnpm automatic dependency installation was explicitly disabled. |
-| `pnpm build`; root package check | 0, 4.35 s; 0, 4.33 s; root tarball allowlist passes. |
-| Pi package check; Herdr plugin check | 0, 2.96 s; 0, 1.56 s. |
-| Biome check; format; Drizzle check; diff whitespace check | 0, 0.26 s; 0, 0.08 s; 0, 1.25 s; 0, 0.10 s. One unchanged unused-import warning remains. |
-| `pnpm check` under `lockf -k -t 0 /private/tmp/agent-factory-full-gate.lock` | 75, 0.00 s: already locked, so the full check did not start. An earlier lock acquisition attempt was terminated after 240 s, before tests started. No lock bypass. |
-Red proof is retained: initial candidate probes failed 10 of 12; the base snapshot fails 13 of the later 16 probes. Intermediate reds included obsolete fallback expectations, a fixture directory mismatch, the snapshot fast-path bug, and timing-sensitive fixture failures. The unreadable fixture now uses renames rather than recursive deletion during its flush, and watch latency excludes startup; thresholds were not extended. Those reds remain in scratch. An early pnpm invocation refused its automatic module reinstall; direct typecheck distinguished that environment failure from code errors.
-Final focused log SHA-256: `fe67b58455bc1e3c819f9abb921f56bee67ef323cc9465b217718dd894637a8e` (`focused-frozen.log`). Git honored the existing hook configuration; `.husky/_` is absent in this worktree, so no commit hooks executed. Gates above were run explicitly.
+| Current typecheck | 0, 10.81 s. |
+| Current review and correction probes | 0, 10.23 s; 14 passed, 21 unrelated cases unselected. Includes P1, P2, P4, P5, P6 and cached-ref controls. |
+| Latest touched and dependent nine-file batch | 1, 110.42 s; 172 of 175 passed. Pending-duplicate and five-agent-startup cases hit the unchanged 5 s timeout; the five-final batch exceeded its unchanged 1 s wall bound at 1.617 s. |
+| Earlier nine-file batch | 0, 94.59 s; 175 passed, before the supplemental missing-cwd guard. This does not erase the later red result. |
+| Expanded sixteen-file batch | 1, 130.79 s; 506 of 507 passed. One untouched Claude-hook case hit its 5 s timeout. Isolated before and after controls both passed; that does not resolve the wider red. |
+| Build; root package check | 0, 10.05 s; 0, 17.47 s; tarball allowlist passes. |
+| Biome; diff whitespace | 0, 0.74 s; 0, 0.35 s. One unchanged unused-import warning remains. |
+| Full `pnpm check` under the shared lock | 75, 0.00 s; lock already held, so the check did not start. No bypass. |
+Earlier red attempts also retain the producer flush missing its timing bound at 540 ms, the nine before-fix regressions, the missing-cwd probe, and an intermediate type-narrowing error. No assertion or timeout was weakened. The isolated green probes are not acceptance of the red batch.
+Current probe log SHA-256: `ea8cc01b77cf0e324a5dbffd447bd80185e438044ad1f92eebbe0c4633767fae` (`review-probes-current.log`). Latest nine-file red: `69f9fb0dd58774a028a9f464a4f95cb9ea9690bcf459fa8bcbd5e72f60df369a` (`touched-final-current.log`).
 
-## Cost and limits
-The retained `measure.mts` compares the base snapshot with the candidate using 20 five-agent startups and 200 steady index refreshes, local synthetic histories, real SQLite, and an injected Herdr client. Node process CPU and RSS only; no real daemon or RPC cost claim.
-Before and after: startup median 8.88 ms and 3.05 ms; CPU per tick 958 µs and 783 µs; wall per tick 1.08 ms and 0.87 ms; process RSS 105.6 MiB and 106.0 MiB. These short, host-load-sensitive samples are indicative, not caps.
-Missing-final notice latency changed from 2.98 ms with no final to 509.53 ms with the delayed final. The other pane took 3.20 ms before and 3.19 ms during the retry after. Two status events add two Herdr snapshot calls; one extra history read repairs the missing final. Startup history reads fall from five to zero; steady ticks add no history reads or polling loop.
-Each measured database retained its size across the 200 ticks, with no sidecars: base 212,992 bytes, candidate 188,416 bytes. No retained-history growth workload was added. Live daemon RSS and real RPC latency are null because live use was not exercised. Input, cache-write, cache-read, output and summary token measurements are null: the fixture invokes no models, and coding-session usage is not exposed here.
-The one-shot retry is in memory: a daemon exit after the persisted status update but before semantic-event append can lose that completion (`agent-index-service.ts:341,476,511`). This crash window needs an owner decision before landing; persisted-blocked restart behavior is separately tested. Empty or stale text remaining after the single retry stays empty by design.
-Next owner: seat, for the shared full gate, independent review, the crash-window decision, and admitted live acceptance. No push, live daemon change, profile claim, subscription-policy change, settings edit, or agent message was made.
+## Running cost and limits
+Measurements compare `f10cc62` with the committed correction using injected Herdr snapshots, local transcripts and Node process CPU and RSS. They are host-sensitive samples, not daemon capacity guarantees.
+For 301 Claude transcripts and ten warm cached reads with a cwd alias, full rediscovery calls fall from ten to zero; mean read wall time is 23.94 ms before and 4.78 ms after, CPU 24.55 ms and 5.00 ms. Directory walks and stats remain proportional to file count; cached header metadata grows with discovered paths and prunes deleted paths on a scan. There is no new polling loop.
+For a mixed snapshot, ready notice publication measured 509.42 ms before and 284.53 ms after; the retried notice measured 824.18 ms after. An earlier after-run measured 5.17 ms and 506.00 ms respectively. Both runs publish two distinct events once, in two batches rather than one.
+Across twenty five-agent startups and 200 steady refreshes, startup median measured 4.25 ms before and 53.34 ms after; CPU per tick 0.72 ms and 1.33 ms; wall per tick 1.35 ms and 9.35 ms. Earlier after samples were 3.27 ms startup and 0.72 ms CPU per tick, so these short shared-host measurements are highly variable. Node RSS measured 105.0 MiB before and 105.8 MiB after. Steady ticks read no histories; no extra Herdr snapshot calls were added by this correction.
+Disk sizes remained unchanged across steady ticks, with no sidecars: 188,416 bytes in each core fixture; 196,608 bytes in each mixed-snapshot fixture. Input, cache-write, cache-read, output and summary tokens are null: fixtures invoke no models and coding-session usage is not exposed. Live daemon RSS and real RPC latency are null because no live runtime was exercised.
+The formerly reported status-before-event crash window is addressed by transactional persistence and restart fixtures. Actual process-kill delivery, live Pi and Claude notices, a real approval prompt and Ray's seat inspection remain unverified. No real daemon restart, profile claim, subscription-policy change, settings edit, agent message or push occurred. Git honored normal hook configuration; `.husky/_` remains absent, so gates were run explicitly.
+Next owner: seat, for independent recheck, the retained timing failures, shared full gate and admitted live acceptance. The candidate is not accepted or landed.
 
 ## Noticed beyond my task
-`src/agent-history/claude-reader.ts:43-76` still accepts non-message records such as `api-request-blob` when they carry a user role. This can distort the last-user excerpt and freshness evidence; the seat should triage that reader filter separately. No fix was added outside slice 1.
+The Claude reader's non-message user-record filtering remains unchanged (`src/agent-history/claude-reader.ts:43-76`); the seat should triage it separately. The review's shared-host test timing concern remains open rather than being hidden by relaxed assertions or timeouts.
