@@ -51,3 +51,33 @@ Private scratch (probes `rev-s1-probes.test.ts`, the fix diff `p1-fix.diff`, log
 - The builder's note on `claude-reader.ts:43-76` (non-message user records) is not checked here; I agree it is separate. Owner: seat.
 
 Next owner: builder (S1), for finding 1 and the crash-window fix; then a recheck by rerunning P1, P2 and P6.
+
+## Recheck (seat): ff2b52d, report 11be567
+**ACCEPT** for the code. All three findings and the crash window are fixed, and my probes P1 to P7 pass. The new retry tests stay timing-sensitive on this shared host: at load 14 to 16 they sometimes fail on both f10cc62 and ff2b52d. With the timeout lifted every test completes, so this is load, not a slowdown or a hang. It needs a decision before the full gate (see the end of this section).
+- **Finding 1: fixed.** A superseded retry now appends its completion at once, with no text, before the newer status (`agent-index-service.ts`, `#recordStatus`). The flush publishes that stored event instead of appending a second one. The builder's test "a new turn during the retry…" now asserts the order of the stored status events, for the event route and the snapshot route. P1 on ff2b52d: `["working->idle","idle->working"]`, and the row says working.
+- **Crash window: fixed.** The status and both event records are committed in one SQLite transaction (`agents.ts` `commitStatusEvent`). A snapshot no longer writes a changed status by itself (`deferStatusChanges`), and the row stays working during the retry. P2 (the first append throws, then restart and three ticks) now recovers exactly one `working->idle`, with text present and with text missing; on f10cc62 it recovered none.
+  P7, new: a tick during the retry leaves the row working, a second settled observation adds nothing, and after the flush there is one `working->idle` and the row says idle.
+  A replaced pane's row is protected: the status is written only when the pane row still has the same agent id.
+- **Finding 2: fixed.** The watch tick passes a callback that publishes the ready part of the batch first. P6: the fast pane is published at 5 ms with "FAST", and the retried pane at 511 ms with no text. A refresh caller without the callback keeps the old single batch; the only caller in `src` passes the callback.
+- **Finding 3: fixed.** A cached Claude ref outside the cwd's project folder is now rejected only when the ID has more than one main transcript. Unchanged transcript headers are cached by inode, size and modification time.
+  Measured read-only on this machine (781 transcripts, load about 40): when Herdr's cwd does not match the project folder, each read takes 340 to 450 ms (f10cc62: 750 to 1,200 ms), and the result is the correct transcript. Each read still lists the folders and checks every file's size and time; this is acceptable for a case that should be rare.
+- **P3 to P5:** still green.
+- **Typecheck:** exit 0 in 7 s. Biome: exit 0, with the 1 warning already on main.
+
+**Timing failures: load, not a slowdown.**
+- The builder's nine files, run in parallel at load 11.9 to 15.5, twice on each version, all green:
+  - ff2b52d: 175 of 175 passed, 12 s and 16 s;
+  - f10cc62: 163 of 163, 14 s and 10 s;
+  - 07d5735: 145 of 145, 9 s and 9 s.
+  The eight files shared with main take comparable time on all three versions; profile-delivery took 2.4 to 3.9 s on ff2b52d and 5.1 s on main.
+- `notice-correctness` alone, one test at a time, at load 14.1 to 16.6:
+  - ff2b52d, 7 runs: 1 failure (the first test hit the 5 s timeout once; it normally takes 0.55 to 0.8 s);
+  - f10cc62, 7 runs: 2 failures (one was "expected 355.9 to be less than 350" in a fast-pane test).
+  In 3 extra runs, the builder's three red tests passed on ff2b52d at 526 to 905 ms; on f10cc62, two of them have equivalents, and those passed at 544 to 694 ms.
+- With `--testTimeout=60000`, 6 runs of each version at load 24 to 39: every test completed. The two slowest tests per run took 1.1 to 5.1 s on both versions, and which tests were slowest changed from run to run. Nothing hangs, and there is no consistent slowdown.
+- A 16-file run at load 47: 5 timing failures, one of them in an untouched lease test (`empty-lease turn…`, 5.0 s timeout). Same pattern.
+- Cost (builder's measure script, load 37 to 43, so noisy): steady-tick CPU is 1.0 to 1.6 ms on ff2b52d, against 1.0 to 1.3 ms on main and 0.6 to 1.3 ms on f10cc62. Startup median is 7 to 22 ms on ff2b52d, slower than f10cc62 (2.6 to 7.3 ms), probably because each pane seen for the first time is saved with its own write. Main measured 28 to 68 ms. No history reads per tick.
+
+**Remaining risk:** the retry tests check wall-clock limits (`<350 ms`, `<400 ms`, `<1 s`, `>=450 ms`) and use the default 5 s timeout. On this host they fail intermittently once load reaches about 15. The cause is the host, but the full gate will hit them. Owner: seat. Choose between running the gate when the machine is quiet, or replacing these wall-clock limits with event-order checks or fake timers; I recommend the second, because nothing else will fix the flakes. Neither changes the code verdict.
+Not run: full `pnpm check`, live Herdr with real workers, a real approval prompt, a real process kill (the transaction rollback stood in for the crash).
+Probe file for this round: `rev-s1-probes-r1.test.ts`, with logs in the same scratch folder as above.
