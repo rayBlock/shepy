@@ -6,9 +6,9 @@ Documentation and agent communication are maintained in English. See [AGENTS.md]
 
 Shepy is a daemon-backed observability layer for coding agents running in Herdr. It provides two interfaces over the same durable agent index: pull-based CLI access to structured history, and owner-scoped Pi notifications with cached context and automatic wake.
 
-Herdr's `herdr agent read` reads terminal streams or scrollback. Shepy instead reads agent session data so callers can retrieve work status, structured message excerpts, compact tool results, and unread outcomes without parsing terminal output. Use the official Herdr CLI or skill for agent start, prompts, waits, pane operations, and terminal control. Shepy does not type into terminals. Its optional Claude wake bridge posts a notification through the owner's private messaging socket.
+Herdr's `herdr agent read` reads terminal streams or scrollback. Shepy instead reads agent session data so callers can retrieve work status, structured message excerpts, compact tool results, and unread outcomes without parsing terminal output. The one exception is a notice for an agent kind with no history reader, which carries a short screen tail. Use the official Herdr CLI or skill for agent start, prompts, waits, pane operations, and terminal control. Shepy does not type into terminals. Its optional Claude wake bridge posts a notification through the owner's private messaging socket.
 
-Shepy currently supports session history from Claude Code, Codex, Gemini CLI, OpenCode, and Pi.
+Shepy currently supports session history from Claude Code, Codex, Gemini CLI, Hermes, OpenCode, and Pi. For any other agent kind that Herdr detects, a completion notice carries a bounded tail of the pane's visible screen, marked as screen text (see below).
 
 ## Requirements
 
@@ -55,6 +55,8 @@ An explicit session path or ID reported by Herdr is authoritative: cached histor
 Before reading history for a status event, Shepy refreshes the worker's session identity from Herdr. If a working worker settles with missing or previous-turn assistant text, Shepy re-reads once after about 500 milliseconds; text still unavailable then stays empty. Other panes' ready notices publish first, including when both completions arrive in one snapshot. If the worker starts another turn during the retry, the earlier completion is recorded without text before the newer status, never with the next turn's response. Status transitions and their events commit together, so an interrupted retry leaves the persisted worker working and a later snapshot can recover its completion. Repeated settled observations during the retry do not start another retry.
 
 A cached Claude session with a unique main transcript remains valid when the cwd is an alias of its launch directory; the project-folder rule is needed only for multiple mains. Startup idle or done without assistant text does not notify a profile. A worker first observed already blocked does notify once, and remaining blocked across ticks or a daemon restart does not repeat that notice.
+
+Agent kinds without a history reader (anything Herdr detects other than Claude Code, Codex, Gemini CLI, Hermes, OpenCode and Pi) have no assistant text to excerpt. When such a worker completes (`working` to `done` or `idle`), the notice instead carries the last lines of its pane, taken once with `agent.read` (`recent_unwrapped`) from Herdr after the same 500 millisecond settle wait. That text is screen text, not an assistant answer: it can include prompts, status lines and chrome, so it is labelled `screen text` in Claude hook lines and `last screen text (not an assistant answer)` in Pi wakes, and `textSource` is `screen` in the outcome snapshot. It is stripped of ANSI and control bytes, cut to the newest 20 lines and 1,500 characters, and never points at `shepy agent read`, which has no reader for these kinds. If the read fails, takes longer than 1.5 seconds, names a different pane, or shows nothing readable, the notice is still sent with `textSource: screen-unavailable` and reads `(screen text unavailable)`. The read happens outside the per-session event queue, so a slow pane delays only its own notice. A harness with a reader never uses the screen, even when its transcript is missing. After such a completion, a later `done` and `idle` change with no `working` phase between is the same turn and does not notify again. Shepy does not redact screen text; treat it as untrusted evidence.
 
 Each agent record keeps Herdr's optional live `name`, such as `reviewer`, separate from its runtime `agent` kind, such as `codex`. Human list output uses distinct `name` and `agent` columns, and JSON returns both fields. Inside a Herdr workspace, Shepy selects the current workspace automatically.
 
@@ -163,9 +165,9 @@ session (reload resources first in an existing session).
 
 Agents can already select their worker roster with `shepy profile ensure`,
 `subscribe`, and `unsubscribe`. Receiving automatic wakes is separate: the lead
-Pi claims that profile with `/shepy on <profileId>`. The current extension exposes
-this claim as a slash command, not a model-callable tool; a new lead needs that
-one user action. No daemon change is needed for subscription management.
+Pi claims that profile with `/shepy on <profileId>`, or the agent claims it itself with
+the model-callable `shepy_profile` tool (actions `claim`, `release` and `status`).
+No daemon change is needed for subscription management.
 
 ## Subscription lifetime
 

@@ -309,6 +309,8 @@ export type ProfileObligationOutcome = {
   name: string | null;
   paneId: string | null;
   terminalId: string | null;
+  /** Absent from an older daemon; then the excerpt is assistant text. */
+  textSource?: "history" | "screen" | "screen-unavailable" | null;
   to: string | null;
   type: string | null;
 };
@@ -402,15 +404,18 @@ export function formatProfileObligationUpdates(updates: ProfileObligationUpdate[
       });
       const transition =
         outcome.from && outcome.to ? `${outcome.from}→${outcome.to}` : (outcome.type ?? "event");
+      const fromScreen = outcome.textSource === "screen";
       const excerpt =
         outcome.excerpt && outcome.excerpt.text.length > 0
           ? outcome.excerpt.text
-          : "(no assistant message)";
+          : outcome.textSource === "screen-unavailable"
+            ? "(screen text unavailable)"
+            : "(no assistant message)";
       const assistantRef = outcome.lastAssistantRef
         ? ` · assistantRef: ${outcome.lastAssistantRef}`
         : "";
       return `- ${outcome.type ?? "event"} ${identity} ${outcome.paneId ?? "unknown"} ${transition}
-  last assistant: ${excerpt}
+  ${fromScreen ? "last screen text (not an assistant answer)" : "last assistant"}: ${excerpt}
   ${formatOutcomeContextLine(outcome.context)}
   event: ${eventId ?? "?"} · obligation: ${update.obligationId}${assistantRef}`;
     })

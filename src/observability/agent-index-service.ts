@@ -1,4 +1,10 @@
 import { setTimeout as sleep } from "node:timers/promises";
+import {
+  agentKindUsesScreenFallback,
+  SCREEN_READ_LINES,
+  SCREEN_READ_TIMEOUT_MS,
+  screenTailFrom,
+} from "@/agent-history/screen-text.js";
 import { type AgentHistoryService, createAgentHistoryService } from "@/agent-history/service.js";
 import type { AgentEventStore } from "@/db/agent-events.js";
 import type { AgentHistoryCacheStore } from "@/db/agent-history-cache.js";
@@ -19,6 +25,7 @@ import {
   type AgentStatus,
   type CompactAgentHistory,
   parseAgentStatus,
+  type ScreenTail,
 } from "@/observability/contracts.js";
 
 export type AgentIndexRefreshResult = {
@@ -60,6 +67,8 @@ type StatusObservation = {
   compactHistory: CompactAgentHistory | undefined;
   evidence: Record<string, unknown>;
   from: AgentStatus;
+  /** Where a screen-text read for this observation goes, when it needs one. */
+  socketPath?: string;
   to: AgentStatus;
 };
 type PendingStatus = StatusObservation & {
@@ -69,12 +78,12 @@ type PendingStatus = StatusObservation & {
   superseded: boolean;
   supersededEvent: AgentEventRecord | undefined;
 };
+type HerdrClient = Pick<HerdrSocketClient, "close" | "sessionSnapshot"> &
+  Partial<Pick<HerdrSocketClient, "readAgentScreen">>;
 type PendingResult<T> = T & { pendingStatuses: PendingStatus[] };
 
 export class AgentIndexService {
-  readonly #clientFactory: (input: {
-    socketPath: string;
-  }) => Pick<HerdrSocketClient, "close" | "sessionSnapshot">;
+  readonly #clientFactory: (input: { socketPath: string }) => HerdrClient;
   readonly #context: AgentContextService;
   readonly #onAgentsObserved: (agents: AgentIndexRecord[]) => void;
   readonly #stores: AgentIndexServiceStores;
@@ -97,9 +106,7 @@ export class AgentIndexService {
   #observationSequence = 0;
 
   constructor(options: {
-    clientFactory?: (input: {
-      socketPath: string;
-    }) => Pick<HerdrSocketClient, "close" | "sessionSnapshot">;
+    clientFactory?: (input: { socketPath: string }) => HerdrClient;
     context?: AgentContextService;
     history?: AgentHistoryService;
     onAgentsObserved?: (agents: AgentIndexRecord[]) => void;
@@ -415,6 +422,7 @@ export class AgentIndexService {
                 this.#context.getAgentSnapshot(agent.id)?.compactHistory,
               evidence: { id: `snapshot:${agent.lastSeenAt.getTime()}` },
               from: prior?.agentStatus ?? "unknown",
+              socketPath: input.socketPath,
               to: agent.agentStatus,
             },
             cached?.compactHistory,
@@ -542,6 +550,7 @@ export class AgentIndexService {
           compactHistory: refreshed.snapshot.compactHistory,
           evidence: event,
           from,
+          socketPath: input.socketPath,
           to,
         },
         previousHistory,
@@ -673,6 +682,10 @@ export class AgentIndexService {
     await Promise.all(
       pendingStatuses.map(async (pending) => {
         await sleep(Math.max(0, pending.observedAt + 500 - Date.now()));
+        // A kind without a history reader gets the visible screen tail. The
+        // read waits here, outside the session queue, under its own deadline,
+        // so a slow pane never stalls another pane's events.
+        const screen = await this.#readScreenTail(pending);
         await this.#enqueueSessionOperation(sessionName, async () => {
           if (pending.supersededEvent) {
             events.push(pending.supersededEvent);
@@ -715,6 +728,9 @@ export class AgentIndexService {
             current?.id === pending.agent.id &&
             sameIdentity(current, pending.agent) &&
             current.agentStatus === pending.from;
+          if (screen && persistStatus && compactHistory && !compactHistory.lastAssistantMessage) {
+            compactHistory = { ...compactHistory, screenTail: screen };
+          }
           const event = this.#appendStatusEvents({ ...pending, compactHistory }, persistStatus);
           if (event) {
             events.push(event);
@@ -734,6 +750,40 @@ export class AgentIndexService {
       contextChangedScopes: sortedScopes(scopes),
       events,
     };
+  }
+
+  async #readScreenTail(pending: PendingStatus): Promise<ScreenTail | undefined> {
+    if (
+      pending.superseded ||
+      pending.supersededEvent ||
+      pending.from !== "working" ||
+      !isSettled(pending.to) ||
+      !pending.socketPath ||
+      !agentKindUsesScreenFallback(pending.agent.agent)
+    ) {
+      return undefined;
+    }
+    const capturedAt = new Date();
+    const paneId = pending.agent.paneId;
+    let client: HerdrClient | undefined;
+    try {
+      client = this.#clientFactory({ socketPath: pending.socketPath });
+      if (!client.readAgentScreen) return screenTailFrom(null, capturedAt);
+      const read = await withDeadline(
+        client.readAgentScreen({
+          lines: SCREEN_READ_LINES,
+          target: paneId,
+          timeoutMs: SCREEN_READ_TIMEOUT_MS,
+        }),
+        SCREEN_READ_TIMEOUT_MS + 250,
+      );
+      // Never carry text a reply attributes to another pane.
+      return screenTailFrom(read.paneId === paneId ? read.text : null, capturedAt);
+    } catch {
+      return screenTailFrom(null, capturedAt);
+    } finally {
+      client?.close();
+    }
   }
 
   #appendStatusEvents(
@@ -805,6 +855,14 @@ export class AgentIndexService {
 
 function isSettled(status: AgentStatus): boolean {
   return status === "idle" || status === "done";
+}
+
+function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("screen read deadline")), ms);
+  });
+  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
 }
 
 function historyNeedsRetry(

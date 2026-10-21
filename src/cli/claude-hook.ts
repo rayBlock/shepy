@@ -224,6 +224,8 @@ type OutcomeSnapshot = {
   lastAssistantRef: string | null;
   name: string | null;
   paneId: string | null;
+  /** Absent from an older daemon; then the excerpt is assistant text. */
+  textSource?: "history" | "screen" | "screen-unavailable" | null;
   to: string | null;
   type: string;
 };
@@ -1307,16 +1309,29 @@ function outcomeLine(obligation: LeasedObligation): string {
         : outcome.type === "agent.idle"
           ? "idle"
           : "done";
+  const fromScreen = outcome.textSource === "screen";
   const excerpt = outcome.excerpt?.text
     ? stripControlChars(outcome.excerpt.text).replace(/\s+/g, " ").trim()
-    : "(no assistant message)";
+    : outcome.textSource === "screen-unavailable"
+      ? "(screen text unavailable)"
+      : "(no assistant message)";
+  // Screen text is the last of a pane's screen, not an assistant answer: say
+  // so, keep the newest end of it, and do not point at `shepy agent read`,
+  // which has no reader for these kinds.
   const capTruncated = excerpt.length > 200;
-  const shortExcerpt = capTruncated ? `${excerpt.slice(0, 199)}…` : excerpt;
+  const shortExcerpt = capTruncated
+    ? fromScreen
+      ? `…${excerpt.slice(-199)}`
+      : `${excerpt.slice(0, 199)}…`
+    : excerpt;
   const truncation =
     outcome.excerpt?.truncated || capTruncated
-      ? " [truncated; use shepy agent read before acting]"
+      ? fromScreen
+        ? " [screen text truncated]"
+        : " [truncated; use shepy agent read before acting]"
       : "";
-  return `- ${name} ${status} (${agent}, ${paneId}): ${shortExcerpt}${truncation}`;
+  const label = fromScreen ? "screen text: " : "";
+  return `- ${name} ${status} (${agent}, ${paneId}): ${label}${shortExcerpt}${truncation}`;
 }
 
 /** Agent outcomes already have a bounded one-line excerpt, so no ids or separate budget stub are needed. */

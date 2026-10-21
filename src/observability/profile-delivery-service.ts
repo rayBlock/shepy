@@ -123,6 +123,12 @@ export type InboxOutcomeSnapshot = {
   name: string | null;
   paneId: string | null;
   terminalId: string | null;
+  /**
+   * Where the excerpt came from: the harness's history reader (`history`),
+   * the visible screen of a kind with no reader (`screen`), or a screen read
+   * that returned nothing (`screen-unavailable`). `null`: no text at all.
+   */
+  textSource: "history" | "screen" | "screen-unavailable" | null;
   to: string | null;
   type: string;
 };
@@ -137,7 +143,11 @@ function outcomeString(value: unknown): string | null {
 // "unknown" instead of riding the served snapshot.
 const PANE_ID_TOKEN = /^[a-z0-9][a-z0-9:_.-]{0,63}$/i;
 
-function normalizeOutcomeExcerpt(value: unknown, paneId: string | null) {
+function normalizeOutcomeExcerpt(
+  value: unknown,
+  paneId: string | null,
+  source: "history" | "screen" = "history",
+) {
   const raw = outcomeString(value);
   if (raw === null) return null;
   const normalized = stripVTControlCharacters(raw)
@@ -150,7 +160,11 @@ function normalizeOutcomeExcerpt(value: unknown, paneId: string | null) {
     return { text: normalized, truncated: false };
   }
   const safePaneId = paneId !== null && PANE_ID_TOKEN.test(paneId) ? paneId : "unknown";
-  const hint = ` … [truncated; run shepy agent read ${safePaneId}]`;
+  // `shepy agent read` has no reader for a screen-only kind: do not point at it.
+  const hint =
+    source === "screen"
+      ? " … [screen text truncated]"
+      : ` … [truncated; run shepy agent read ${safePaneId}]`;
   const prefixLength = Math.max(0, INBOX_OUTCOME_EXCERPT_CHARS - hint.length);
   return {
     text: `${normalized.slice(0, prefixLength).trimEnd()}${hint}`,
@@ -164,21 +178,36 @@ export function projectInboxOutcome(event: AgentEventRecord): InboxOutcomeSnapsh
       ? (event.payload as Record<string, unknown>)
       : {};
   const lastAssistant = event.compactHistory?.lastAssistantMessage ?? null;
+  const screen = lastAssistant?.text ? null : (event.compactHistory?.screenTail ?? null);
+  const textSource = outcomeTextSource(lastAssistant?.text, screen);
   return {
     agent: outcomeString(payload.agent),
     context: projectOutcomeContext(event),
     createdAt: event.createdAt.toISOString(),
     eventId: event.id,
-    excerpt: normalizeOutcomeExcerpt(lastAssistant?.text, event.paneId),
+    excerpt:
+      textSource === "screen"
+        ? normalizeOutcomeExcerpt(screen?.text, event.paneId, "screen")
+        : normalizeOutcomeExcerpt(lastAssistant?.text, event.paneId),
     from: outcomeString(payload.from),
     lastAssistantAt: typeof lastAssistant?.timestamp === "string" ? lastAssistant.timestamp : null,
     lastAssistantRef: outcomeString(lastAssistant?.ref),
     name: outcomeString(payload.name),
     paneId: event.paneId,
     terminalId: event.terminalId,
+    textSource,
     to: outcomeString(payload.to),
     type: event.type,
   };
+}
+
+function outcomeTextSource(
+  assistantText: unknown,
+  screen: { status: "ok" | "unavailable"; text: string } | null,
+): InboxOutcomeSnapshot["textSource"] {
+  if (outcomeString(assistantText) !== null) return "history";
+  if (!screen) return null;
+  return screen.status === "ok" && screen.text.length > 0 ? "screen" : "screen-unavailable";
 }
 
 /**
@@ -625,7 +654,17 @@ export class ProfileDeliveryService {
     const prior = this.#agentEvents.findPriorSettledEvent(event.agentId, event.id);
     const currentRef = event.compactHistory?.lastAssistantMessage?.ref ?? null;
     const priorRef = prior?.compactHistory?.lastAssistantMessage?.ref ?? null;
-    return currentRef !== null && currentRef === priorRef;
+    if (currentRef !== null && currentRef === priorRef) return true;
+    // A kind with no reader has no assistant reference at all. Its prior
+    // completion carried a screen tail; a later done/idle change with no text
+    // of its own is Herdr marking the same turn seen. Screen text has no turn
+    // identity to compare (a clock line would make it look new), so the
+    // working phase is the evidence of a new turn, not the screen.
+    return (
+      currentRef === null &&
+      !event.compactHistory?.lastAssistantMessage?.text &&
+      prior?.compactHistory?.screenTail != null
+    );
   }
 
   #outcomeSnapshotFor(agentEventId: number | null): InboxOutcomeSnapshot | null {

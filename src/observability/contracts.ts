@@ -143,6 +143,19 @@ export type ContextHealth = {
   usage: ContextUsageReading;
 };
 
+/**
+ * The visible tail of a pane, captured by a notice for an agent kind that has
+ * no history reader. It is screen text (prompts, chrome and status lines
+ * included), never assistant text, and lives only on the event copy of the
+ * history: the context snapshot and the agent list never carry it.
+ */
+export type ScreenTail = {
+  capturedAt: string;
+  /** `unavailable`: the read failed, timed out, or the pane showed no text. */
+  status: "ok" | "unavailable";
+  text: string;
+};
+
 export type CompactAgentHistory = {
   contextHealth: ContextHealth | null;
   historyRef: AgentHistoryRef | null;
@@ -150,6 +163,7 @@ export type CompactAgentHistory = {
   lastToolResult: CompactToolResult | null;
   lastUserMessage: AgentHistoryExcerpt | null;
   messageCount: number;
+  screenTail?: ScreenTail | null;
   source: string | null;
   updatedAt: string | null;
 };

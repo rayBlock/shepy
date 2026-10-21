@@ -171,6 +171,33 @@ export class HerdrSocketClient {
     return this.#request("pane.get", params);
   }
 
+  /**
+   * Last unwrapped lines of one agent's pane. Returns the pane the text came
+   * from so a caller can refuse a reply that names another pane.
+   */
+  async readAgentScreen(params: {
+    lines: number;
+    target: string;
+    timeoutMs: number;
+  }): Promise<{ paneId: string | null; text: string }> {
+    const result = await this.#request(
+      "agent.read",
+      {
+        format: "text",
+        lines: params.lines,
+        source: "recent_unwrapped",
+        strip_ansi: true,
+        target: params.target,
+      },
+      { timeoutMs: params.timeoutMs },
+    );
+    const read = (result as { read?: { pane_id?: unknown; text?: unknown } } | null)?.read;
+    return {
+      paneId: typeof read?.pane_id === "string" ? read.pane_id : null,
+      text: typeof read?.text === "string" ? read.text : "",
+    };
+  }
+
   async sessionSnapshot(): Promise<unknown> {
     try {
       return await this.#requestOnce("session.snapshot");
