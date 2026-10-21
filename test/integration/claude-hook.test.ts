@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import {
   chmodSync,
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -3324,6 +3325,15 @@ describe("claude-hook owner-file cross-process durability", () => {
     await runHook(fixture, promptPayload({ prompt_id: "ino-1" }));
     const before = statSync(ownerFilePath(fixture));
     expect(before.mode & 0o777).toBe(0o600);
+    // A hard link pins the old inode. One hook run rewrites the record more
+    // than once, and Linux filesystems hand a freed inode number straight to
+    // the next created file, so without the pin a later rewrite can land back
+    // on the old number and the comparison below would fail on a correct
+    // writer. The link also keeps the old bytes readable, which shows
+    // whether the old inode was touched.
+    const pinnedPath = `${ownerFilePath(fixture)}.pinned`;
+    linkSync(ownerFilePath(fixture), pinnedPath);
+    const pinnedBytes = readFileSync(pinnedPath, "utf8");
 
     projectOutcome(fixture, "hook-ino-2", "inode two");
     const { code } = await runHook(fixture, promptPayload({ prompt_id: "ino-2" }));
@@ -3334,6 +3344,8 @@ describe("claude-hook owner-file cross-process durability", () => {
     // leave a crash window with no readable file at all.
     const after = statSync(ownerFilePath(fixture));
     expect(after.ino).not.toBe(before.ino);
+    expect(statSync(pinnedPath).ino).toBe(before.ino);
+    expect(readFileSync(pinnedPath, "utf8")).toBe(pinnedBytes);
     expect(after.mode & 0o777).toBe(0o600);
     const file = JSON.parse(readFileSync(ownerFilePath(fixture), "utf8")) as {
       delivered: { ids: string[]; phase: string } | null;
