@@ -27,6 +27,7 @@ type RunTests = {
   fitsSocketBudget: (tmpdir: string) => boolean;
   runtimeBase: (base?: string) => string;
   trustedTools: (nodePath?: string, gitCandidates?: string[]) => Tools;
+  npmCandidates: (nodePath?: string) => string[];
   createRuntime: (base?: string, subject?: string, tools?: Tools) => Runtime;
   testEnvironment: (
     inherited: Record<string, string | undefined>,
@@ -229,6 +230,170 @@ describe("pnpm test entry", () => {
       "required test tool git not found",
     );
     expect(() => trustedTools(join(scratch(), "node"))).toThrow("required test tool");
+  });
+
+  describe("the npm shipped with this node", () => {
+    const CLI = join("lib", "node_modules", "npm", "bin", "npm-cli.js");
+    const git = [process.execPath];
+
+    /** A node install tree: `<prefix>/bin/node` plus the npm package under `<prefix>/lib`. */
+    function install(prefix: string, { npm = true } = {}): { node: string; cli: string } {
+      mkdirSync(join(prefix, "bin"), { recursive: true });
+      const node = join(prefix, "bin", "node");
+      writeFileSync(node, "node\n");
+      const cli = join(prefix, CLI);
+      if (npm) {
+        mkdirSync(dirname(cli), { recursive: true });
+        writeFileSync(cli, "npm\n");
+      }
+      return { node, cli };
+    }
+
+    /** Homebrew: node lives in the Cellar, npm under the shared prefix, both reached by symlinks. */
+    function homebrew(root: string, { launcher = true } = {}) {
+      const prefix = join(root, "homebrew");
+      const cellar = join(prefix, "Cellar", "node", "26.5.0");
+      mkdirSync(join(cellar, "bin"), { recursive: true });
+      writeFileSync(join(cellar, "bin", "node"), "node\n");
+      const cli = join(prefix, CLI);
+      mkdirSync(dirname(cli), { recursive: true });
+      writeFileSync(cli, "npm\n");
+      if (launcher) symlinkSync(cli, join(cellar, "bin", "npm"));
+      mkdirSync(join(prefix, "bin"));
+      symlinkSync(join(cellar, "bin", "node"), join(prefix, "bin", "node"));
+      return {
+        prefix,
+        real: join(cellar, "bin", "node"),
+        invoked: join(prefix, "bin", "node"),
+        cli: realpathSync(cli),
+      };
+    }
+
+    /** An npm on the caller PATH that is not the one shipped with the node under test. */
+    function withPathNpm<T>(root: string, run: (npm: string) => T): T {
+      const dir = join(root, "path-bin");
+      mkdirSync(dir, { recursive: true });
+      const npm = join(dir, "npm");
+      writeFileSync(npm, "#!/bin/sh\n");
+      chmodSync(npm, 0o755);
+      const saved = process.env.PATH;
+      process.env.PATH = `${dir}:${saved ?? ""}`;
+      try {
+        return run(npm);
+      } finally {
+        process.env.PATH = saved;
+      }
+    }
+
+    test("classic layout: npm next to the real node path is found", async () => {
+      const { trustedTools } = await load();
+      const { node, cli } = install(join(scratch(), "classic"));
+      expect(trustedTools(node, git).npm).toBe(realpathSync(cli));
+    });
+
+    test("Homebrew layout: npm under the prefix is found from the Cellar node and from the bin symlink", async () => {
+      const { trustedTools } = await load();
+      const brew = homebrew(scratch());
+      // The pre-fix lookup, dirname(dirname(real node)), points into the Cellar where no npm package exists.
+      expect(existsSync(join(dirname(dirname(brew.real)), CLI))).toBe(false);
+      expect(trustedTools(brew.real, git).npm).toBe(brew.cli);
+      expect(trustedTools(brew.invoked, git).npm).toBe(brew.cli);
+    });
+
+    test("node invoked through a symlink prefix finds the npm beside the link, not beside the real node", async () => {
+      const { trustedTools } = await load();
+      const root = scratch();
+      const real = install(join(root, "real"), { npm: false });
+      const linked = join(root, "linked");
+      mkdirSync(join(linked, "bin"), { recursive: true });
+      symlinkSync(real.node, join(linked, "bin", "node"));
+      const cli = join(linked, CLI);
+      mkdirSync(dirname(cli), { recursive: true });
+      writeFileSync(cli, "npm\n");
+      expect(trustedTools(join(linked, "bin", "node"), git).npm).toBe(realpathSync(cli));
+      expect(() => trustedTools(real.node, git)).toThrow("npm not found");
+    });
+
+    test("the npm launcher next to the node resolves through its symlink when no package path matches", async () => {
+      const { trustedTools } = await load();
+      const root = scratch();
+      const { node } = install(join(root, "odd"), { npm: false });
+      const cli = join(root, "elsewhere", "npm", "bin", "npm-cli.js");
+      mkdirSync(dirname(cli), { recursive: true });
+      writeFileSync(cli, "npm\n");
+      symlinkSync(cli, join(dirname(node), "npm"));
+      expect(trustedTools(node, git).npm).toBe(realpathSync(cli));
+    });
+
+    test("the real-node-path location wins over a different npm at another location", async () => {
+      const { trustedTools } = await load();
+      const root = scratch();
+      const real = install(join(root, "real"));
+      const linked = join(root, "linked");
+      mkdirSync(join(linked, "bin"), { recursive: true });
+      symlinkSync(real.node, join(linked, "bin", "node"));
+      mkdirSync(dirname(join(linked, CLI)), { recursive: true });
+      writeFileSync(join(linked, CLI), "other npm\n");
+      expect(trustedTools(join(linked, "bin", "node"), git).npm).toBe(realpathSync(real.cli));
+    });
+
+    test("an unrelated npm on PATH is refused; the Homebrew control is found with the same PATH", async () => {
+      const { trustedTools } = await load();
+      const root = scratch();
+      const { node } = install(join(root, "no-npm"), { npm: false });
+      withPathNpm(root, (pathNpm) => {
+        let message = "";
+        try {
+          trustedTools(node, git);
+        } catch (error) {
+          message = (error as Error).message;
+        }
+        expect(message).toContain("required test tool npm not found");
+        expect(message).not.toContain(dirname(pathNpm));
+        const brew = homebrew(scratch());
+        expect(trustedTools(brew.invoked, git).npm).toBe(brew.cli);
+      });
+    });
+
+    test("a launcher script beside the node that is not the npm package is refused", async () => {
+      const { trustedTools } = await load();
+      const { node } = install(join(scratch(), "shim"), { npm: false });
+      writeFileSync(join(dirname(node), "npm"), '#!/bin/sh\nexec npm "$@"\n');
+      chmodSync(join(dirname(node), "npm"), 0o755);
+      expect(() => trustedTools(node, git)).toThrow("npm not found");
+    });
+
+    test("no npm anywhere: the refusal names every location tried", async () => {
+      const { trustedTools, npmCandidates } = await load();
+      const root = scratch();
+      const real = install(join(root, "real"), { npm: false });
+      const linked = join(root, "linked");
+      mkdirSync(join(linked, "bin"), { recursive: true });
+      symlinkSync(real.node, join(linked, "bin", "node"));
+      const invoked = join(linked, "bin", "node");
+      const candidates = npmCandidates(invoked);
+      expect(candidates).toEqual([
+        join(realpathSync(root), "real", CLI),
+        join(linked, CLI),
+        join(realpathSync(root), "real", "bin", "npm"),
+        join(linked, "bin", "npm"),
+      ]);
+      let message = "";
+      try {
+        trustedTools(invoked, git);
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      expect(message).toContain("required test tool npm not found");
+      for (const candidate of candidates) expect(message).toContain(candidate);
+    });
+
+    test("this machine's node resolves an npm package", async () => {
+      const { trustedTools } = await load();
+      const { npm } = trustedTools();
+      expect(npm.endsWith(join("npm", "bin", "npm-cli.js"))).toBe(true);
+      expect(spawnSync(process.execPath, [npm, "--version"], { encoding: "utf8" }).status).toBe(0);
+    });
   });
 
   test("the entry is the locked vitest package inside this repository", async () => {

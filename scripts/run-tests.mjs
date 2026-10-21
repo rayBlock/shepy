@@ -77,17 +77,57 @@ export function runtimeBase(base = tmpdir()) {
   );
 }
 
+const NPM_PACKAGE_CLI = join("lib", "node_modules", "npm", "bin", "npm-cli.js");
+
+/**
+ * Where the npm shipped with `nodePath` can live, in lookup order. Only places derived from the
+ * node binary itself: never PATH, and never a manager shim.
+ *  1-2. `<prefix>/lib/node_modules/npm/bin/npm-cli.js` for the prefix of the node's real path
+ *       (classic, nvm, mise, official installers), then of the path as invoked (Homebrew keeps
+ *       node in the Cellar and npm under /opt/homebrew/lib, reached through the bin symlink);
+ *  3-4. the `npm` launcher beside the real node, then beside the invoked node, accepted only
+ *       when it resolves to an npm package's bin/npm-cli.js.
+ */
+export function npmCandidates(nodePath = process.execPath) {
+  const real = existsSync(nodePath) ? realpathSync(nodePath) : nodePath;
+  const places = [real, nodePath];
+  return [
+    ...new Set([
+      ...places.map((node) => join(dirname(dirname(node)), NPM_PACKAGE_CLI)),
+      ...places.map((node) => join(dirname(node), "npm")),
+    ]),
+  ];
+}
+
+function isNpmPackageCli(path) {
+  const parts = path.split(sep);
+  return parts.slice(-3).join("/") === "npm/bin/npm-cli.js";
+}
+
+/** The physical npm-cli.js shipped with `nodePath`, or an error naming every place tried. */
+function resolveNpm(nodePath) {
+  const tried = [];
+  for (const candidate of npmCandidates(nodePath)) {
+    if (!existsSync(candidate)) {
+      tried.push(`${candidate} (missing)`);
+      continue;
+    }
+    const physical = realpathSync(candidate);
+    if (isNpmPackageCli(physical)) return physical;
+    tried.push(`${candidate} (resolves to ${physical}, not an npm package bin/npm-cli.js)`);
+  }
+  throw new Error(`required test tool npm not found with node ${nodePath}; tried: ${tried.join("; ")}`);
+}
+
 /** The executables the suite runs, resolved from trusted locations only. */
 export function trustedTools(nodePath = process.execPath, gitCandidates = GIT_CANDIDATES) {
-  // The npm package shipped with this node distribution, not a caller or manager wrapper.
-  const npm = join(dirname(dirname(nodePath)), "lib", "node_modules", "npm", "bin", "npm-cli.js");
   const git = gitCandidates.find((candidate) => existsSync(candidate));
   if (!existsSync(nodePath)) throw new Error(`required test tool node not found: ${nodePath}`);
-  if (!existsSync(npm)) throw new Error(`required test tool npm not found with node: ${npm}`);
+  const npm = resolveNpm(nodePath);
   if (git === undefined) {
     throw new Error(`required test tool git not found in ${gitCandidates.join(", ")}`);
   }
-  return { node: realpathSync(nodePath), npm: realpathSync(npm), git: realpathSync(git) };
+  return { node: realpathSync(nodePath), npm, git: realpathSync(git) };
 }
 
 /** A fresh, physical, owner-only runtime root that shares no path with `subject`. */
