@@ -10,7 +10,8 @@ import {
 /**
  * Phase 3 — profile owner store (vault §8.2). One active logical owner per
  * profile. A brief reconnect grace preserves the current owner; an explicit
- * claim by a new terminal replaces it and invalidates the old lease token.
+ * claim after release, lease expiry or confirmed terminal absence replaces
+ * it and invalidates the old lease token.
  */
 
 const DEFAULT_LEASE_MS = 5 * 60_000;
@@ -116,7 +117,8 @@ export class ProfileOwnerStore {
    *    to the holder, so no amount of public metadata helps a rival;
    *  - any claim without the current token waits out the lease: rejected
    *    while `lease_expires_at + grace` is in the future, allowed once it
-   *    has lapsed. Identity equality (subscriberId, session ref) proves
+   *    has lapsed, unless the daemon confirmed this exact owner generation's
+   *    terminal absent in Herdr. Identity equality (subscriberId, session ref) proves
    *    NOTHING on its own — both halves are public or reconstructible from
    *    public RPC (the F3-1 takeover chain), so they authenticate nobody.
    *  - any successful claim invalidates the previous lease token.
@@ -127,6 +129,9 @@ export class ProfileOwnerStore {
      * live owner's token to take the fast path; omitted or stale means the
      * expiry rule applies. This is the re-claim proof of possession. */
     currentLeaseToken?: string;
+    /** Daemon-only CAS proof: Herdr confirmed this generation's terminal gone.
+     * Never accepted from the public claim schema. */
+    goneOwnerLeaseToken?: string;
     acceptedSourceKinds?: ("agent" | "profile-demand")[];
     graceMs?: number;
     harnessKind: string;
@@ -167,7 +172,8 @@ export class ProfileOwnerStore {
       const holdsLease =
         input.currentLeaseToken !== undefined && input.currentLeaseToken === existing.leaseToken;
       const leaseAlive = isLeaseAlive(existing, now, graceMs);
-      if (!holdsLease && leaseAlive) {
+      const confirmedGone = input.goneOwnerLeaseToken === existing.leaseToken;
+      if (!holdsLease && leaseAlive && !confirmedGone) {
         // The active owner's identity is public; its token is not. A
         // rejected claimant must never receive the capability that
         // release() authenticates on.

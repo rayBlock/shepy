@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { argv, exit } from "node:process";
 import { fileURLToPath } from "node:url";
 import { CLAUDE_HOOK_STDIN_MAX_CHARS, runClaudeHook } from "@/cli/claude-hook.js";
+import { callerClaudeSession, claudeReleaseProof } from "@/cli/profile-release.js";
 import { resolveRuntime, runtimePathsFromRecordOrDefault } from "@/config/runtime.js";
 import { ObservabilityRpcClient } from "@/daemon/client.js";
 import type { DaemonInfo } from "@/daemon/daemon-identity.js";
@@ -49,6 +50,7 @@ export const COMMAND_GROUP_VERBS = {
     "list",
     "owner",
     "prune",
+    "release",
     "show",
     "subscribe",
     "unsubscribe",
@@ -98,6 +100,7 @@ type HelpTopic =
   | "profile-list"
   | "profile-owner"
   | "profile-prune"
+  | "profile-release"
   | "profile-show"
   | "profile-subscribe"
   | "root"
@@ -136,6 +139,7 @@ export type CliCommand =
     }
   | { command: "profile-list"; json: boolean }
   | { command: "profile-owner"; json: boolean; profileId: string }
+  | { command: "profile-release"; json: boolean; profileId: string }
   | { ageMs: number; command: "profile-prune"; json: boolean; profileId: string }
   | {
       command: "profile-show";
@@ -181,6 +185,8 @@ export type CliCommand =
 type RpcClientLike = Pick<ObservabilityRpcClient, "close" | "request">;
 
 type RunCliDeps = {
+  environment?: NodeJS.ProcessEnv;
+  homeDir?: string;
   connect(socketPath: string): Promise<RpcClientLike>;
   output(line: string): void;
   socketPath: string;
@@ -203,7 +209,7 @@ export function parseCliArgs(
       case "agent":
         return parseAgentCommand(rest, environment);
       case "claude-hook":
-        return parseClaudeHookCommand(rest);
+        return parseClaudeHookCommand(rest, environment);
       case "daemon":
         return parseDaemonCommand(rest);
       case "dispatch":
@@ -222,11 +228,15 @@ export function parseCliArgs(
   throw new CliUsageError(`Unknown command: ${command}`, "root");
 }
 
-function parseClaudeHookCommand(args: string[]): CliCommand {
+function parseClaudeHookCommand(args: string[], environment: NodeJS.ProcessEnv): CliCommand {
   if (args.some(isHelpFlag)) return { command: "help", topic: "claude-hook" };
-  const profileId = takeOption(args, "--profile", "claude-hook");
+  const profileId =
+    takeOption(args, "--profile", "claude-hook") ?? environment.SHEPY_PROFILE?.trim();
   if (!profileId) {
-    throw new CliUsageError("claude-hook requires --profile <profileId>", "claude-hook");
+    throw new CliUsageError(
+      "claude-hook requires --profile <profileId> or SHEPY_PROFILE",
+      "claude-hook",
+    );
   }
   // Opt-in only: without the flag the command (and every hook request) is
   // exactly the agent-only shape.
@@ -497,6 +507,10 @@ function parseProfileCommand(args: string[]): CliCommand {
     rejectExtra(extra, helpTopic);
     return { command: "profile-owner", json, profileId };
   }
+  if (subcommand === "release") {
+    rejectExtra(extra, helpTopic);
+    return { command: "profile-release", json, profileId };
+  }
   if (subcommand === "prune") {
     const age = takeOption(rest, "--age", helpTopic) ?? "24h";
     const ageMs = parseAgeDuration(age, helpTopic);
@@ -724,6 +738,7 @@ Commands:
   context <profileId>      Show cached agent context for a profile
   diagnose <profileId>     Explain why outcomes are not reaching the owner
   owner <profileId>        Show the profile's current owner
+  release <profileId>      Release this Claude session's profile ownership
   subscribe <profileId>    Bind a profile to one Herdr agent
   unsubscribe <profileId>  Remove a profile subscription
   prune <profileId>        Remove dead subscriptions (selectors matching no live agent)
@@ -799,6 +814,20 @@ Usage:
 
 The lease token is never part of this output. A lapsed lease reads as
 claimable — a claim decides ownership, not the presence of a stale row.
+
+Options:
+  --json         Print JSON
+  -h, --help     Show help
+`;
+    case "profile-release":
+      return `Release this Claude Code session's profile ownership.
+
+Usage:
+  shepy profile release <profileId> [--json]
+
+Requires HERDR_SOCKET_PATH, HERDR_PANE_ID and HERDR_WORKSPACE_ID.
+Reads only the live caller session's owner file. A non-owner is refused;
+pending notices and subscriptions remain with the profile.
 
 Options:
   --json         Print JSON
@@ -980,17 +1009,18 @@ Options:
       return `Handle one Claude Code hook event from stdin.
 
 Reads the hook event JSON Claude Code pipes to stdin, claims the profile for
-this pane (re-claiming as the same subscriber always succeeds), and writes
+this pane (re-claiming with its current lease token), and writes
 hook JSON to stdout. UserPromptSubmit delivers pending worker outcomes as
 injected context; Stop keeps the turn open while fresh obligations are
-pending. Exits 0 on every expected condition so Shepy never degrades the
+pending. SessionEnd releases only this session's recorded lease.
+Exits 0 on every expected condition so Shepy never degrades the
 coding session, and never prints the lease token.
 
 Usage:
-  shepy claude-hook --profile <profileId> [--profile-demand]
+  shepy claude-hook [--profile <profileId>] [--profile-demand]
 
 Options:
-  --profile <id>      Profile this pane owns (required)
+  --profile <id>      Profile this pane owns (defaults to SHEPY_PROFILE)
   --profile-demand    Also claim and deliver profile demands, when the daemon
                       advertises profile-demand-v1; otherwise agent-only
   -h, --help          Show help
@@ -1095,11 +1125,30 @@ export async function runCliCommand(command: CliCommand, deps: RunCliDeps): Prom
   if (command.command === "daemon") throw new Error("daemon command is handled by main");
   const client = await deps.connect(deps.socketPath);
   try {
-    const result = await dispatchRpcCommand(command, client);
+    const result =
+      command.command === "profile-release"
+        ? await releaseCliProfile(command.profileId, client, deps)
+        : await dispatchRpcCommand(command, client);
     printResult(command, result, deps.output);
   } finally {
     client.close();
   }
+}
+
+async function releaseCliProfile(profileId: string, client: RpcClientLike, deps: RunCliDeps) {
+  const environment = deps.environment ?? process.env;
+  const sessionId = await callerClaudeSession(environment);
+  const proof = claudeReleaseProof(
+    deps.homeDir ?? resolveRuntime({ environment }).homeDir,
+    profileId,
+    sessionId,
+  );
+  if (!proof)
+    throw new Error("profile release refused: this Claude session has no owner credential");
+  const result = (await client.request("profile.release", proof)) as { released?: boolean };
+  if (result.released !== true)
+    throw new Error("profile release refused: this Claude session is not the current owner");
+  return { released: true };
 }
 
 async function dispatchRpcCommand(
@@ -1112,7 +1161,8 @@ async function dispatchRpcCommand(
         | "version"
         | "claude-hook"
         | "operation-dispatch"
-        | "operation-wait";
+        | "operation-wait"
+        | "profile-release";
     }
   >,
   client: RpcClientLike,
@@ -1252,6 +1302,7 @@ function formatHumanResult(command: CliCommand, result: unknown): string {
   if (command.command === "profile-diagnose")
     return formatProfileDiagnose(result as ProfileDiagnoseReport);
   if (command.command === "profile-prune") return formatProfilePrune(result as PruneResult);
+  if (command.command === "profile-release") return `Released profile ${command.profileId}.`;
   if (command.command === "inbox-get") return formatInboxGet(result as { obligation?: unknown });
   if (command.command === "inbox-list")
     return formatInboxList(
@@ -1436,6 +1487,8 @@ async function main(): Promise<void> {
   }
   await runCliCommand(command, {
     connect: (socketPath) => Promise.resolve(new ObservabilityRpcClient({ socketPath })),
+    environment: process.env,
+    homeDir: runtime.homeDir,
     output: (line) => console.log(line),
     socketPath: runtime.paths.socketPath,
   });

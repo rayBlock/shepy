@@ -8,6 +8,7 @@ import {
   plainText,
   readOwnerRecord,
 } from "@/cli/owner-file.js";
+import { claudeReleaseProof } from "@/cli/profile-release.js";
 import { ObservabilityRpcClient } from "@/daemon/client.js";
 import { SNAPSHOT_UNAVAILABLE_CONTEXT } from "@/observability/outcome-context.js";
 import { type DemandRequest, demandRequestSchema } from "@/observability/profile-demand-ingress.js";
@@ -360,6 +361,19 @@ async function runHook(input: ClaudeHookInput, warnings: string[]): Promise<Hook
   }
   if (payload.hook_event_name === "Stop") {
     return handleStop(payload, input, warnings);
+  }
+  if (payload.hook_event_name === "SessionEnd") {
+    const proof = claudeReleaseProof(input.homeDir, input.profileId, payload.session_id);
+    if (!proof) return null;
+    const client = new ObservabilityRpcClient({ socketPath: input.socketPath });
+    try {
+      // Never claim, lease or ack here. An interrupted session cannot prove
+      // consumption. Pending details stay on the profile; in-flight leases
+      // retain their existing expiry and at-least-once rules.
+      await requestWithDeadline(client)("profile.release", proof);
+    } finally {
+      client.close();
+    }
   }
   // Any other hook event is none of Shepy's business: exit 0 silently.
   return null;

@@ -21,6 +21,7 @@ import type { OperationStore } from "@/db/operations.js";
 import { toPublicProfileOwner } from "@/db/profile-owners.js";
 import type { HerdrOrchestrationTransport } from "@/herdr/orchestration-transport.js";
 import { HerdrWaitTimeoutError } from "@/herdr/orchestration-transport-adapter.js";
+import { ownerTerminalGone } from "@/herdr/owner-terminal.js";
 import {
   type HerdrPaneIdentity,
   resolveHerdrPaneIdentity,
@@ -589,7 +590,15 @@ export class ObservabilityRpcServer {
           terminalId?: string;
           workspaceId?: string;
         };
-        const result = this.#requireDelivery().claim(input);
+        const result = await this.#requireDelivery().claimWithOwnerCheck(input, async (owner) => {
+          if (!owner.herdrSessionName || !owner.terminalId) return false;
+          const session = this.#stores.herdrSessions.findRunningByName(owner.herdrSessionName);
+          if (!session) return false;
+          return ownerTerminalGone({
+            socketPath: session.socketPath,
+            terminalId: owner.terminalId,
+          });
+        });
         // Even the claimant gets only presence, never the stored socket capability.
         return {
           result:

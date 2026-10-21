@@ -339,6 +339,27 @@ export class ProfileDeliveryService {
     return this.#owners.claim(input);
   }
 
+  /** A slow Herdr check must never evict a newer claim. Re-check the exact
+   * daemon-private generation synchronously in the store after the await. */
+  async claimWithOwnerCheck(
+    input: Omit<Parameters<ProfileOwnerStore["claim"]>[0], "goneOwnerLeaseToken">,
+    terminalGone: (owner: PublicProfileOwner) => Promise<boolean>,
+  ): Promise<ClaimResult> {
+    const observed = this.#owners.get(input.profileId);
+    const result = this.claim(input);
+    if (
+      result.kind !== "rejected" ||
+      result.reason !== "lease_active" ||
+      !observed ||
+      !observed.terminalId ||
+      !observed.herdrSessionName ||
+      observed.herdrSessionName !== input.herdrSessionName
+    )
+      return result;
+    if (!(await terminalGone(toPublicProfileOwner(observed)))) return result;
+    return this.claim({ ...input, goneOwnerLeaseToken: observed.leaseToken });
+  }
+
   renew(input: { leaseToken: string; profileId: string }) {
     return this.#owners.renew(input);
   }

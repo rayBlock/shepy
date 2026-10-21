@@ -944,7 +944,7 @@ function readOwnerFile(
   };
 }
 
-function hookClaimParams(): Record<string, string> {
+function hookClaimParams() {
   return {
     harnessKind: "claude",
     harnessSessionRefJson: JSON.stringify({
@@ -4169,5 +4169,381 @@ describe("claude-hook demand formatter", () => {
     expect(formatted.deferredIds).toEqual([]);
     expect(formatted.context).not.toContain("event:");
     expect(formatted.context).not.toContain("obligation:");
+  });
+});
+
+// S4: actual hook entry, SQLite store and JSON Lines daemon boundary.
+describe("Claude profile handover", () => {
+  function pane(terminal_id: string, pane_id = "w1:p1") {
+    return {
+      pane_id,
+      terminal_id,
+      workspace_id: "w1",
+      tab_id: "w1:t1",
+      focused: false,
+      agent_status: "idle",
+      revision: 1,
+    };
+  }
+
+  async function herdrPeer(f: Fixture, answer: unknown, silent = false) {
+    const path = join(f.dir, "herdr.sock");
+    const requests: unknown[] = [];
+    const server = createServer((socket) => {
+      let buffer = "";
+      socket.on("data", (data) => {
+        buffer += data.toString();
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          const request = JSON.parse(line);
+          requests.push(request);
+          if (!silent)
+            socket.write(`${JSON.stringify({ id: request.id, ...(answer as object) })}\n`);
+        }
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(path, resolve));
+    messagingServers.push(server);
+    f.sqlite.prepare("update herdr_sessions set socket_path = ? where name = 'lane-b'").run(path);
+    return requests;
+  }
+
+  test.each([
+    ["alive", { result: { type: "pane_list", panes: [pane("t1")] } }, false],
+    ["gone", { result: { type: "pane_list", panes: [pane("other")] } }, true],
+    ["error", { error: { code: "unavailable", message: "fixture error" } }, false],
+    ["malformed", { result: {} }, false],
+    ["missing-type", { result: { panes: [] } }, false],
+    ["wrong-type", { result: { type: "agent_list", panes: [] } }, false],
+    ["partial", { result: { type: "pane_list", panes: [{ pane_id: "w1:p1" }] } }, false],
+    ["timeout", {}, false],
+  ])("rival takeover checks the owner's terminal: %s", async (mode, answer, accepted) => {
+    const f = await openHookServer();
+    await runHook(f, promptPayload());
+    const old = f.owners.get("driffs")?.leaseToken;
+    projectOutcome(f, `takeover-${mode}`, "pending takeover notice");
+    const requests = await herdrPeer(f, answer, mode === "timeout");
+    const started = performance.now();
+    const cpuStarted = process.cpuUsage();
+    const result = await runHook(f, promptPayload({ session_id: "rival" }));
+    const elapsed = performance.now() - started;
+    console.info(
+      "S4 fixture claim cost",
+      JSON.stringify({
+        mode,
+        elapsedMs: elapsed,
+        cpuUs: process.cpuUsage(cpuStarted),
+        ownerRows: f.sqlite.prepare("select count(*) as n from profile_owners").get(),
+        noticeRows: f.obligations.list({ profileId: "driffs" }).length,
+      }),
+    );
+    expect(requests).toMatchObject([{ method: "pane.list", params: {} }]);
+    if (accepted) {
+      expect(f.owners.get("driffs")?.leaseToken).not.toBe(old);
+      expect(result.stdout).toContain("pending takeover notice");
+    } else {
+      expect(f.owners.get("driffs")?.leaseToken).toBe(old);
+      expect(f.obligations.list({ profileId: "driffs", state: "pending" })).toHaveLength(1);
+      expect(result.stdout).not.toContain("pending takeover notice");
+    }
+    if (mode === "timeout") expect(elapsed).toBeLessThan(2_000);
+  });
+
+  test.each([
+    "null-terminal",
+    "other-session",
+    "unreachable",
+  ])("takeover fails closed for %s", async (mode) => {
+    const f = await openHookServer();
+    await runHook(f, promptPayload());
+    const token = f.owners.get("driffs")?.leaseToken;
+    if (mode === "null-terminal")
+      f.sqlite.prepare("update profile_owners set terminal_id = null").run();
+    if (mode === "other-session")
+      f.sqlite.prepare("update profile_owners set herdr_session_name = 'other-session'").run();
+    await runHook(f, promptPayload({ session_id: "rival" }));
+    expect(f.owners.get("driffs")?.leaseToken).toBe(token);
+  });
+
+  test.each([
+    "env-prompt",
+    "non-owner",
+    "borrowed-record",
+    "owner-release",
+  ])("public source CLI handover boundary: %s", async (mode) => {
+    const f = await openHookServer();
+    f.agents.replaceForSession({
+      herdrSessionName: "lane-b",
+      agents: [
+        { ...pane("t1"), agent: "claude" },
+        { ...pane("tb", "w1:pb"), agent: "claude" },
+        { ...pane("tc", "w1:pc"), agent: "claude" },
+        { ...pane("t2", "w2:p1"), workspace_id: "w2", name: "builder", agent: "hermes" },
+      ],
+    });
+    const caller = mode === "non-owner" || mode === "borrowed-record" ? "foreign" : SESSION_ID;
+    let live = [pane("t1"), pane("tb", "w1:pb"), pane("tc", "w1:pc")];
+    const path = join(f.dir, "cli-herdr.sock");
+    const server = createServer((socket) => {
+      let buffer = "";
+      socket.on("data", (data) => {
+        buffer += data.toString();
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          const request = JSON.parse(line);
+          const result =
+            request.method === "pane.list"
+              ? { type: "pane_list", panes: live }
+              : {
+                  type: "agent_info",
+                  agent: {
+                    ...pane("t1"),
+                    agent: "claude",
+                    agent_session: {
+                      agent: "claude",
+                      kind: "id",
+                      source: "herdr:claude",
+                      value: caller,
+                    },
+                  },
+                };
+          socket.write(`${JSON.stringify({ id: request.id, result })}\n`);
+        }
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(path, resolve));
+    messagingServers.push(server);
+    f.sqlite.prepare("update herdr_sessions set socket_path = ?").run(path);
+    async function cli(args: string[], sessionId = SESSION_ID, paneId = "w1:p1") {
+      const child = spawn(process.execPath, ["--import", "tsx", "src/cli/shepy.ts", ...args], {
+        env: {
+          ...process.env,
+          SHEPY_HOME: f.dir,
+          SHEPY_PROFILE: "driffs",
+          HERDR_SOCKET_PATH: path,
+          HERDR_PANE_ID: paneId,
+          HERDR_WORKSPACE_ID: "w1",
+        },
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk;
+      });
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk;
+      });
+      child.stdin.end(JSON.stringify(promptPayload({ session_id: sessionId })));
+      const code = await new Promise<number | null>((resolve, reject) => {
+        child.on("error", reject);
+        child.on("exit", resolve);
+      });
+      return { code, stdout, stderr };
+    }
+    if (mode === "env-prompt") {
+      expect((await cli(["claude-hook"])).code).toBe(0);
+      expect(f.owners.get("driffs")?.subscriberId).toBe(SESSION_ID);
+      return;
+    }
+    await runHook(f, promptPayload());
+    const token = f.owners.get("driffs")?.leaseToken;
+    projectOutcome(f, "cli-one", "CLI pending one");
+    projectOutcome(f, "cli-two", "CLI pending two");
+    // Live owner blocks B before release.
+    expect(
+      (
+        await runHook(f, promptPayload({ session_id: "b" }), {
+          environment: { HERDR_PANE_ID: "w1:pb" },
+        })
+      ).stdout,
+    ).toContain("owned by pane");
+    if (mode === "borrowed-record") {
+      // A current token placed in a foreign session's file does not carry
+      // matching native-session proof. Neither CLI nor SessionEnd admits it.
+      writeFileSync(
+        ownerRecordPath(f.dir, caller, "driffs"),
+        readFileSync(ownerRecordPath(f.dir, SESSION_ID, "driffs")),
+      );
+    }
+    if (mode !== "owner-release") {
+      expect((await cli(["profile", "release", "driffs"])).code).toBe(1);
+      await runHook(f, { hook_event_name: "SessionEnd", session_id: caller });
+      expect(f.owners.get("driffs")?.leaseToken).toBe(token);
+      expect(f.obligations.list({ profileId: "driffs", state: "pending" })).toHaveLength(2);
+      return;
+    }
+    const released = await cli(["profile", "release", "driffs", "--json"]);
+    expect(released).toMatchObject({ code: 0, stdout: '{"released":true}\n' });
+    expect(f.owners.get("driffs")).toBeUndefined();
+    expect(f.obligations.list({ profileId: "driffs", state: "pending" })).toHaveLength(2);
+    const b = await runHook(f, promptPayload({ session_id: "b" }), {
+      environment: { HERDR_PANE_ID: "w1:pb" },
+    });
+    expect(b.stdout).toContain("CLI pending one");
+    expect(b.stdout).toContain("CLI pending two");
+    expect(f.owners.get("driffs")?.terminalId).toBe("tb");
+    const again = await runHook(f, promptPayload({ session_id: "b" }), {
+      environment: { HERDR_PANE_ID: "w1:pb" },
+    });
+    expect(again.stdout).not.toContain("CLI pending");
+    expect(f.obligations.list({ profileId: "driffs", state: "acked" })).toHaveLength(2);
+    live = live.filter((p) => p.terminal_id !== "tb");
+    const before = performance.now();
+    const c = await runHook(f, promptPayload({ session_id: "c" }), {
+      environment: { HERDR_PANE_ID: "w1:pc" },
+    });
+    console.info("S4 fixture hook takeover ms", performance.now() - before);
+    expect(c.code).toBe(0);
+    expect(f.owners.get("driffs")?.subscriberId).toBe("c");
+    expect(performance.now() - before).toBeLessThan(2_000);
+  });
+
+  test("concurrent gone-terminal checks cannot replace the winning generation", async () => {
+    const f = await openHookServer();
+    await runHook(f, promptPayload());
+    projectOutcome(f, "gone-race", "one pending gone-race notice");
+    f.agents.replaceForSession({
+      herdrSessionName: "lane-b",
+      agents: [
+        { ...pane("tb", "w1:pb"), agent: "claude" },
+        { ...pane("tc", "w1:pc"), agent: "claude" },
+      ],
+    });
+    await herdrPeer(f, {
+      result: { type: "pane_list", panes: [pane("tb", "w1:pb"), pane("tc", "w1:pc")] },
+    });
+    const results = await Promise.all(
+      ["b", "c"].map((session_id) =>
+        runHook(f, promptPayload({ session_id }), {
+          environment: { HERDR_PANE_ID: `w1:p${session_id}` },
+        }),
+      ),
+    );
+    expect(results.filter((r) => r.stdout.includes("one pending gone-race notice"))).toHaveLength(
+      1,
+    );
+    expect(results.filter((r) => r.stdout.includes("owned by pane"))).toHaveLength(1);
+    expect(f.obligations.list({ profileId: "driffs", state: "delivered" })).toHaveLength(1);
+  });
+
+  test("a current-token prompt makes no additional Herdr request", async () => {
+    const f = await openHookServer();
+    await runHook(f, promptPayload());
+    const requests = await herdrPeer(f, { result: { type: "pane_list", panes: [] } });
+    const started = performance.now();
+    await runHook(f, promptPayload());
+    console.info("S4 fixture uncontended prompt ms", performance.now() - started);
+    expect(requests).toEqual([]);
+  });
+
+  test("a delayed gone result cannot evict a refreshed owner generation", async () => {
+    const f = await openHookServer();
+    await runHook(f, promptPayload());
+    let finish: (gone: boolean) => void = () => {
+      throw new Error("check not entered");
+    };
+    let entered = false;
+    const claim = f.delivery.claimWithOwnerCheck(hookClaimParams(), () => {
+      entered = true;
+      return new Promise<boolean>((resolve) => {
+        finish = resolve;
+      });
+    });
+    expect(entered).toBe(true);
+    await runHook(f, promptPayload());
+    const fresh = f.owners.get("driffs")?.leaseToken;
+    finish(true);
+    expect(await claim).toMatchObject({ kind: "rejected", reason: "lease_active" });
+    expect(f.owners.get("driffs")?.leaseToken).toBe(fresh);
+  });
+
+  test("the wire cannot supply the daemon's internal gone-owner proof", async () => {
+    const f = await openHookServer();
+    await runHook(f, promptPayload());
+    const old = f.owners.get("driffs");
+    const client = new ObservabilityRpcClient({ socketPath: f.socketPath });
+    try {
+      await expect(
+        client.request("profile.claim", {
+          ...hookClaimParams(),
+          goneOwnerLeaseToken: old?.leaseToken,
+        }),
+      ).rejects.toThrow();
+      expect(f.owners.get("driffs")?.leaseToken).toBe(old?.leaseToken);
+    } finally {
+      client.close();
+    }
+  });
+
+  test("SessionEnd releases only its own session; pending notices transfer once", async () => {
+    const f = await openHookServer();
+    await runHook(f, promptPayload());
+    const token = f.owners.get("driffs")?.leaseToken;
+    projectOutcome(f, "handover-one", "first pending");
+    projectOutcome(f, "handover-two", "second pending");
+    const end = (session_id: string) => ({ hook_event_name: "SessionEnd", session_id });
+    await runHook(f, end("foreign-session"));
+    expect(f.owners.get("driffs")?.leaseToken).toBe(token);
+    expect(f.obligations.list({ profileId: "driffs", state: "pending" })).toHaveLength(2);
+    await runHook(f, end(SESSION_ID));
+    expect(f.owners.get("driffs")).toBeUndefined();
+    expect(f.obligations.list({ profileId: "driffs", state: "pending" })).toHaveLength(2);
+    const b = { HERDR_PANE_ID: "w1:p2" };
+    const received = await runHook(f, promptPayload({ session_id: "new-session" }), {
+      environment: b,
+    });
+    expect(received.stdout).toContain("first pending");
+    expect(received.stdout).toContain("second pending");
+    const again = await runHook(f, promptPayload({ session_id: "new-session" }), {
+      environment: b,
+    });
+    expect(again.stdout).not.toContain("first pending");
+    expect(f.obligations.list({ profileId: "driffs", state: "acked" })).toHaveLength(2);
+    // Old session still has its file/token: it cannot resurrect the old lease.
+    await runHook(f, promptPayload());
+    expect(f.owners.get("driffs")?.subscriberId).toBe("new-session");
+    await runHook(f, end("new-session"));
+    await runHook(f, promptPayload());
+    expect(f.owners.get("driffs")?.subscriberId).toBe(SESSION_ID);
+    expect(f.owners.get("driffs")?.leaseToken).not.toBe(token);
+  });
+
+  test("SHEPY_PROFILE replaces the explicit flag but never overrides it", () => {
+    expect(parseCliArgs(["claude-hook"], { SHEPY_PROFILE: "seat" })).toEqual({
+      command: "claude-hook",
+      profileId: "seat",
+    });
+    expect(
+      parseCliArgs(["claude-hook", "--profile", "explicit"], { SHEPY_PROFILE: "seat" }),
+    ).toEqual({ command: "claude-hook", profileId: "explicit" });
+    expect(() => parseCliArgs(["claude-hook"], {})).toThrow(/requires/);
+    expect(parseCliArgs(["profile", "release", "seat"])).toEqual({
+      command: "profile-release",
+      json: false,
+      profileId: "seat",
+    });
+  });
+
+  test("two prompt claimants race after release: one owner and one delivery", async () => {
+    const f = await openHookServer();
+    await runHook(f, promptPayload());
+    projectOutcome(f, "race-one", "race notice one");
+    projectOutcome(f, "race-two", "race notice two");
+    await runHook(f, { hook_event_name: "SessionEnd", session_id: SESSION_ID });
+    const results = await Promise.all(
+      ["b", "c"].map((session_id) =>
+        runHook(f, promptPayload({ session_id }), {
+          environment: { HERDR_PANE_ID: `w1:p-${session_id}` },
+        }),
+      ),
+    );
+    expect(results.filter((r) => r.stdout.includes("race notice one"))).toHaveLength(1);
+    expect(results.filter((r) => r.stdout.includes("race notice two"))).toHaveLength(1);
+    expect(results.filter((r) => r.stdout.includes("owned by pane"))).toHaveLength(1);
+    expect(["b", "c"]).toContain(f.owners.get("driffs")?.subscriberId);
+    expect(f.obligations.list({ profileId: "driffs", state: "delivered" })).toHaveLength(2);
   });
 });

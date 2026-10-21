@@ -159,6 +159,14 @@ export class HerdrSocketClient {
     });
   }
 
+  listPanes(): Promise<unknown> {
+    return this.#request("pane.list");
+  }
+
+  getAgent(params: { target: string }): Promise<unknown> {
+    return this.#request("agent.get", params);
+  }
+
   getPane(params: { pane_id: string }): Promise<unknown> {
     return this.#request("pane.get", params);
   }
