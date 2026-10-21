@@ -39,6 +39,7 @@ export class AgentStore {
 
   replaceForSession(input: {
     agents: HerdrAgentLike[];
+    deferStatusChanges?: boolean;
     herdrSessionName: string;
   }): AgentIndexRecord[] {
     const now = Date.now();
@@ -102,7 +103,9 @@ export class AgentStore {
           snapshot.workspaceId,
           agent,
           name,
-          parseAgentStatus(snapshot.agent.agent_status),
+          input.deferStatusChanges
+            ? (current?.agent_status ?? "unknown")
+            : parseAgentStatus(snapshot.agent.agent_status),
           agentSessionJson(snapshot.agent.agent_session),
           sessionHint,
           integerValue(snapshot.agent.revision),
@@ -181,6 +184,23 @@ export class AgentStore {
       )
       .run(agentSessionJson(input.agentSession), input.herdrSessionName, input.paneId);
     return this.findByPane(input);
+  }
+
+  commitStatusEvent<T>(
+    input: {
+      agentId: string;
+      agentStatus: AgentStatus;
+      herdrSessionName: string;
+      paneId: string;
+    },
+    appendEvent: () => T,
+  ): T {
+    return this.#transaction(() => {
+      const event = appendEvent();
+      // A delayed observation must never overwrite a replacement pane's row.
+      if (this.findByPane(input)?.id === input.agentId) this.updateStatus(input);
+      return event;
+    });
   }
 
   updateStatus(input: {

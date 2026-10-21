@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { open, readdir, stat } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { AgentHistoryRef, AgentSessionRef } from "@/observability/contracts.js";
 
@@ -19,7 +19,16 @@ export type AgentHistoryLookupInput = {
   cwd: string | null;
   foregroundCwd: string | null;
   homeDir?: string;
+  candidateCache?: AgentHistoryCandidateCache;
 };
+
+export type AgentHistoryCandidateCache = Map<
+  string,
+  {
+    fingerprint: string;
+    metadata: { cwd: string | null; sessionId: string | null };
+  }
+>;
 
 type Candidate = {
   cwd: string | null;
@@ -66,13 +75,27 @@ export async function discoverAgentHistory(
   const agent = input.agent?.toLowerCase() ?? input.agentSession?.agent.toLowerCase() ?? "";
   const candidates: Candidate[] = [];
   if (agent === "pi") {
-    candidates.push(...(await scanRoot(join(homeDir, ".pi", "agent", "sessions"), "pi-jsonl")));
+    candidates.push(
+      ...(await scanRoot(
+        join(homeDir, ".pi", "agent", "sessions"),
+        "pi-jsonl",
+        input.candidateCache,
+      )),
+    );
   }
   if (agent === "claude") {
-    candidates.push(...(await scanRoot(join(homeDir, ".claude", "projects"), "claude-jsonl")));
+    candidates.push(
+      ...(await scanRoot(
+        join(homeDir, ".claude", "projects"),
+        "claude-jsonl",
+        input.candidateCache,
+      )),
+    );
   }
   if (agent === "codex") {
-    candidates.push(...(await scanRoot(join(homeDir, ".codex", "sessions"), "codex-jsonl")));
+    candidates.push(
+      ...(await scanRoot(join(homeDir, ".codex", "sessions"), "codex-jsonl", input.candidateCache)),
+    );
   }
   if (agent === "gemini") {
     candidates.push(...(await scanGeminiRoot(join(homeDir, ".gemini", "tmp"))));
@@ -169,18 +192,30 @@ function hermesStatePath(homeDir: string): string {
   return override ? join(override, "state.db") : join(homeDir, ".hermes", "state.db");
 }
 
-async function scanRoot(root: string, source: AgentHistoryRef["source"]): Promise<Candidate[]> {
-  if (!existsSync(root)) return [];
+async function scanRoot(
+  root: string,
+  source: AgentHistoryRef["source"],
+  cache?: AgentHistoryCandidateCache,
+): Promise<Candidate[]> {
   const files = await listJsonlFiles(root);
   const candidates: Candidate[] = [];
+  const present = new Set(files);
   for (const path of files) {
     const stats = await stat(path).catch(() => null);
     if (!stats?.isFile()) continue;
-    candidates.push({
-      ...(await readCandidateMetadata(path)),
-      path,
-      source,
-    });
+    const fingerprint = `${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeMs}:${stats.ctimeMs}`;
+    const previous = cache?.get(path);
+    const metadata =
+      previous?.fingerprint === fingerprint ? previous.metadata : await readCandidateMetadata(path);
+    // Re-enumerate and stat every candidate so new resumed copies are seen,
+    // but do not reopen hundreds of unchanged headers for one cached ID.
+    // A transient unreadable header is never memoized as missing identity.
+    if (metadata.sessionId) cache?.set(path, { fingerprint, metadata });
+    else cache?.delete(path);
+    candidates.push({ ...metadata, path, source });
+  }
+  for (const path of cache?.keys() ?? []) {
+    if (path.startsWith(`${root}${sep}`) && !present.has(path)) cache?.delete(path);
   }
   return candidates;
 }
@@ -370,6 +405,7 @@ async function readHeaderPrefix(path: string, limitBytes: number): Promise<strin
  * the exact session probe so a shared database keeps per-session identity.
  */
 export async function hintMatchesAgentSession(input: {
+  candidateCache?: AgentHistoryCandidateCache;
   cwd?: string | null;
   hint: AgentHistoryRef;
   homeDir: string;
@@ -397,15 +433,23 @@ export async function hintMatchesAgentSession(input: {
   const path = input.hint.path;
   if (!path || isSubagentTranscriptPath(path)) return false;
   const metadata = await readCandidateMetadata(path);
-  // A cached main in the old Claude project must not bypass duplicate-ID
-  // resolution after a resume into a different cwd.
+  if (metadata.sessionId !== input.session.value) return false;
+  // Cwd aliases do not invalidate a unique native session. Only multiple
+  // genuine mains require the project-folder rule; never guess by mtime.
   if (
     source === "claude-jsonl" &&
-    input.cwd &&
-    !candidateInProject({ path, source, cwd: metadata.cwd }, input.cwd, input.homeDir)
-  )
-    return false;
-  return metadata.sessionId === input.session.value;
+    !candidateInProject({ path, source, cwd: metadata.cwd }, input.cwd ?? null, input.homeDir)
+  ) {
+    const mains = (
+      await scanRoot(join(input.homeDir, ".claude", "projects"), source, input.candidateCache)
+    ).filter(
+      (candidate) =>
+        candidate.sessionId === input.session.value && !isSubagentTranscriptPath(candidate.path),
+    );
+    const mainCount = mains.length + (mains.some((candidate) => candidate.path === path) ? 0 : 1);
+    if (mainCount > 1) return false;
+  }
+  return true;
 }
 
 function stringValue(value: unknown): string | null {

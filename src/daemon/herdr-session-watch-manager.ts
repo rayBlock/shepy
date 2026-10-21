@@ -283,11 +283,14 @@ export class HerdrSessionWatchManager {
   }
 
   #refresh(entry: HerdrSessionListEntry): Promise<AgentIndexRecord[]> {
-    const source = this.#index.refreshHerdrSession({
-      herdrSessionName: entry.name,
-      sessionDir: entry.sessionDir,
-      socketPath: entry.socketPath,
-    });
+    const source = this.#index.refreshHerdrSession(
+      {
+        herdrSessionName: entry.name,
+        sessionDir: entry.sessionDir,
+        socketPath: entry.socketPath,
+      },
+      (ready) => this.#publishResult({ herdrSessionName: entry.name, ...ready }),
+    );
     const existing = this.#refreshPublications.get(source);
     if (existing) return existing;
     const publication = source.then((result) => {

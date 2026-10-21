@@ -106,6 +106,68 @@ test("a validated cached hint is reused without rediscovering the source root", 
   expect(withoutHint.historyRef?.path).toBe(main);
 });
 
+test("a unique cached Claude main survives a cwd alias without rediscovery", async () => {
+  const id = "11111111-2222-4333-8444-555555555555";
+  const { homeDir, main } = await claudeHome("shepy-identity-alias-", id);
+  const history = createAgentHistoryService({
+    homeDir,
+    discover: async () => {
+      throw new Error("a unique cached main must not rediscover for a cwd alias");
+    },
+  });
+  const lookup = { ...claudeSession(id), cwd: "/private/repo" };
+  const hint = {
+    kind: "agent_session" as const,
+    path: main,
+    source: "claude-jsonl" as const,
+    value: id,
+  };
+  expect(
+    (await history.resolveCompactHistory(lookup, { preferredRef: hint })).compactHistory
+      .lastAssistantMessage?.text,
+  ).toBe("MAIN ONLY");
+  expect((await history.read(lookup, { preferredRef: hint, limit: 5 })).messages.at(-1)?.text).toBe(
+    "MAIN ONLY",
+  );
+  expect(
+    (await history.resolveCompactHistory({ ...lookup, cwd: null }, { preferredRef: hint }))
+      .historyRef?.path,
+  ).toBe(main);
+});
+
+test.each([
+  "new-file",
+  "incomplete-file",
+])("a second main arriving after a cached unique Claude ref re-enables cwd disambiguation: %s", async (mode) => {
+  const id = "11111111-2222-4333-8444-555555555555";
+  const { homeDir, main } = await claudeHome("shepy-identity-new-copy-", id);
+  const resumed = join(homeDir, ".claude", "projects", "-private-repo", `${id}.jsonl`);
+  await mkdir(join(homeDir, ".claude", "projects", "-private-repo"), { recursive: true });
+  if (mode === "incomplete-file") await writeFile(resumed, "");
+  const history = createAgentHistoryService({ homeDir });
+  const lookup = { ...claudeSession(id), cwd: "/private/repo" };
+  const hint = {
+    kind: "agent_session" as const,
+    path: main,
+    source: "claude-jsonl" as const,
+    value: id,
+  };
+  expect(
+    (await history.resolveCompactHistory(lookup, { preferredRef: hint })).historyRef?.path,
+  ).toBe(main);
+  await writeFile(resumed, claudeTranscript(id, "RESUMED MAIN", "/repo"));
+  expect(
+    (await history.resolveCompactHistory(lookup, { preferredRef: hint })).historyRef?.path,
+  ).toBe(resumed);
+  expect((await history.read(lookup, { preferredRef: hint, limit: 5 })).messages.at(-1)?.text).toBe(
+    "RESUMED MAIN",
+  );
+  await rm(resumed);
+  expect(
+    (await history.resolveCompactHistory(lookup, { preferredRef: hint })).historyRef?.path,
+  ).toBe(main);
+});
+
 test("poisoned hints stamped with the requested id are rejected", async () => {
   const id = "11111111-2222-4333-8444-555555555555";
   const { homeDir, main, subagentA } = await claudeHome("shepy-identity-f2-poison-", id);

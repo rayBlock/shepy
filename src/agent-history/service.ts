@@ -9,6 +9,7 @@ import type {
 import { ClaudeHistoryReader } from "./claude-reader.js";
 import { CodexHistoryReader } from "./codex-reader.js";
 import {
+  type AgentHistoryCandidateCache,
   type AgentHistoryLookupInput,
   discoverAgentHistory,
   hintMatchesAgentSession,
@@ -51,11 +52,13 @@ export function createAgentHistoryService(
     new GeminiHistoryReader(),
     new HermesHistoryReader(),
   ];
+  const candidateCache: AgentHistoryCandidateCache = new Map();
   const discover: Discovery =
     options.discover ??
     ((input) =>
       discoverAgentHistory({
         ...input,
+        candidateCache,
         ...(options.homeDir ? { homeDir: options.homeDir } : {}),
       }));
 
@@ -168,6 +171,7 @@ export function createAgentHistoryService(
     // Pre-upgrade cwd discoveries must not survive as cached identity.
     if (!input.agentSession) return false;
     return hintMatchesAgentSession({
+      candidateCache,
       cwd: input.cwd ?? input.foregroundCwd,
       hint,
       homeDir: input.homeDir ?? options.homeDir ?? process.env.HOME ?? "",

@@ -63,6 +63,7 @@ type PendingStatus = StatusObservation & {
   previousHistory: CompactAgentHistory | undefined;
   previousSettledRef: string | null;
   superseded: boolean;
+  supersededEvent: AgentEventRecord | undefined;
 };
 type PendingResult<T> = T & { pendingStatuses: PendingStatus[] };
 
@@ -113,15 +114,36 @@ export class AgentIndexService {
     }
   }
 
-  refreshHerdrSession(input: RefreshInput): Promise<AgentIndexRefreshResult> {
+  /** While a retry is pending, the initiating caller can publish the ready
+   * portion through this callback. That portion is not returned again.
+   * Coalesced callers share the initiating caller's publication. */
+  refreshHerdrSession(
+    input: RefreshInput,
+    onImmediateResult?: (result: AgentIndexRefreshResult) => void,
+  ): Promise<AgentIndexRefreshResult> {
     const epoch = this.#mutationEpochBySession.get(input.herdrSessionName) ?? 0;
     const existing = this.#refreshInFlightBySession.get(input.herdrSessionName);
     if (existing?.epoch === epoch) return existing.promise;
     const promise = this.#enqueueSessionOperation(input.herdrSessionName, () =>
       this.#refreshHerdrSessionNow(input),
-    ).then(({ pendingStatuses, ...result }) =>
-      this.#finishPendingStatuses(input.herdrSessionName, result, pendingStatuses),
-    );
+    ).then(async ({ pendingStatuses, ...result }) => {
+      if (!onImmediateResult || pendingStatuses.length === 0)
+        return this.#finishPendingStatuses(input.herdrSessionName, result, pendingStatuses);
+      // The watch tick can publish the ready part of this snapshot while the
+      // missing finals flush. The final result contains only the retry batch.
+      const completion = this.#finishPendingStatuses(
+        input.herdrSessionName,
+        { ...result, events: [], contextChangedScopes: [] },
+        pendingStatuses,
+      );
+      try {
+        onImmediateResult(result);
+      } catch (error) {
+        await completion;
+        throw error;
+      }
+      return completion;
+    });
     this.#refreshInFlightBySession.set(input.herdrSessionName, { epoch, promise });
     const clear = () => {
       if (this.#refreshInFlightBySession.get(input.herdrSessionName)?.promise === promise) {
@@ -190,24 +212,36 @@ export class AgentIndexService {
         herdrSessionName: input.herdrSessionName,
         workspaces: snapshot.workspaces.map(record),
       });
+      const observedStatuses = new Map(
+        snapshotAgents.map((agent) => [
+          stringValue(agent.pane_id) ?? stringValue(agent.paneId),
+          parseAgentStatus(agent.agent_status),
+        ]),
+      );
       const indexedAgents = this.#stores.agents.replaceForSession({
         agents: snapshotAgents,
+        deferStatusChanges: true,
         herdrSessionName: input.herdrSessionName,
       });
-      const agents = indexedAgents.map((agent) => {
-        if (!agent.terminalId) return agent;
-        const key = terminalSessionKey(input.herdrSessionName, agent.terminalId);
-        const pending = this.#pendingPiSessionRefs.get(key);
-        if (!pending) return agent;
-        this.#pendingPiSessionRefs.delete(key);
-        return (
-          this.#stores.agents.setSessionRefByTerminal({
-            agentSession: pending,
-            herdrSessionName: input.herdrSessionName,
-            terminalId: agent.terminalId,
-          }) ?? agent
-        );
-      });
+      const agents = indexedAgents
+        .map((agent) => {
+          if (!agent.terminalId) return agent;
+          const key = terminalSessionKey(input.herdrSessionName, agent.terminalId);
+          const pending = this.#pendingPiSessionRefs.get(key);
+          if (!pending) return agent;
+          this.#pendingPiSessionRefs.delete(key);
+          return (
+            this.#stores.agents.setSessionRefByTerminal({
+              agentSession: pending,
+              herdrSessionName: input.herdrSessionName,
+              terminalId: agent.terminalId,
+            }) ?? agent
+          );
+        })
+        .map((agent) => ({
+          ...agent,
+          agentStatus: observedStatuses.get(agent.paneId) ?? agent.agentStatus,
+        }));
       const scopes = new Map<string, AgentScope>();
       const events: AgentEventRecord[] = [];
       const pendingStatuses: PendingStatus[] = [];
@@ -244,7 +278,8 @@ export class AgentIndexService {
         }
         if (
           (prior && prior.agentStatus !== agent.agentStatus) ||
-          (!prior && agent.agentStatus === "blocked")
+          (!prior && agent.agentStatus === "blocked") ||
+          this.#pendingSettlements.has(agent.id)
         ) {
           const event = this.#recordStatus(
             {
@@ -261,10 +296,17 @@ export class AgentIndexService {
           );
           if (event) events.push(event);
           addScope(scopes, scopeOf(agent));
+        } else if (!prior) {
+          // First-seen non-blocked panes have no transition to notify.
+          this.#stores.agents.updateStatus({
+            agentStatus: agent.agentStatus,
+            herdrSessionName: agent.herdrSessionName,
+            paneId: agent.paneId,
+          });
         }
       }
       return {
-        agents,
+        agents: this.#stores.agents.listForHerdrSession(input.herdrSessionName),
         contextChangedScopes: sortedScopes(scopes),
         events,
         pendingStatuses,
@@ -338,12 +380,7 @@ export class AgentIndexService {
     }
     const from = recovered ? "unknown" : previous.agentStatus;
     const to = parseAgentStatus(event.agent_status);
-    const updated = this.#stores.agents.updateStatus({
-      agentStatus: to,
-      herdrSessionName: input.herdrSessionName,
-      paneId,
-    });
-    const current = updated ?? { ...agent, agentStatus: to };
+    const current = { ...agent, agentStatus: to };
     const refreshed = await this.#context.refreshAgent({
       agent: current,
       identityChanged: !sameIdentity(previous, current),
@@ -431,13 +468,24 @@ export class AgentIndexService {
     previousHistory: CompactAgentHistory | undefined,
     pendingStatuses: PendingStatus[],
   ): AgentEventRecord | undefined {
-    if (input.from === input.to) return undefined;
     const pending = this.#pendingSettlements.get(input.agent.id);
-    if (pending) {
-      if (isSettled(input.from) && isSettled(input.to) && sameIdentity(pending.agent, input.agent))
+    if (pending && (!pending.superseded || !pending.supersededEvent)) {
+      // The row deliberately remains working during a retry. Another tick
+      // observing settled is the same completion, not a second retry.
+      if (!pending.superseded && isSettled(input.to) && sameIdentity(pending.agent, input.agent))
         return undefined;
       pending.superseded = true;
+      pending.supersededEvent = this.#appendStatusEvents({
+        ...pending,
+        compactHistory: pending.compactHistory
+          ? { ...pending.compactHistory, lastAssistantMessage: null }
+          : undefined,
+      });
+      // Commit the old completion BEFORE its successor, even if the row
+      // still said working when this newer observation arrived.
+      input = { ...input, from: pending.to };
     }
+    if (input.from === input.to) return undefined;
     const observedAt = Date.now();
     const completion = input.from === "working" && isSettled(input.to);
     const previousSettledRef = completion
@@ -448,7 +496,14 @@ export class AgentIndexService {
       completion &&
       historyNeedsRetry(input.compactHistory, previousHistory, observedAt, previousSettledRef)
     ) {
-      const next = { ...input, observedAt, previousHistory, previousSettledRef, superseded: false };
+      const next = {
+        ...input,
+        observedAt,
+        previousHistory,
+        previousSettledRef,
+        superseded: false,
+        supersededEvent: undefined,
+      };
       this.#pendingSettlements.set(input.agent.id, next);
       pendingStatuses.push(next);
       return undefined;
@@ -475,6 +530,10 @@ export class AgentIndexService {
       pendingStatuses.map(async (pending) => {
         await sleep(Math.max(0, pending.observedAt + 500 - Date.now()));
         await this.#enqueueSessionOperation(sessionName, async () => {
+          if (pending.supersededEvent) {
+            events.push(pending.supersededEvent);
+            return;
+          }
           const current = this.#stores.agents.findByPane({
             herdrSessionName: sessionName,
             paneId: pending.agent.paneId,
@@ -484,10 +543,10 @@ export class AgentIndexService {
             !pending.superseded &&
             current?.id === pending.agent.id &&
             sameIdentity(current, pending.agent) &&
-            isSettled(current.agentStatus)
+            current.agentStatus === pending.from
           ) {
             const refreshed = await this.#context.refreshAgent({
-              agent: current,
+              agent: { ...current, agentStatus: pending.to },
               identityChanged: false,
             });
             compactHistory = refreshed.snapshot.compactHistory;
@@ -508,19 +567,54 @@ export class AgentIndexService {
           ) {
             compactHistory = { ...compactHistory, lastAssistantMessage: null };
           }
-          const event = this.#appendStatusEvents({ ...pending, compactHistory });
-          if (event) events.push(event);
+          const persistStatus =
+            current?.id === pending.agent.id &&
+            sameIdentity(current, pending.agent) &&
+            current.agentStatus === pending.from;
+          const event = this.#appendStatusEvents({ ...pending, compactHistory }, persistStatus);
+          if (event) {
+            events.push(event);
+            if (persistStatus && current) addScope(scopes, scopeOf(current));
+          }
         }).finally(() => {
           if (this.#pendingSettlements.get(pending.agent.id) === pending)
             this.#pendingSettlements.delete(pending.agent.id);
         });
       }),
     );
-    return { ...result, contextChangedScopes: sortedScopes(scopes), events };
+    return {
+      ...result,
+      ...("agents" in result
+        ? { agents: this.#stores.agents.listForHerdrSession(sessionName) }
+        : {}),
+      contextChangedScopes: sortedScopes(scopes),
+      events,
+    };
   }
 
-  #appendStatusEvents(input: StatusObservation): AgentEventRecord | undefined {
-    if (input.from === input.to || !input.compactHistory) return undefined;
+  #appendStatusEvents(
+    input: StatusObservation,
+    persistStatus = true,
+  ): AgentEventRecord | undefined {
+    const compactHistory = input.compactHistory;
+    if (input.from === input.to || !compactHistory) return undefined;
+    const append = () => this.#appendStatusEventRecords({ ...input, compactHistory });
+    return persistStatus
+      ? this.#stores.agents.commitStatusEvent(
+          {
+            agentId: input.agent.id,
+            agentStatus: input.to,
+            herdrSessionName: input.agent.herdrSessionName,
+            paneId: input.agent.paneId,
+          },
+          append,
+        )
+      : append();
+  }
+
+  #appendStatusEventRecords(
+    input: StatusObservation & { compactHistory: CompactAgentHistory },
+  ): AgentEventRecord {
     const observationId =
       eventIdentity(input.evidence) ??
       `observed:${input.agent.lastSeenAt.getTime()}:${this.#observationSequence++}`;

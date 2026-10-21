@@ -2,7 +2,7 @@ import { appendFile, mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { createAgentHistoryService } from "@/agent-history/service.js";
 import { HerdrSessionWatchManager } from "@/daemon/herdr-session-watch-manager.js";
 import { DeliveryObligationStore } from "@/db/delivery-obligations.js";
@@ -19,6 +19,7 @@ import { cleanupTempDirs, openObservabilityDbHarness } from "./observability-db-
 const homes: string[] = [];
 const databases: ReturnType<typeof openObservabilityDbHarness>[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const db of databases.splice(0)) db.sqlite.close();
   cleanupTempDirs();
   await Promise.all(homes.splice(0).map((path) => rm(path, { recursive: true, force: true })));
@@ -299,6 +300,13 @@ test("duplicate Claude IDs choose the cwd project directory, not header cwd or c
   expect(
     (await f.history.resolveCompactHistory({ ...lookup, cwd: "/neither" })).historyRef,
   ).toBeNull();
+  expect(
+    (await f.history.resolveCompactHistory({ ...lookup, cwd: null }, { preferredRef: hint }))
+      .historyRef,
+  ).toBeNull();
+  expect(
+    (await f.history.read({ ...lookup, cwd: null }, { preferredRef: hint, limit: 5 })).messages,
+  ).toEqual([]);
   await rm(dirname(wrong), { recursive: true });
   expect(
     (await f.history.resolveCompactHistory(lookup)).compactHistory.lastAssistantMessage?.text,
@@ -446,20 +454,246 @@ test("previous settled text is re-read even if the next user record has not flus
   expect(f.outcomes().map((o) => o.assistantText)).toEqual(["FIRST FINAL", "SECOND FINAL"]);
 });
 
-test("a new turn during the retry cannot be attached to the prior completion", async () => {
+test.each([
+  "event",
+  "snapshot",
+])("a new turn during the retry cannot be attached to the prior completion via %s", async (route) => {
   const w = worker("reentered");
   const f = await fixture([w]);
   const path = await source(f.home, w);
   await f.refresh();
   const pending = f.status(w, "idle");
   await sleep(60);
-  await f.status(w, "working");
+  if (route === "event") await f.status(w, "working");
+  else {
+    w.agent_status = "working";
+    await f.refresh();
+  }
+  const transitions = () =>
+    f.db.agentEvents
+      .listAfter({ herdrSessionName: "default", workspaceId: "wA" })
+      .filter((event) => event.type === "agent.status.changed")
+      .map((event) => event.payload);
+  const atSupersession = transitions();
   await appendFile(path, line(w, "assistant", "NEXT TURN", new Date().toISOString(), "next-final"));
   await f.status(w, "done");
   await pending;
   const outcomes = f.outcomes();
   expect(outcomes.find((o) => o.to === "idle")?.assistantText).toBeNull();
   expect(outcomes.find((o) => o.to === "done")?.assistantText).toBe("NEXT TURN");
+  expect(atSupersession).toEqual([
+    expect.objectContaining({ from: "working", to: "idle" }),
+    expect.objectContaining({ from: "idle", to: "working" }),
+  ]);
+  expect(transitions()).toEqual([
+    ...atSupersession,
+    expect.objectContaining({ from: "working", to: "done" }),
+  ]);
+  expect(outcomes.map((o) => o.to)).toEqual(["idle", "done"]);
+  expect(f.db.agents.list()[0]?.agentStatus).toBe("done");
+});
+
+test.each([
+  "event",
+  "snapshot",
+])("status and event roll back together after append failure on %s, then restart recovers", async (route) => {
+  for (const withText of [true, false]) {
+    const w = worker(`append-failure-${route}-${withText}`);
+    const f = await fixture([w]);
+    const path = await source(f.home, w);
+    await f.refresh();
+    if (withText)
+      await appendFile(
+        path,
+        line(w, "assistant", "RECOVERED FINAL", new Date().toISOString(), "final"),
+      );
+    const append = vi.spyOn(f.db.agentEvents, "append").mockImplementationOnce(() => {
+      throw new Error("injected append failure");
+    });
+    w.agent_status = "idle";
+    await expect(route === "event" ? f.status(w, "idle") : f.refresh()).rejects.toThrow(
+      "injected append failure",
+    );
+    append.mockRestore();
+    const persistedAfterFailure = f.db.agents.list()[0]?.agentStatus;
+    f.restart();
+    for (let i = 0; i < 3; i++) await f.refresh();
+    expect(persistedAfterFailure).toBe("working");
+    expect(f.outcomes()).toHaveLength(1);
+    expect(f.outcomes()[0]?.assistantText).toBe(withText ? "RECOVERED FINAL" : null);
+    expect(f.db.agents.list()[0]?.agentStatus).toBe("idle");
+  }
+});
+
+test("a failure on the semantic twin rolls back the generic event and status too", async () => {
+  const w = worker("semantic-failure");
+  const f = await fixture([w]);
+  const path = await source(f.home, w);
+  await f.refresh();
+  await appendFile(path, line(w, "assistant", "FINAL", new Date().toISOString(), "final"));
+  const realAppend = f.db.agentEvents.append.bind(f.db.agentEvents);
+  const append = vi
+    .spyOn(f.db.agentEvents, "append")
+    .mockImplementationOnce(realAppend)
+    .mockImplementationOnce(() => {
+      throw new Error("semantic append failed");
+    });
+  await expect(f.status(w, "done")).rejects.toThrow("semantic append failed");
+  append.mockRestore();
+  expect(f.db.agents.list()[0]?.agentStatus).toBe("working");
+  expect(f.db.agentEvents.listAfter({ herdrSessionName: "default", workspaceId: "wA" })).toEqual(
+    [],
+  );
+  f.restart();
+  await f.refresh();
+  expect(f.outcomes().map((o) => o.assistantText)).toEqual(["FINAL"]);
+});
+
+test("a pending retry leaves the persisted row working and ignores duplicate settled observations", async () => {
+  const w = worker("pending-duplicates");
+  const f = await fixture([w]);
+  await source(f.home, w);
+  await f.refresh();
+  const pending = f.status(w, "idle");
+  await sleep(60);
+  const duringRetry = f.db.agents.list()[0]?.agentStatus;
+  const duplicate = await f.status(w, "done");
+  await f.refresh();
+  const beforeFlush = f.db.agentEvents.listAfter({
+    herdrSessionName: "default",
+    workspaceId: "wA",
+  });
+  await pending;
+  expect(duringRetry).toBe("working");
+  expect(duplicate).toEqual([]);
+  expect(beforeFlush).toEqual([]);
+  expect(f.outcomes()).toHaveLength(1);
+  expect(f.outcomes()[0]?.to).toBe("idle");
+  expect(f.db.agents.list()[0]?.agentStatus).toBe("idle");
+});
+
+test("an initial blocked append failure leaves a recoverable unknown row", async () => {
+  const w = worker("initial-blocked-failure");
+  w.agent_status = "blocked";
+  const f = await fixture([w]);
+  const append = vi.spyOn(f.db.agentEvents, "append").mockImplementationOnce(() => {
+    throw new Error("initial blocked append failed");
+  });
+  await expect(f.refresh()).rejects.toThrow("initial blocked append failed");
+  append.mockRestore();
+  expect(f.db.agents.list()[0]?.agentStatus).toBe("unknown");
+  f.restart();
+  for (let i = 0; i < 3; i++) await f.refresh();
+  expect(f.outcomes()).toHaveLength(1);
+  expect(f.outcomes()[0]?.type).toBe("agent.blocked");
+});
+
+test("P4 persisted working row observes blocked once after restart and three ticks", async () => {
+  const w = worker("persisted-blocked", "claude");
+  const f = await fixture([w]);
+  await source(f.home, w);
+  await f.refresh();
+  w.agent_status = "blocked";
+  f.restart();
+  for (let i = 0; i < 4; i++) await f.refresh();
+  await f.status(w, "blocked");
+  expect(f.outcomes()).toHaveLength(1);
+  expect(f.outcomes()[0]).toMatchObject({ from: "working", to: "blocked", type: "agent.blocked" });
+});
+
+test("P5 a flushed next-user record cannot deliver the previous settled text", async () => {
+  const w = worker("previous-user");
+  const f = await fixture([w]);
+  const path = await source(f.home, w, "FIRST");
+  await f.refresh();
+  await f.status(w, "idle");
+  await f.status(w, "working");
+  await appendFile(path, line(w, "user", "second task", new Date().toISOString(), "next-user"));
+  await f.status(w, "idle");
+  expect(f.outcomes().map((o) => o.assistantText)).toEqual(["FIRST", null]);
+});
+
+test("P6 a snapshot batch publishes its fresh pane before the other pane's retry", async () => {
+  const slow = worker("snapshot-slow");
+  const fast = worker("snapshot-fast");
+  const f = await fixture([slow, fast]);
+  await source(f.home, slow);
+  const path = await source(f.home, fast);
+  let ready!: () => void;
+  const startedWatching = new Promise<void>((resolve) => {
+    ready = resolve;
+  });
+  let fastPublished!: () => void;
+  const fresh = new Promise<void>((resolve) => {
+    fastPublished = resolve;
+  });
+  let slowPublished!: () => void;
+  const retried = new Promise<void>((resolve) => {
+    slowPublished = resolve;
+  });
+  let slowDelivered = false;
+  const contextStatuses: string[][] = [];
+  const manager = new HerdrSessionWatchManager({
+    agents: f.db.agents,
+    herdrSessions: f.db.herdrSessions,
+    index: f.index,
+    sessionList: async () => [
+      {
+        name: "default",
+        running: true,
+        sessionDir: input.sessionDir,
+        socketPath: input.socketPath,
+      },
+    ],
+    clientFactory: () => ({
+      close() {},
+      async *subscribeEvents(_params, options) {
+        if (!options?.signal?.aborted)
+          await new Promise<void>((resolve) =>
+            options?.signal?.addEventListener("abort", () => resolve(), { once: true }),
+          );
+      },
+    }),
+    onAgentIndexRefreshed() {
+      ready();
+    },
+    onAgentContextChanged() {
+      contextStatuses.push(f.db.agents.list().map((agent) => agent.agentStatus));
+    },
+    onAgentEvent(event) {
+      f.delivery.projectAgentEvent(event);
+      if (event.terminalId === slow.terminal_id) {
+        slowDelivered = true;
+        slowPublished();
+      }
+      if (event.terminalId === fast.terminal_id) fastPublished();
+    },
+  });
+  let slowAtFresh = true;
+  let elapsed = 0;
+  try {
+    await manager.start();
+    await startedWatching;
+    slow.agent_status = "idle";
+    fast.agent_status = "idle";
+    await appendFile(
+      path,
+      line(fast, "assistant", "FAST SNAPSHOT", new Date().toISOString(), "final"),
+    );
+    const start = performance.now();
+    await manager.rescanNow();
+    await fresh;
+    slowAtFresh = slowDelivered;
+    elapsed = performance.now() - start;
+    await retried;
+  } finally {
+    await manager.stop();
+  }
+  expect(slowAtFresh).toBe(false);
+  expect(elapsed).toBeLessThan(400);
+  expect(f.outcomes().map((o) => o.assistantText)).toEqual(["FAST SNAPSHOT", null]);
+  expect(contextStatuses).toContainEqual(["idle", "working"]);
+  expect(contextStatuses.at(-1)).toEqual(["idle", "idle"]);
 });
 
 test("a failed identity refresh refuses history instead of trusting the old session", async () => {
