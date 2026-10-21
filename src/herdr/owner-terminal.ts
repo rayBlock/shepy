@@ -9,16 +9,21 @@ const paneListSchema = Type.Object(
   {
     type: Type.Literal("pane_list"),
     panes: Type.Array(
-      Type.Object({ terminal_id: Type.String({ minLength: 1 }) }, { additionalProperties: true }),
+      Type.Object(
+        { pane_id: Type.String({ minLength: 1 }), terminal_id: Type.String({ minLength: 1 }) },
+        { additionalProperties: true },
+      ),
     ),
   },
   { additionalProperties: true },
 );
 
 /** Only a complete live pane list proves absence. A transport failure,
- * unsupported method or malformed response is unknown, never "gone". */
+ * unsupported method or malformed response is unknown, never "gone".
+ * Check both identities: a live pane also fences an inconsistent terminal id. */
 export async function ownerTerminalGone(input: {
   socketPath: string;
+  paneId: string;
   terminalId: string;
 }): Promise<boolean> {
   const client = new HerdrSocketClient({
@@ -28,7 +33,9 @@ export async function ownerTerminalGone(input: {
   try {
     const result = await client.listPanes();
     if (!Value.Check(paneListSchema, result)) return false;
-    return !result.panes.some((pane) => pane.terminal_id === input.terminalId);
+    return !result.panes.some(
+      (pane) => pane.terminal_id === input.terminalId || pane.pane_id === input.paneId,
+    );
   } catch {
     return false;
   } finally {

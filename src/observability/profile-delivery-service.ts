@@ -352,6 +352,11 @@ export class ProfileDeliveryService {
       result.reason !== "lease_active" ||
       !observed ||
       !observed.terminalId ||
+      !observed.paneId ||
+      // Both owner bridges historically use paneId as terminalId when
+      // location resolution fails. Absence of that value from Herdr's
+      // terminal ids proves nothing, even if the pane has since closed.
+      observed.terminalId === observed.paneId ||
       !observed.herdrSessionName ||
       observed.herdrSessionName !== input.herdrSessionName
     )

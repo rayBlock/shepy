@@ -591,10 +591,11 @@ export class ObservabilityRpcServer {
           workspaceId?: string;
         };
         const result = await this.#requireDelivery().claimWithOwnerCheck(input, async (owner) => {
-          if (!owner.herdrSessionName || !owner.terminalId) return false;
+          if (!owner.herdrSessionName || !owner.terminalId || !owner.paneId) return false;
           const session = this.#stores.herdrSessions.findRunningByName(owner.herdrSessionName);
           if (!session) return false;
           return ownerTerminalGone({
+            paneId: owner.paneId,
             socketPath: session.socketPath,
             terminalId: owner.terminalId,
           });

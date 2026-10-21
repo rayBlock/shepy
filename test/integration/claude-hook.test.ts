@@ -4211,7 +4211,8 @@ describe("Claude profile handover", () => {
 
   test.each([
     ["alive", { result: { type: "pane_list", panes: [pane("t1")] } }, false],
-    ["gone", { result: { type: "pane_list", panes: [pane("other")] } }, true],
+    ["gone", { result: { type: "pane_list", panes: [pane("other", "w1:other")] } }, true],
+    ["owner-pane-still-live", { result: { type: "pane_list", panes: [pane("other")] } }, false],
     ["error", { error: { code: "unavailable", message: "fixture error" } }, false],
     ["malformed", { result: {} }, false],
     ["missing-type", { result: { panes: [] } }, false],
@@ -4399,6 +4400,86 @@ describe("Claude profile handover", () => {
     expect(c.code).toBe(0);
     expect(f.owners.get("driffs")?.subscriberId).toBe("c");
     expect(performance.now() - before).toBeLessThan(2_000);
+  });
+
+  test.each([
+    "missing-index",
+    "ambiguous-index",
+    "legacy-pane-gone",
+    "confirmed-terminal",
+  ])("unresolved location cannot authorize early takeover: %s", async (mode) => {
+    const f = await openHookServer();
+    const live = [pane("term_owner"), pane("term_rival", "w1:p2")];
+    const answer = { result: { type: "pane_list", panes: live } };
+    const requests = await herdrPeer(f, answer);
+    new HerdrSessionStore(f.sqlite).upsertRunning({
+      name: "default",
+      sessionDir: f.dir,
+      socketPath: join(f.dir, "herdr.sock"),
+    });
+    // Keep the existing worker so notices use the real projection path.
+    f.agents.replaceForSession({
+      herdrSessionName: "lane-b",
+      agents: [
+        ...(mode === "ambiguous-index" ? [{ ...pane("term_duplicate"), agent: "claude" }] : []),
+        { ...pane("t2", "w2:p1"), workspace_id: "w2", name: "builder", agent: "hermes" },
+      ],
+    });
+    f.agents.replaceForSession({
+      herdrSessionName: "default",
+      agents: [
+        ...(mode === "ambiguous-index" || mode === "confirmed-terminal"
+          ? [{ ...pane("term_owner"), agent: "claude" }]
+          : []),
+        { ...pane("term_rival", "w1:p2"), agent: "claude" },
+      ],
+    });
+    await runHook(f, promptPayload());
+    const original = f.owners.get("driffs");
+    expect(original).toMatchObject({
+      herdrSessionName: "default",
+      paneId: "w1:p1",
+      terminalId: mode === "confirmed-terminal" ? "term_owner" : "w1:p1",
+    });
+    projectOutcome(f, `unresolved-${mode}`, "notice stays with the live owner");
+    if (mode === "legacy-pane-gone") answer.result.panes = [pane("term_rival", "w1:p2")];
+    const rival = () =>
+      runHook(f, promptPayload({ session_id: "rival" }), {
+        environment: { HERDR_PANE_ID: "w1:p2" },
+      });
+    const refused = await rival();
+    expect(refused.stdout).toContain("owned by pane");
+    expect(f.owners.get("driffs")?.leaseToken).toBe(original?.leaseToken);
+    expect(f.obligations.list({ profileId: "driffs", state: "pending" })).toHaveLength(1);
+    if (mode !== "confirmed-terminal") {
+      // Even an absent legacy pane-shaped "terminal" is not confirmed
+      // terminal identity. Wait for normal expiry or the holder's release.
+      expect(requests).toEqual([]);
+      if (mode === "missing-index") {
+        // A holder prompt repairs the legacy location once its pane is
+        // indexed. No migration or forced lease expiry is needed.
+        f.agents.replaceForSession({
+          herdrSessionName: "default",
+          agents: [
+            { ...pane("term_owner"), agent: "claude" },
+            { ...pane("term_rival", "w1:p2"), agent: "claude" },
+          ],
+        });
+        const holder = await runHook(f, promptPayload());
+        expect(holder.stdout).toContain("notice stays with the live owner");
+        expect(f.owners.get("driffs")).toMatchObject({
+          terminalId: "term_owner",
+          subscriberId: SESSION_ID,
+        });
+      }
+      return;
+    }
+    expect(requests).toMatchObject([{ method: "pane.list" }]);
+    answer.result.panes = [pane("term_rival", "w1:p2")];
+    const takeover = await rival();
+    expect(takeover.stdout).toContain("notice stays with the live owner");
+    expect(f.owners.get("driffs")?.subscriberId).toBe("rival");
+    expect(f.owners.get("driffs")?.leaseToken).not.toBe(original?.leaseToken);
   });
 
   test("concurrent gone-terminal checks cannot replace the winning generation", async () => {
