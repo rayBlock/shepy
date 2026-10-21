@@ -7,15 +7,16 @@
  * another session with the same workspace id), then the agent selector is
  * applied inside that scope.
  *
- * Selection priority (§7):
- *   1. exact terminal id — emergency pinning only
- *   2. exact pane id — useful but move-sensitive
- *   3. exact stable live name — preferred
- *   4. exact runtime session id — diagnostic/session pinning
- *   5. runtime kind plus cwd — only when uniquely resolved
+ * New subscriptions pin a terminal, with a native-session guard when known.
+ * A null guard is pending and binds once on the first observed session.
+ * A missing guard preserves legacy terminal-selector behavior. Pane and name
+ * selectors remain readable for existing rows; new pane subscriptions are
+ * resolved to terminals before storage. Resolution never follows a replacement.
  * Ambiguous selectors fail closed: a resolution that matches more than one
  * agent is an error, never a guess (§7/§6.1.3).
  */
+
+import { type AgentSessionRef, parseAgentSessionRef, sameAgentSessionRef } from "./contracts.js";
 
 export type WorkspaceSelector = {
   herdrSession: string;
@@ -23,7 +24,7 @@ export type WorkspaceSelector = {
 };
 
 export type AgentSelector =
-  | { kind: "terminalId"; value: string }
+  | { kind: "terminalId"; value: string; agentSession?: AgentSessionRef | null }
   | { kind: "paneId"; value: string }
   | { kind: "name"; value: string }
   | { kind: "agentSession"; value: string }
@@ -32,6 +33,7 @@ export type AgentSelector =
 export type SelectableAgent = {
   agent: string | null;
   agentSessionId: string | null;
+  agentSession?: AgentSessionRef | null;
   cwd: string | null;
   herdrSessionName: string;
   id: string;
@@ -47,8 +49,15 @@ export type SelectorParseError = {
 };
 
 export type AgentResolution =
-  | { kind: "matched"; agent: SelectableAgent }
+  | { kind: "matched"; agent: SelectableAgent; bindingState?: "pending" }
   | { kind: "unmatched"; detail: string }
+  | { kind: "pending"; detail: string }
+  | {
+      kind: "replacement_refused";
+      detail: string;
+      expectedSessionId: string;
+      actualSessionId: string;
+    }
   | {
       kind: "ambiguous";
       candidates: Array<{ id: string; paneId: string; name: string | null }>;
@@ -103,7 +112,23 @@ export function parseAgentSelector(json: string): AgentSelector | SelectorParseE
   }
   const record = value as Record<string, unknown>;
   switch (record.kind) {
-    case "terminalId":
+    case "terminalId": {
+      if (typeof record.value !== "string" || record.value.length === 0) {
+        return {
+          error: "invalid_agent_selector",
+          detail: "terminalId: value must be a non-empty string",
+        };
+      }
+      if (record.agentSession === undefined) return { kind: "terminalId", value: record.value };
+      const session =
+        record.agentSession === null ? null : parseAgentSessionRef(record.agentSession);
+      if (session === undefined)
+        return {
+          error: "invalid_agent_selector",
+          detail: "terminalId: invalid native-session guard",
+        };
+      return { kind: "terminalId", value: record.value, agentSession: session };
+    }
     case "paneId":
     case "name":
     case "agentSession":
@@ -164,6 +189,12 @@ export function resolveAgentSelector(
   });
 
   if (matches.length === 0) {
+    if (selector.kind === "terminalId" && selector.agentSession === null) {
+      return {
+        kind: "pending",
+        detail: `pending: terminal ${selector.value} has no native session yet`,
+      };
+    }
     return {
       kind: "unmatched",
       detail: `no agent in scope matches ${describeSelector(selector)}`,
@@ -183,13 +214,37 @@ export function resolveAgentSelector(
   const [agent] = matches;
   if (!agent)
     return { kind: "unmatched", detail: "matched agent vanished between filter and read" };
+  if (selector.kind === "terminalId" && selector.agentSession !== undefined) {
+    if (selector.agentSession === null) {
+      // Terminal readiness is useful before Pi's first prompt publishes a
+      // session. The guard remains pending and delivery still refuses it.
+      return { kind: "matched", agent, bindingState: "pending" };
+    }
+    if (!agent.agentSession) {
+      return {
+        kind: "pending",
+        detail: `pending: terminal ${selector.value} is waiting for bound session ${selector.agentSession.value}; current native session unavailable`,
+      };
+    }
+    if (
+      agent.agent !== selector.agentSession.agent ||
+      !sameAgentSessionRef(selector.agentSession, agent.agentSession)
+    ) {
+      return {
+        kind: "replacement_refused",
+        expectedSessionId: selector.agentSession.value,
+        actualSessionId: agent.agentSession.value,
+        detail: `replacement refused: terminal ${selector.value} bound to session ${selector.agentSession.value} (${selector.agentSession.source}, ${selector.agentSession.kind}); current session ${agent.agentSession.value} (${agent.agentSession.source}, ${agent.agentSession.kind}, harness ${agent.agent ?? "unknown"})`,
+      };
+    }
+  }
   return { kind: "matched", agent };
 }
 
 export function describeSelector(selector: AgentSelector): string {
   switch (selector.kind) {
     case "terminalId":
-      return `terminalId ${selector.value}`;
+      return `terminalId ${selector.value}${selector.agentSession === null ? " (pending)" : selector.agentSession ? ` session ${selector.agentSession.value}` : ""}`;
     case "paneId":
       return `paneId ${selector.value}`;
     case "name":
@@ -214,10 +269,12 @@ export function selectableFromRow(row: {
   workspaceId: string;
 }): SelectableAgent {
   let agentSessionId: string | null = null;
+  let agentSession: AgentSessionRef | null = null;
   if (row.agentSessionJson) {
     try {
       const parsed = JSON.parse(row.agentSessionJson) as { value?: unknown };
       if (typeof parsed.value === "string") agentSessionId = parsed.value;
+      agentSession = parseAgentSessionRef(parsed) ?? null;
     } catch {
       agentSessionId = null;
     }
@@ -225,6 +282,7 @@ export function selectableFromRow(row: {
   return {
     agent: row.agent,
     agentSessionId,
+    agentSession,
     cwd: row.cwd,
     herdrSessionName: row.herdrSessionName,
     id: row.id,

@@ -7,7 +7,11 @@ import type {
 } from "@/db/orchestrator-profiles.js";
 import type { SessionPanePresence } from "@/herdr/session-snapshot.js";
 import type { AgentIndexRecord } from "./contracts.js";
-import { resolveSelectorInWorkspaceScope } from "./profile-selector-scope.js";
+import {
+  bindPendingTerminalSubscriptions,
+  resolveSelectorInWorkspaceScope,
+  type TerminalSessionObservation,
+} from "./profile-selector-scope.js";
 import {
   type AgentSelector,
   describeSelector,
@@ -29,8 +33,21 @@ import {
  */
 
 export type SubscriptionResolution =
-  | { kind: "matched"; agent: AgentIndexRecord; subscription: ProfileSubscriptionRecord }
+  | {
+      kind: "matched";
+      agent: AgentIndexRecord;
+      bindingState?: "pending";
+      subscription: ProfileSubscriptionRecord;
+    }
   | { kind: "unmatched"; detail: string; subscription: ProfileSubscriptionRecord }
+  | { kind: "pending"; detail: string; subscription: ProfileSubscriptionRecord }
+  | {
+      kind: "replacement_refused";
+      detail: string;
+      expectedSessionId: string;
+      actualSessionId: string;
+      subscription: ProfileSubscriptionRecord;
+    }
   | {
       kind: "ambiguous";
       candidates: Array<{ id: string; name: string | null; paneId: string }>;
@@ -83,10 +100,14 @@ export class ProfileService {
 
   addSubscription(input: {
     agentSelector: AgentSelector;
+    previousAgentSelector?: AgentSelector;
     herdrSessionName: string;
     profileId: string;
     workspaceId: string;
   }): { subscription: ProfileSubscriptionRecord } {
+    const agentSelectorJson = JSON.stringify(input.agentSelector);
+    const selector = parseAgentSelector(agentSelectorJson);
+    if ("error" in selector) throw new Error(`Invalid agent selector: ${selector.detail}`);
     const workspaceSelector = parseWorkspaceSelector(
       JSON.stringify({ herdrSession: input.herdrSessionName, workspaceId: input.workspaceId }),
     );
@@ -94,7 +115,10 @@ export class ProfileService {
       throw new Error(`Invalid workspace selector: ${workspaceSelector.detail}`);
     }
     const subscription = this.#profiles.addSubscription({
-      agentSelectorJson: JSON.stringify(input.agentSelector),
+      agentSelectorJson,
+      ...(input.previousAgentSelector
+        ? { previousAgentSelectorJson: JSON.stringify(input.previousAgentSelector) }
+        : {}),
       herdrSessionName: input.herdrSessionName,
       profileId: input.profileId,
       workspaceSelectorJson: JSON.stringify(workspaceSelector),
@@ -223,9 +247,18 @@ export class ProfileService {
         refused.push({ detail: `ambiguous: ${resolution.detail}`, id: subscription.id, label });
         continue;
       }
-      refused.push({ detail: `invalid: ${resolution.detail}`, id: subscription.id, label });
+      refused.push({
+        detail: `${resolution.kind}: ${resolution.detail}`,
+        id: subscription.id,
+        label,
+      });
     }
     return { kept, refused, removed };
+  }
+
+  /** Observe identity before delivery, including a worker still working with no outcome yet. */
+  observeAgents(agents: TerminalSessionObservation[]): void {
+    bindPendingTerminalSubscriptions({ agents, profiles: this.#profiles });
   }
 
   /** Resolve every enabled subscription against the live index. */
@@ -254,7 +287,12 @@ export class ProfileService {
         workspace,
       });
       if (resolution.kind === "matched") {
-        resolutions.push({ agent: resolution.record, kind: "matched", subscription });
+        resolutions.push({
+          agent: resolution.record,
+          kind: "matched",
+          subscription,
+          ...(resolution.bindingState ? { bindingState: resolution.bindingState } : {}),
+        });
         continue;
       }
       if (resolution.kind === "ambiguous") {
@@ -264,8 +302,8 @@ export class ProfileService {
           kind: "ambiguous",
           subscription,
         });
-      } else if (resolution.kind === "unmatched") {
-        resolutions.push({ detail: resolution.detail, kind: "unmatched", subscription });
+      } else {
+        resolutions.push({ ...resolution, subscription });
       }
     }
     return resolutions;

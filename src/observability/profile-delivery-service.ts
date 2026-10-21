@@ -11,7 +11,13 @@ import {
   type PublicProfileOwner,
   toPublicProfileOwner,
 } from "@/db/profile-owners.js";
-import type { AgentEventRecord, AgentEventType, AgentIndexRecord } from "./contracts.js";
+import {
+  type AgentEventRecord,
+  type AgentEventType,
+  type AgentIndexRecord,
+  parseAgentSessionRef,
+  sameAgentSessionRef,
+} from "./contracts.js";
 import { type OutcomeContext, projectOutcomeContext } from "./outcome-context.js";
 import type { ProfileDemandService } from "./profile-demand-service.js";
 import { resolveSelectorInWorkspaceScope } from "./profile-selector-scope.js";
@@ -353,6 +359,23 @@ export class ProfileDeliveryService {
         if (workspace.workspaceId !== event.workspaceId) continue;
         const selector = parseAgentSelector(subscription.agentSelectorJson);
         if ("error" in selector) continue;
+        if (selector.kind === "terminalId" && selector.agentSession !== undefined) {
+          const payload =
+            typeof event.payload === "object" && event.payload !== null
+              ? (event.payload as Record<string, unknown>)
+              : {};
+          const session = parseAgentSessionRef(payload.agentSession);
+          // A delayed event can outlive its session while the terminal's index
+          // row keeps the same id. Check event-time identity, not just live state.
+          if (
+            !selector.agentSession ||
+            !session ||
+            event.terminalId !== selector.value ||
+            payload.agent !== selector.agentSession.agent ||
+            !sameAgentSessionRef(selector.agentSession, session)
+          )
+            continue;
+        }
         // Same scoped resolution the inspection path uses (§6.1.2/§7): the
         // candidate set is the subscription's exact session + workspace —
         // NEVER a single-element array built from this event's agent, which

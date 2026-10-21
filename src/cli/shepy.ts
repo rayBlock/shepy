@@ -854,15 +854,19 @@ Usage:
   shepy profile subscribe <profileId> --workspace <id> [options]
 
 Exactly one selector is required:
-  --name <name>                  Herdr live agent name
-  --pane <paneId>                Herdr pane id
-  --terminal <terminalId>        Herdr terminal id
+  --name <name>                  Pin a uniquely resolved live name to its terminal
+  --pane <paneId>                Resolve the pane to its terminal and native session
+  --terminal <terminalId>        Pin a terminal; bind its first native session
   --agent-session <sessionId>    Stable agent session id
   --kind-cwd <kind>=<cwd>        Runtime kind plus working directory
 
 Options:
   --session <name>      Select a Herdr session (default: default)
   -h, --help            Show help
+
+Without a native session, the guard is pending until the first session appears.
+A replacement session is refused; profile show reports both session ids.
+Repeated subscriptions keep one row and do not authorize a replacement.
 `;
     case "inbox":
       return `Inspect delivery obligations.

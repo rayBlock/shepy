@@ -76,6 +76,7 @@ export class AgentIndexService {
     socketPath: string;
   }) => Pick<HerdrSocketClient, "close" | "sessionSnapshot">;
   readonly #context: AgentContextService;
+  readonly #onAgentsObserved: (agents: AgentIndexRecord[]) => void;
   readonly #stores: AgentIndexServiceStores;
   readonly #onAgentGone: (input: {
     event: AgentEventRecord;
@@ -101,6 +102,7 @@ export class AgentIndexService {
     }) => Pick<HerdrSocketClient, "close" | "sessionSnapshot">;
     context?: AgentContextService;
     history?: AgentHistoryService;
+    onAgentsObserved?: (agents: AgentIndexRecord[]) => void;
     stores: AgentIndexServiceStores;
     onAgentGone?(input: { event: AgentEventRecord; previousAgents: AgentIndexRecord[] }): void;
     onAgentsMoved?(input: {
@@ -112,6 +114,7 @@ export class AgentIndexService {
     this.#stores = options.stores;
     this.#onAgentGone = options.onAgentGone ?? (() => undefined);
     this.#onAgentsMoved = options.onAgentsMoved ?? (() => undefined);
+    this.#onAgentsObserved = options.onAgentsObserved ?? (() => undefined);
     if (options.context) {
       this.#context = options.context;
     } else {
@@ -362,6 +365,9 @@ export class AgentIndexService {
           ...agent,
           agentStatus: observedStatuses.get(agent.paneId) ?? agent.agentStatus,
         }));
+      // Pin the first native identity before history reads or delayed finals
+      // allow another session observation to overtake this publication.
+      this.#onAgentsObserved(agents);
       const scopes = new Map<string, AgentScope>();
       const events: AgentEventRecord[] = departureEvents;
       const pendingStatuses: PendingStatus[] = [];
@@ -510,6 +516,7 @@ export class AgentIndexService {
         client.close();
       }
     }
+    this.#onAgentsObserved([agent]);
     const from = recovered ? "unknown" : previous.agentStatus;
     const to = parseAgentStatus(event.agent_status);
     const current = { ...agent, agentStatus: to };
@@ -562,6 +569,11 @@ export class AgentIndexService {
       terminalId: input.terminalId,
     });
     this.#pendingPiSessionRefs.delete(key);
+    if (agent?.agent === input.sessionRef.agent) {
+      // The native report is fresh; the effective row may still prefer an
+      // older Herdr snapshot until the next refresh reconciles it.
+      this.#onAgentsObserved([{ ...agent, agentSession: input.sessionRef }]);
+    }
     if (!agent || sameAgentSession(previous.agentSession, agent.agentSession)) {
       return { agent, contextChangedScopes: [] };
     }
@@ -902,6 +914,7 @@ function statusEventType(
 function payload(agent: AgentIndexRecord, from: AgentStatus, to: AgentStatus) {
   return {
     agent: agent.agent,
+    agentSession: agent.agentSession,
     from,
     name: agent.name,
     herdrSessionName: agent.herdrSessionName,

@@ -50,7 +50,11 @@ export function resolveDispatchTarget(
     }
   }
   for (const resolution of resolutions) {
-    if (resolution.kind === "unmatched") {
+    if (
+      resolution.kind === "unmatched" ||
+      resolution.kind === "pending" ||
+      resolution.kind === "replacement_refused"
+    ) {
       return { detail: resolution.detail, kind: "unmatched" };
     }
   }
@@ -88,7 +92,11 @@ export function resolveDispatchTarget(
   // The transport contract requires a stable agent session identity for
   // lifecycle correlation — without it a completion event can never be
   // attributed to this dispatch.
-  if (!agent.agentSession || agent.agentSession.value.length === 0) {
+  if (
+    firstMatched.bindingState === "pending" ||
+    !agent.agentSession ||
+    agent.agentSession.value.length === 0
+  ) {
     return {
       detail: `matched agent ${agent.paneId} has no stable agent session identity; cannot correlate a dispatch`,
       kind: "unstable_target",

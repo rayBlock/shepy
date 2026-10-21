@@ -43,9 +43,10 @@ export type DiagnosedSubscriptionResolution =
       };
       herdrSessionName: string;
       kind: "matched";
+      bindingState?: "pending";
       workspaceId: string;
     }
-  | { detail: string; kind: "unmatched" }
+  | { detail: string; kind: "unmatched" | "pending" | "replacement_refused" }
   | {
       candidates: Array<{ id: string; name: string | null; paneId: string }>;
       detail: string;
@@ -118,6 +119,7 @@ function describeResolution(resolution: SubscriptionResolution): DiagnosedSubscr
       },
       herdrSessionName: resolution.agent.herdrSessionName,
       kind: "matched",
+      ...(resolution.bindingState ? { bindingState: resolution.bindingState } : {}),
       workspaceId: resolution.agent.workspaceId,
     };
   }
@@ -213,13 +215,19 @@ export class ProfileDiagnoseService {
     for (const subscription of subscriptions) {
       const resolution = resolutionBySubscriptionId.get(subscription.id);
       if (!resolution) continue;
-      if (resolution.kind === "matched") continue;
-      const code =
-        resolution.kind === "unmatched"
-          ? "subscription_unmatched"
-          : resolution.kind === "ambiguous"
-            ? "subscription_ambiguous"
-            : "subscription_invalid";
+      if (resolution.kind === "matched") {
+        if (resolution.bindingState === "pending")
+          findings.push(
+            finding(
+              "blocker",
+              "subscription_pending",
+              `subscription #${subscription.id} matches a terminal but awaits its first native session; outcomes are not delivered yet`,
+              `\`shepy profile show ${input.profileId}\` to inspect; the first observed native session binds automatically`,
+            ),
+          );
+        continue;
+      }
+      const code = `subscription_${resolution.kind}`;
       findings.push(
         finding(
           "blocker",

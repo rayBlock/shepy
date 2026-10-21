@@ -131,6 +131,7 @@ export async function runObservabilityDaemonService(
   });
   const index = new AgentIndexService({
     context: daemonServices.context,
+    onAgentsObserved: (agents) => profileService.observeAgents(agents),
     stores: { agentEvents, agentHistoryCache, agents, herdrSessions, herdrWorkspaces },
     onAgentGone: (departure) => {
       idleWakeService.schedule(deliveryService.projectGoneAgent(departure));

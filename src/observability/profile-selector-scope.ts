@@ -1,10 +1,12 @@
 import type { AgentStore } from "@/db/agents.js";
-import type { AgentIndexRecord } from "./contracts.js";
+import type { OrchestratorProfileStore } from "@/db/orchestrator-profiles.js";
+import { type AgentIndexRecord, parseAgentSessionRef } from "./contracts.js";
 import {
   type AgentResolution,
   type AgentSelector,
+  parseAgentSelector,
+  parseWorkspaceSelector,
   resolveAgentSelector,
-  type SelectableAgent,
   selectableFromRow,
   type WorkspaceSelector,
 } from "./profile-selectors.js";
@@ -26,8 +28,7 @@ import {
  */
 export type ScopedAgentResolution =
   | ({ kind: "matched"; record: AgentIndexRecord } & Extract<AgentResolution, { kind: "matched" }>)
-  | Extract<AgentResolution, { kind: "unmatched" }>
-  | Extract<AgentResolution, { kind: "ambiguous" }>;
+  | Exclude<AgentResolution, { kind: "matched" }>;
 
 export function resolveSelectorInWorkspaceScope(input: {
   agents: Pick<AgentStore, "list">;
@@ -50,6 +51,43 @@ export function resolveSelectorInWorkspaceScope(input: {
     return { kind: "unmatched", detail: "matched agent vanished between filter and read" };
   }
   return { ...resolution, record };
+}
+
+export type TerminalSessionObservation = Pick<
+  AgentIndexRecord,
+  "agent" | "agentSession" | "herdrSessionName" | "terminalId" | "workspaceId"
+>;
+
+/** Bind only a pending guard, exactly once, on a unique scoped terminal observation. */
+export function bindPendingTerminalSubscriptions(input: {
+  profiles: OrchestratorProfileStore;
+  agents: TerminalSessionObservation[];
+}): void {
+  for (const profile of input.profiles.listProfiles()) {
+    for (const subscription of input.profiles.listSubscriptions(profile.profileId)) {
+      if (!subscription.enabled) continue;
+      const selector = parseAgentSelector(subscription.agentSelectorJson);
+      if ("error" in selector || selector.kind !== "terminalId" || selector.agentSession !== null)
+        continue;
+      const workspace = parseWorkspaceSelector(subscription.workspaceSelectorJson);
+      if ("error" in workspace) continue;
+      const candidates = input.agents.filter(
+        (agent) =>
+          agent.herdrSessionName === workspace.herdrSession &&
+          agent.workspaceId === workspace.workspaceId &&
+          agent.terminalId === selector.value,
+      );
+      if (candidates.length !== 1) continue;
+      const agent = candidates[0];
+      const session = parseAgentSessionRef(agent?.agentSession);
+      if (!session || agent?.agent !== session.agent) continue;
+      input.profiles.bindSubscription({
+        id: subscription.id,
+        expectedSelectorJson: subscription.agentSelectorJson,
+        boundSelectorJson: JSON.stringify({ ...selector, agentSession: session }),
+      });
+    }
+  }
 }
 
 /** Candidate helper: the selector-facing projection of one index record. */

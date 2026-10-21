@@ -52,6 +52,30 @@ describe("Herdr pane identity", () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
+  test("malformed optional session metadata does not discard terminal identity needed by presence", async () => {
+    const close = vi.fn();
+    const result = await resolveHerdrPaneIdentity({
+      paneId: "wB:p2",
+      socketPath: "/tmp/herdr.sock",
+      clientFactory: () => ({
+        close,
+        getPane: vi.fn().mockResolvedValue({
+          pane_id: "wB:p2",
+          terminal_id: "term_2",
+          workspace_id: "wB",
+          agent_session: { invalid: true },
+        }),
+      }),
+    });
+    expect(result).toEqual({
+      paneId: "wB:p2",
+      terminalId: "term_2",
+      workspaceId: "wB",
+      invalidAgentSession: true,
+    });
+    expect(close).toHaveBeenCalledOnce();
+  });
+
   test("rejects incomplete identity and always closes the client", async () => {
     const close = vi.fn();
     await expect(

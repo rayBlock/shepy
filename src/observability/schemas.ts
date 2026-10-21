@@ -46,7 +46,24 @@ export const agentGetInputSchema = Type.Object(
 
 export const agentSelectorSchema = Type.Union([
   Type.Object(
-    { kind: Type.Literal("terminalId"), value: Type.String({ minLength: 1 }) },
+    {
+      kind: Type.Literal("terminalId"),
+      value: Type.String({ minLength: 1 }),
+      agentSession: Type.Optional(
+        Type.Union([
+          Type.Null(),
+          Type.Object(
+            {
+              agent: Type.String({ minLength: 1 }),
+              kind: Type.Union([Type.Literal("id"), Type.Literal("path")]),
+              source: Type.String({ minLength: 1 }),
+              value: Type.String({ minLength: 1 }),
+            },
+            { additionalProperties: false },
+          ),
+        ]),
+      ),
+    },
     { additionalProperties: false },
   ),
   Type.Object(

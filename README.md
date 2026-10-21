@@ -173,6 +173,29 @@ The daemon subscribes to Herdr's global `pane.agent_detected`, `pane.exited`, `p
 
 After a complete healthy snapshot, the existing watch tick may age-prune an unmatched subscription only when it is a legacy row from before presence-aware cleanup, or when the snapshot proves its selected pane is absent. Terminal selectors use the panes' terminal identities to prove absence; missing terminal metadata proves nothing. Every removal still requires two minutes since the subscription's last update. A new subscription waiting for agent detection does not expire merely because it has not matched: an existing shell or launch-pending pane counts as present, and selectors without a provable pane identity are kept. Stopped, unreachable, malformed or not-yet-refreshed sessions do not trigger automatic cleanup. Invalid and ambiguous selectors remain for inspection. The lifecycle migration marks pre-existing rows legacy; new subscriptions and explicit re-subscriptions clear that flag durably. Legacy stale rows whose worker identity was already deleted prune silently because the daemon cannot honestly attribute gone to them. The explicit `shepy profile prune <profileId> --age 2m` command retains its operator-requested unmatched-row behavior. No additional polling loop or event-log retention is added; gone events and pending obligations remain durable.
 
+### Stable worker subscriptions
+
+To subscribe a worker from its own pane, name the profile and pass both its pane and workspace:
+
+```bash
+shepy profile ensure seat
+shepy profile subscribe seat --workspace "$HERDR_WORKSPACE_ID" --pane "$HERDR_PANE_ID"
+shepy profile show seat
+```
+
+`--pane` makes one Herdr `pane.get` call, checks the exact pane and workspace, and stores a terminal selector, never a pane selector. A missing pane, unavailable Herdr session, invalid identity or wrong workspace refuses without creating a row. `--workspace` is required even inside Herdr. Pane movement within that workspace keeps the subscription on the terminal.
+
+A new terminal subscription records its native session when known. Without one, the row has a pending session guard. If the terminal already has an indexed agent, `profile show` can report `kind: matched` with `bindingState: pending`; this proves terminal readiness before a worker's first prompt, not permission to deliver its outcomes. The first native session observed on that exact terminal in that workspace binds the guard once, including through Pi presence registration. Pending guards do not deliver outcomes or count as dead subscriptions for manual prune.
+
+Once bound, the guard survives daemon restarts and repeated subscribe calls cannot replace it. If the terminal starts a different native session, `profile show` reports `replacement_refused` with `expectedSessionId`, `actualSessionId` and a readable explanation. Outcomes from the replacement are refused. To authorize it deliberately, unsubscribe the terminal shown in the stored selector, then subscribe again:
+
+```bash
+shepy profile unsubscribe seat --workspace <workspace-id> --terminal <terminal-id>
+shepy profile subscribe seat --workspace <workspace-id> --pane <pane-id>
+```
+
+`--terminal` also creates a guarded subscription, using the indexed native session when available. A name-based subscribe pins the terminal and session when the scoped live name resolves uniquely; otherwise it preserves the old name selector. Existing stored selectors without a session guard retain their legacy behavior until re-subscribed. Use `--pane` when a worker is not indexed yet. Repeating pane, terminal or uniquely resolved name subscription for the same scoped terminal keeps one row and preserves its bound session.
+
 ## Pi extension
 
 Install the extension through Pi:

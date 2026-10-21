@@ -1,6 +1,9 @@
 import { HerdrSocketClient } from "@/herdr/socket-client.js";
+import { type AgentSessionRef, parseAgentSessionRef } from "@/observability/contracts.js";
 
 export type HerdrPaneIdentity = {
+  agentSession?: AgentSessionRef;
+  invalidAgentSession?: true;
   paneId: string;
   terminalId: string;
   workspaceId: string;
@@ -25,7 +28,23 @@ export async function resolveHerdrPaneIdentity(input: {
     if (!paneId || !terminalId || !workspaceId) {
       throw new Error("Herdr pane response has no terminal identity");
     }
-    return { paneId, terminalId, workspaceId };
+    const sessionValue = pane.agent_session ?? pane.agentSession;
+    const agentSession = parseAgentSessionRef(sessionValue);
+    const invalidAgentSession =
+      sessionValue != null &&
+      (!agentSession || (typeof pane.agent === "string" && pane.agent !== agentSession.agent));
+    // Presence needs only terminal identity and supplies its own session ref.
+    // Subscription admission, unlike presence, must refuse malformed metadata.
+    return {
+      paneId,
+      terminalId,
+      workspaceId,
+      ...(invalidAgentSession
+        ? { invalidAgentSession: true as const }
+        : agentSession
+          ? { agentSession }
+          : {}),
+    };
   } finally {
     client.close();
   }

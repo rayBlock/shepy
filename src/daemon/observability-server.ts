@@ -45,6 +45,8 @@ import { projectOutcomeContext } from "@/observability/outcome-context.js";
 import type { ProfileDeliveryService } from "@/observability/profile-delivery-service.js";
 import type { ProfileDemandService } from "@/observability/profile-demand-service.js";
 import type { ProfileDiagnoseService } from "@/observability/profile-diagnose-service.js";
+import { resolveSelectorInWorkspaceScope } from "@/observability/profile-selector-scope.js";
+import type { AgentSelector } from "@/observability/profile-selectors.js";
 import type { ProfileService } from "@/observability/profile-service.js";
 import { RpcRefusedError } from "@/observability/rpc-refused-error.js";
 import {
@@ -478,8 +480,21 @@ export class ObservabilityRpcServer {
           profileId: string;
           workspaceId: string;
         };
-        const { subscription } = this.#requireProfiles().addSubscription(input);
-        return { subscription };
+        const profiles = this.#requireProfiles();
+        if (!profiles.getProfile(input.profileId))
+          throw new Error(`No such profile: ${input.profileId}`);
+        const agentSelector = await this.#resolveSubscriptionSelector(input, true);
+        const { subscription } = profiles.addSubscription({
+          ...input,
+          agentSelector,
+          ...(input.agentSelector.kind !== "terminalId" && agentSelector.kind === "terminalId"
+            ? { previousAgentSelector: input.agentSelector }
+            : {}),
+        });
+        const resolution = profiles
+          .resolveSubscriptions(input.profileId)
+          .find((row) => row.subscription.id === subscription.id);
+        return { subscription, resolution };
       }
       case "profile.unsubscribe": {
         assertSchema(profileSubscribeInputSchema, params);
@@ -489,7 +504,12 @@ export class ObservabilityRpcServer {
           profileId: string;
           workspaceId: string;
         };
-        const { removed } = this.#requireProfiles().removeSubscription(input);
+        const profiles = this.#requireProfiles();
+        // Legacy pane/name rows can be removed even after their pane has closed.
+        const legacy = profiles.removeSubscription(input);
+        if (legacy.removed) return legacy;
+        const agentSelector = await this.#resolveSubscriptionSelector(input, false);
+        const { removed } = profiles.removeSubscription({ ...input, agentSelector });
         return { removed };
       }
       case "profile.prune": {
@@ -745,9 +765,21 @@ export class ObservabilityRpcServer {
         if (previous && terminalPresenceKey(previous) !== terminalPresenceKey(presence)) {
           this.#scheduleDisconnect(previous);
         }
+        const sessionRef = (params as PiPresenceRegistration).sessionRef;
+        // The report is a fresh observation even before an inventory row
+        // exists. Do not bind an older effective session from the cached row.
+        this.#profiles?.observeAgents([
+          {
+            agent: sessionRef.agent,
+            agentSession: sessionRef,
+            herdrSessionName: presence.herdrSessionName,
+            terminalId: presence.terminalId,
+            workspaceId: presence.workspaceId,
+          },
+        ]);
         const registration = await this.#registerPiSessionRef({
           herdrSessionName: presence.herdrSessionName,
-          sessionRef: (params as PiPresenceRegistration).sessionRef,
+          sessionRef,
           terminalId: presence.terminalId,
         });
         for (const scope of registration.contextChangedScopes) this.publishAgentContext(scope);
@@ -790,6 +822,65 @@ export class ObservabilityRpcServer {
     }
   }
 
+  async #resolveSubscriptionSelector(
+    input: {
+      agentSelector: AgentSelector;
+      herdrSessionName: string;
+      workspaceId: string;
+    },
+    subscribe: boolean,
+  ): Promise<AgentSelector> {
+    const selector = input.agentSelector;
+    if (selector.kind === "paneId") {
+      const session = this.#stores.herdrSessions.findRunningByName(input.herdrSessionName);
+      if (!session) throw new Error(`No running Herdr session: ${input.herdrSessionName}`);
+      const pane = await this.#resolvePaneIdentity({
+        socketPath: session.socketPath,
+        paneId: selector.value,
+      });
+      if (pane.invalidAgentSession)
+        throw new Error("Herdr pane response has an invalid native session");
+      if (pane.paneId !== selector.value) throw new Error("Herdr returned a different pane");
+      if (pane.workspaceId !== input.workspaceId)
+        throw new Error("Subscription workspace does not match Herdr pane");
+      if (subscribe && pane.agentSession)
+        this.#profiles?.observeAgents([
+          {
+            agent: pane.agentSession.agent,
+            agentSession: pane.agentSession,
+            herdrSessionName: input.herdrSessionName,
+            terminalId: pane.terminalId,
+            workspaceId: pane.workspaceId,
+          },
+        ]);
+      return {
+        kind: "terminalId",
+        value: pane.terminalId,
+        agentSession: pane.agentSession ?? null,
+      };
+    }
+    if (selector.kind !== "name" && selector.kind !== "terminalId") return selector;
+    const resolution = resolveSelectorInWorkspaceScope({
+      agents: this.#stores.agents,
+      selector,
+      workspace: { herdrSession: input.herdrSessionName, workspaceId: input.workspaceId },
+    });
+    if (selector.kind === "name") {
+      // Preserve deferred/legacy name callers when no unique terminal is known.
+      if (resolution.kind !== "matched" || !resolution.record.terminalId) return selector;
+      return {
+        kind: "terminalId",
+        value: resolution.record.terminalId,
+        agentSession: resolution.record.agentSession,
+      };
+    }
+    if (!subscribe || selector.agentSession !== undefined) return selector;
+    return {
+      ...selector,
+      agentSession: resolution.kind === "matched" ? resolution.record.agentSession : null,
+    };
+  }
+
   async #resolvePiPresence(input: PiPresenceRegistration): Promise<PiPresence> {
     const session = this.#stores.herdrSessions.findRunningBySocketPath(input.herdrSocketPath);
     if (!session) throw new Error("Herdr socket is not registered as a running session");
@@ -808,19 +899,12 @@ export class ObservabilityRpcServer {
       };
     }
 
+    let live: HerdrPaneIdentity;
     try {
-      const live = await this.#resolvePaneIdentity({
+      live = await this.#resolvePaneIdentity({
         paneId: input.paneId,
         socketPath: session.socketPath,
       });
-      return {
-        connectedAt: this.#now(),
-        herdrSessionName: session.name,
-        paneId: live.paneId,
-        subscriberId: input.subscriberId,
-        terminalId: live.terminalId,
-        workspaceId: live.workspaceId,
-      };
     } catch {
       if (!indexed) throw new Error("Herdr pane is not indexed yet");
       if (indexed.workspaceId !== input.workspaceId) {
@@ -828,6 +912,24 @@ export class ObservabilityRpcServer {
       }
       throw new Error("Herdr pane has no terminal identity");
     }
+    if (live.agentSession)
+      this.#profiles?.observeAgents([
+        {
+          agent: live.agentSession.agent,
+          agentSession: live.agentSession,
+          herdrSessionName: session.name,
+          terminalId: live.terminalId,
+          workspaceId: live.workspaceId,
+        },
+      ]);
+    return {
+      connectedAt: this.#now(),
+      herdrSessionName: session.name,
+      paneId: live.paneId,
+      subscriberId: input.subscriberId,
+      terminalId: live.terminalId,
+      workspaceId: live.workspaceId,
+    };
   }
 
   #connectionState(presence: PiPresence): AgentOrchestratorConnectionStateResult {

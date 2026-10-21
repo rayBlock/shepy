@@ -154,6 +154,70 @@ describe("agent selector resolution (scope pre-filtered by the caller)", () => {
   });
 });
 
+describe("terminal native-session guards", () => {
+  const native = {
+    agent: "pi",
+    kind: "path" as const,
+    source: "herdr:pi",
+    value: "/fixture/a.jsonl",
+  };
+  const bound = { kind: "terminalId" as const, value: "term_1", agentSession: native };
+
+  test("round-trips pending and bound guards, never dropping the guard", () => {
+    for (const guard of [null, native]) {
+      const selector = { ...bound, agentSession: guard };
+      expect(parseAgentSelector(JSON.stringify(selector))).toEqual(selector);
+    }
+    for (const guard of [
+      "",
+      "session-id",
+      {},
+      { ...native, value: "" },
+      { ...native, kind: "invalid" },
+    ]) {
+      expect(
+        expectParseError(parseAgentSelector(JSON.stringify({ ...bound, agentSession: guard })))
+          .error,
+      ).toBe("invalid_agent_selector");
+    }
+  });
+
+  test("legacy unguarded terminal selectors still match without native identity", () => {
+    expect(
+      resolveAgentSelector({ kind: "terminalId", value: "term_1" }, [
+        agent({ agentSessionId: null }),
+      ]).kind,
+    ).toBe("matched");
+  });
+
+  test("pending guards expose terminal readiness separately from session binding", () => {
+    const pending = { ...bound, agentSession: null };
+    expect(resolveAgentSelector(pending, []).kind).toBe("pending");
+    expect(resolveAgentSelector(pending, [agent({ agentSessionId: null })])).toMatchObject({
+      kind: "matched",
+      bindingState: "pending",
+    });
+  });
+
+  test("equal native values from a different source cannot bypass the guard", () => {
+    expect(resolveAgentSelector(bound, [agent({ agent: "pi", agentSession: native })]).kind).toBe(
+      "matched",
+    );
+    expect(
+      resolveAgentSelector(bound, [
+        agent({ agent: "pi", agentSession: { ...native, source: "another-source" } }),
+      ]),
+    ).toMatchObject({
+      kind: "replacement_refused",
+      expectedSessionId: native.value,
+      actualSessionId: native.value,
+    });
+    expect(resolveAgentSelector(bound, [agent({ agentSessionId: native.value })]).kind).toBe(
+      "pending",
+    );
+  });
+});
+
 describe("selectableFromRow", () => {
   test("extracts the agent session value from the stored JSON", () => {
     const row = {

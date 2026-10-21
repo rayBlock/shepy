@@ -25,6 +25,32 @@ export type AgentSessionRef = {
   value: string;
 };
 
+/** Strict native identity for durable subscription guards; malformed data never broadens a binding. */
+export function parseAgentSessionRef(value: unknown): AgentSessionRef | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const record = value as Record<string, unknown>;
+  if (
+    typeof record.agent !== "string" ||
+    !record.agent.trim() ||
+    (record.kind !== "id" && record.kind !== "path") ||
+    typeof record.source !== "string" ||
+    !record.source.trim() ||
+    typeof record.value !== "string" ||
+    !record.value.trim()
+  )
+    return undefined;
+  return { agent: record.agent, kind: record.kind, source: record.source, value: record.value };
+}
+
+export function sameAgentSessionRef(left: AgentSessionRef, right: AgentSessionRef): boolean {
+  return (
+    left.agent === right.agent &&
+    left.kind === right.kind &&
+    left.source === right.source &&
+    left.value === right.value
+  );
+}
+
 export type AgentIndexRecord = {
   agent: string | null;
   agentSession: AgentSessionRef | null;
