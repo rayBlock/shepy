@@ -233,6 +233,7 @@ export class HerdrSessionWatchManager {
     client: Pick<HerdrSocketClient, "close" | "subscribeEvents">,
     signal: AbortSignal,
   ): Promise<void> {
+    const publications = new Set<Promise<void>>();
     while (!signal.aborted) {
       let restart = false;
       try {
@@ -243,17 +244,28 @@ export class HerdrSessionWatchManager {
           if (signal.aborted) return;
           const eventRecord = record(event);
           if (eventRecord.type === "pane.agent_status_changed") {
-            const result = await this.#index.handleHerdrEvent({
-              event,
-              herdrSessionName: entry.name,
-              sessionDir: entry.sessionDir,
-              socketPath: entry.socketPath,
-            });
-            this.#publishResult({
-              agents: this.#agents.listForHerdrSession(entry.name),
-              herdrSessionName: entry.name,
-              ...result,
-            });
+            // The index serializes mutations, but a missing final gets one
+            // delayed history read. Keep consuming other panes during that
+            // wait; drain all admitted publications before retiring this loop.
+            const publication = this.#index
+              .handleHerdrEvent({
+                event,
+                herdrSessionName: entry.name,
+                sessionDir: entry.sessionDir,
+                socketPath: entry.socketPath,
+              })
+              .then((result) => {
+                this.#publishResult({
+                  agents: this.#agents.listForHerdrSession(entry.name),
+                  herdrSessionName: entry.name,
+                  ...result,
+                });
+              })
+              .catch((error) => {
+                console.error("Shepy status event failed (snapshot will reconcile):", error);
+              });
+            publications.add(publication);
+            void publication.then(() => publications.delete(publication));
             continue;
           }
           if (shouldRestartSubscription(eventRecord.type)) {
@@ -263,6 +275,8 @@ export class HerdrSessionWatchManager {
         }
       } catch {
         if (signal.aborted) return;
+      } finally {
+        await Promise.all(publications);
       }
       if (!restart) await delay(this.#reconnectDelayMs, signal);
     }

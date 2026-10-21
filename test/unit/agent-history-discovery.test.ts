@@ -194,7 +194,7 @@ describe("agent history discovery", () => {
     ).toBe("gemini-json");
   });
 
-  test("discovers Codex JSONL by session_meta cwd", async () => {
+  test("refuses Codex cwd-only discovery even with a matching transcript", async () => {
     const homeDir = await tempHome("shepy-codex-home-");
     const dir = join(homeDir, ".codex", "sessions", "2026", "07", "09");
     await mkdir(dir, { recursive: true });
@@ -223,12 +223,7 @@ describe("agent history discovery", () => {
         foregroundCwd: null,
         homeDir,
       }),
-    ).resolves.toMatchObject({
-      kind: "discovered_file",
-      path: newer,
-      source: "codex-jsonl",
-      value: newer,
-    });
+    ).resolves.toBeNull();
   });
 
   test("refuses OpenCode cwd-latest and resolves only an exact V1 ID", async () => {
@@ -305,12 +300,7 @@ describe("agent history discovery", () => {
         foregroundCwd: null,
         homeDir,
       }),
-    ).resolves.toMatchObject({
-      kind: "discovered_file",
-      path: sessionPath,
-      source: "gemini-json",
-      value: sessionPath,
-    });
+    ).resolves.toBeNull();
     for (const id of ["gemini-worker", "absent"]) {
       const result = await discoverAgentHistory({
         agent: "gemini",

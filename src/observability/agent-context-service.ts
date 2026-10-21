@@ -1,4 +1,3 @@
-import { stat } from "node:fs/promises";
 import { historySourceFromSessionRef } from "@/agent-history/discovery.js";
 import type { AgentHistoryService } from "@/agent-history/service.js";
 import { emptyCompactHistory } from "@/agent-history/service.js";
@@ -49,15 +48,9 @@ export class AgentContextService {
     const directAuthoritativeRef = pathHistoryRefFromAgent(input.agent);
     const preferredRef =
       directAuthoritativeRef ??
-      matchingAuthoritativeIdRef(input.agent, previous?.historyRef ?? null) ??
-      (input.agent.agentSession ? null : (previous?.historyRef ?? null));
-    const forceDiscovery = await shouldForceDiscovery({
-      agent: input.agent,
-      directAuthoritativeRef,
-      identityChanged: input.identityChanged,
-      preferredRef,
-      previous,
-    });
+      matchingAuthoritativeIdRef(input.agent, previous?.historyRef ?? null);
+    const forceDiscovery =
+      !directAuthoritativeRef && (input.identityChanged || preferredRef === null);
     const resolved = bindAuthoritativeId(
       input.agent,
       await this.#history.resolveCompactHistory(historyLookup(input.agent), {
@@ -118,24 +111,6 @@ export class AgentContextService {
   }
 }
 
-async function shouldForceDiscovery(input: {
-  agent: AgentIndexRecord;
-  directAuthoritativeRef: AgentHistoryRef | null;
-  identityChanged: boolean;
-  preferredRef: AgentHistoryRef | null;
-  previous: AgentContextSnapshotRecord | undefined;
-}): Promise<boolean> {
-  if (input.directAuthoritativeRef) return false;
-  if (input.agent.agentSession?.kind === "id") return input.preferredRef === null;
-  if (input.identityChanged || !input.previous?.historyRef) return true;
-  if (paneRevisionDecreased(input.agent.paneRevision, input.previous.paneRevision)) return true;
-  if (!paneRevisionIncreased(input.agent.paneRevision, input.previous.paneRevision)) return false;
-  const fingerprint = input.previous.sourceFingerprint;
-  if (!fingerprint) return true;
-  const current = await sourceFingerprint(fingerprint.path);
-  return !current || sameFingerprint(fingerprint, current);
-}
-
 function pathHistoryRefFromAgent(agent: AgentIndexRecord): AgentHistoryRef | null {
   if (agent.agentSession?.kind !== "path") return null;
   return {
@@ -189,19 +164,6 @@ function historyLookup(agent: AgentIndexRecord) {
     cwd: agent.cwd,
     foregroundCwd: agent.foregroundCwd,
   };
-}
-
-async function sourceFingerprint(path: string): Promise<AgentHistorySourceFingerprint | null> {
-  const source = await stat(path).catch(() => null);
-  return source ? { mtimeMs: Math.trunc(source.mtimeMs), path, size: source.size } : null;
-}
-
-function paneRevisionIncreased(current: number | null, previous: number | null): boolean {
-  return current !== null && previous !== null && current > previous;
-}
-
-function paneRevisionDecreased(current: number | null, previous: number | null): boolean {
-  return current !== null && previous !== null && current < previous;
 }
 
 function sameSnapshotPayload(

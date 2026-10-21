@@ -239,6 +239,12 @@ export class ProfileDeliveryService {
         : null;
     if (
       (event.type === "agent.done" || event.type === "agent.idle") &&
+      from === "unknown" &&
+      !event.compactHistory?.lastAssistantMessage?.text?.trim()
+    )
+      return [];
+    if (
+      (event.type === "agent.done" || event.type === "agent.idle") &&
       (from === "done" || from === "idle") &&
       this.#sameSettledOutcomeAsPrior(event)
     )

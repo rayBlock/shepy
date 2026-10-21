@@ -41,7 +41,19 @@ async function sourceFile(name: string): Promise<string> {
 }
 
 function ref(path: string, source: AgentHistoryRef["source"] = "pi-jsonl"): AgentHistoryRef {
-  return { kind: "discovered_file", path, source, value: path };
+  return { kind: "agent_session", path, source, value: path };
+}
+
+function boundLookup(historyRef: AgentHistoryRef): AgentHistoryLookupInput {
+  return {
+    ...lookup,
+    agentSession: {
+      agent: "pi",
+      kind: "path",
+      source: "herdr:pi",
+      value: historyRef.path ?? historyRef.value,
+    },
+  };
 }
 
 function reader(input: { failCompact?: boolean; failRead?: boolean } = {}) {
@@ -161,7 +173,9 @@ describe("agent history service", () => {
     const preferred = ref(path);
     const fixture = service({ discovered: null });
 
-    const result = await fixture.service.resolveCompactHistory(lookup, { preferredRef: preferred });
+    const result = await fixture.service.resolveCompactHistory(boundLookup(preferred), {
+      preferredRef: preferred,
+    });
 
     const stats = await stat(path);
     expect(fixture.discoveries()).toBe(0);
@@ -185,7 +199,9 @@ describe("agent history service", () => {
       discovered: null,
     });
 
-    const result = await fixture.service.resolveCompactHistory(lookup, { preferredRef: preferred });
+    const result = await fixture.service.resolveCompactHistory(boundLookup(preferred), {
+      preferredRef: preferred,
+    });
 
     expect(result.compactHistory).toEqual(cached);
     expect(fixture.reader.compactRefs).toEqual([]);
@@ -243,7 +259,7 @@ describe("agent history service", () => {
     const fixture = service({ discovered });
 
     await expect(
-      fixture.service.read(lookup, { limit: 1, preferredRef: preferred }),
+      fixture.service.read(boundLookup(preferred), { limit: 1, preferredRef: preferred }),
     ).resolves.toMatchObject({
       historyRef: preferred,
       messages: [expect.objectContaining({ text: "done" })],
@@ -253,7 +269,7 @@ describe("agent history service", () => {
 
     const missing = ref(join(tmpdir(), "missing-history.jsonl"));
     await expect(
-      fixture.service.read(lookup, { limit: 1, preferredRef: missing }),
+      fixture.service.read(boundLookup(missing), { limit: 1, preferredRef: missing }),
     ).resolves.toMatchObject({
       historyRef: discovered,
     });
@@ -267,7 +283,7 @@ describe("agent history service", () => {
     const missing = ref(join(tmpdir(), "missing-history.jsonl"));
 
     await expect(
-      missingFixture.service.resolveCompactHistory(lookup, { preferredRef: missing }),
+      missingFixture.service.resolveCompactHistory(boundLookup(missing), { preferredRef: missing }),
     ).resolves.toMatchObject({ historyRef: discovered });
     expect(missingFixture.discoveries()).toBe(1);
 
@@ -276,9 +292,10 @@ describe("agent history service", () => {
       discovered,
       reader: failedReader,
     });
+    const preferred = ref(await sourceFile("bad.jsonl"));
     await expect(
-      failedFixture.service.resolveCompactHistory(lookup, {
-        preferredRef: ref(await sourceFile("bad.jsonl")),
+      failedFixture.service.resolveCompactHistory(boundLookup(preferred), {
+        preferredRef: preferred,
       }),
     ).resolves.toEqual({
       compactHistory: emptyCompactHistory("pi-jsonl"),
@@ -295,7 +312,7 @@ describe("agent history service", () => {
     const fixture = service({ discovered, reader: reader({ failRead: true }) });
 
     await expect(
-      fixture.service.read(lookup, { limit: 1, preferredRef: preferred }),
+      fixture.service.read(boundLookup(preferred), { limit: 1, preferredRef: preferred }),
     ).resolves.toEqual({
       historyRef: null,
       messages: [],
@@ -358,7 +375,9 @@ describe("agent history service", () => {
     ).toBeUndefined();
 
     const fixture = service({ cache, discovered: null });
-    const result = await fixture.service.resolveCompactHistory(lookup, { preferredRef: preferred });
+    const result = await fixture.service.resolveCompactHistory(boundLookup(preferred), {
+      preferredRef: preferred,
+    });
     // The v1 blob (messageCount 99) was NOT served; a fresh read happened.
     expect(result.compactHistory.messageCount).toBe(0);
     expect(result.compactHistory.contextHealth).toBeNull();

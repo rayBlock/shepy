@@ -228,7 +228,8 @@ describe("AgentIndexService", () => {
     expect(later).not.toBe(first);
     release();
     await Promise.all([first, same, status, later]);
-    expect(snapshots).toBe(2);
+    // The status path also refreshes native identity from Herdr.
+    expect(snapshots).toBe(3);
     expect(
       harness.agents.findByPane({ herdrSessionName: "default", paneId: "wJ:p2" })?.agentStatus,
     ).toBe("working");

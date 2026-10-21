@@ -50,7 +50,9 @@ shepy daemon start
 - `shepy agent get <target>`: performs an explicit detail lookup and returns one agent's metadata, compact history, and latest compact tool result.
 - `shepy agent read <target> --limit N`: performs an explicit history read and returns the latest N user / assistant / compact `tool_result` messages.
 
-An explicit session path or ID reported by Herdr is authoritative: cached history hints and newer sessions in the same directory cannot override it. If that session is unavailable, history is empty rather than borrowed from another agent. Pi session files created after startup are retried, and previously misbound path snapshots repair on refresh without deleting the database.
+An explicit session path or ID reported by Herdr is authoritative: cached history hints and newer sessions in the same directory cannot override it. Without a native session identity, history is empty, including when an older cached hint exists. If an ID has main transcripts in several project folders, only a unique main in the current working directory's project folder resolves the ambiguity; modification time never breaks a tie. Pi session files created after startup are retried, and previously misbound path snapshots repair on refresh without deleting the database.
+
+Before reading history for a status event, Shepy refreshes the worker's session identity from Herdr. If a working worker settles with missing or previous-turn assistant text, Shepy re-reads once after about 500 milliseconds without holding up other panes; text still unavailable then stays empty. Startup idle or done without assistant text does not notify a profile. A worker first observed already blocked does notify once, and remaining blocked across ticks or a daemon restart does not repeat that notice.
 
 Each agent record keeps Herdr's optional live `name`, such as `reviewer`, separate from its runtime `agent` kind, such as `codex`. Human list output uses distinct `name` and `agent` columns, and JSON returns both fields. Inside a Herdr workspace, Shepy selects the current workspace automatically.
 

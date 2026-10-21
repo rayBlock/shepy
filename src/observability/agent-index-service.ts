@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from "node:timers/promises";
 import { type AgentHistoryService, createAgentHistoryService } from "@/agent-history/service.js";
 import type { AgentEventStore } from "@/db/agent-events.js";
 import type { AgentHistoryCacheStore } from "@/db/agent-history-cache.js";
@@ -13,6 +14,7 @@ import {
   type AgentScope,
   type AgentSessionRef,
   type AgentStatus,
+  type CompactAgentHistory,
   parseAgentStatus,
 } from "@/observability/contracts.js";
 
@@ -49,12 +51,28 @@ type RefreshInput = {
   socketPath: string;
 };
 
+type StatusObservation = {
+  agent: AgentIndexRecord;
+  compactHistory: CompactAgentHistory | undefined;
+  evidence: Record<string, unknown>;
+  from: AgentStatus;
+  to: AgentStatus;
+};
+type PendingStatus = StatusObservation & {
+  observedAt: number;
+  previousHistory: CompactAgentHistory | undefined;
+  previousSettledRef: string | null;
+  superseded: boolean;
+};
+type PendingResult<T> = T & { pendingStatuses: PendingStatus[] };
+
 export class AgentIndexService {
   readonly #clientFactory: (input: {
     socketPath: string;
   }) => Pick<HerdrSocketClient, "close" | "sessionSnapshot">;
   readonly #context: AgentContextService;
   readonly #stores: AgentIndexServiceStores;
+  readonly #pendingSettlements = new Map<string, PendingStatus>();
   readonly #mutationEpochBySession = new Map<string, number>();
   readonly #pendingPiSessionRefs = new Map<string, AgentSessionRef>();
   readonly #refreshInFlightBySession = new Map<
@@ -101,6 +119,8 @@ export class AgentIndexService {
     if (existing?.epoch === epoch) return existing.promise;
     const promise = this.#enqueueSessionOperation(input.herdrSessionName, () =>
       this.#refreshHerdrSessionNow(input),
+    ).then(({ pendingStatuses, ...result }) =>
+      this.#finishPendingStatuses(input.herdrSessionName, result, pendingStatuses),
     );
     this.#refreshInFlightBySession.set(input.herdrSessionName, { epoch, promise });
     const clear = () => {
@@ -121,6 +141,8 @@ export class AgentIndexService {
     this.#incrementMutationEpoch(input.herdrSessionName);
     return this.#enqueueSessionOperation(input.herdrSessionName, () =>
       this.#handleHerdrEventNow(input),
+    ).then(({ pendingStatuses, ...result }) =>
+      this.#finishPendingStatuses(input.herdrSessionName, result, pendingStatuses),
     );
   }
 
@@ -135,7 +157,9 @@ export class AgentIndexService {
     );
   }
 
-  async #refreshHerdrSessionNow(input: RefreshInput): Promise<AgentIndexRefreshResult> {
+  async #refreshHerdrSessionNow(
+    input: RefreshInput,
+  ): Promise<PendingResult<AgentIndexRefreshResult>> {
     const client = this.#clientFactory({ socketPath: input.socketPath });
     try {
       const previous = this.#stores.agents.listForHerdrSession(input.herdrSessionName);
@@ -186,6 +210,7 @@ export class AgentIndexService {
       });
       const scopes = new Map<string, AgentScope>();
       const events: AgentEventRecord[] = [];
+      const pendingStatuses: PendingStatus[] = [];
       const currentIds = new Set(agents.map((agent) => agent.id));
       for (const prior of previous) {
         if (!currentIds.has(prior.id)) addScope(scopes, scopeOf(prior));
@@ -199,7 +224,9 @@ export class AgentIndexService {
           !cached ||
           agent.paneRevision === null ||
           cached.paneRevision !== agent.paneRevision ||
+          prior?.agentStatus !== agent.agentStatus ||
           identityChanged ||
+          (!agent.agentSession && cached.historyRef !== null) ||
           // A session can be announced before its file exists. Retry without
           // requiring a pane revision, and heal pre-fix fallback snapshots.
           (agent.agentSession?.kind === "path" &&
@@ -215,15 +242,23 @@ export class AgentIndexService {
           if (prior && !sameScope(scopeOf(prior), scopeOf(agent))) addScope(scopes, scopeOf(prior));
           addScope(scopes, scopeOf(agent));
         }
-        if (prior && prior.agentStatus !== agent.agentStatus) {
-          const event = this.#appendStatusEvents({
-            agent,
-            compactHistory:
-              refreshed?.compactHistory ?? this.#context.getAgentSnapshot(agent.id)?.compactHistory,
-            evidence: { id: `snapshot:${agent.lastSeenAt.getTime()}` },
-            from: prior.agentStatus,
-            to: agent.agentStatus,
-          });
+        if (
+          (prior && prior.agentStatus !== agent.agentStatus) ||
+          (!prior && agent.agentStatus === "blocked")
+        ) {
+          const event = this.#recordStatus(
+            {
+              agent,
+              compactHistory:
+                refreshed?.compactHistory ??
+                this.#context.getAgentSnapshot(agent.id)?.compactHistory,
+              evidence: { id: `snapshot:${agent.lastSeenAt.getTime()}` },
+              from: prior?.agentStatus ?? "unknown",
+              to: agent.agentStatus,
+            },
+            cached?.compactHistory,
+            pendingStatuses,
+          );
           if (event) events.push(event);
           addScope(scopes, scopeOf(agent));
         }
@@ -232,6 +267,7 @@ export class AgentIndexService {
         agents,
         contextChangedScopes: sortedScopes(scopes),
         events,
+        pendingStatuses,
       };
     } finally {
       client.close();
@@ -243,26 +279,64 @@ export class AgentIndexService {
     herdrSessionName: string;
     sessionDir: string;
     socketPath: string;
-  }): Promise<AgentEventHandlingResult> {
+  }): Promise<PendingResult<AgentEventHandlingResult>> {
     const event = record(input.event);
-    if (event.type !== "pane.agent_status_changed") return { contextChangedScopes: [], events: [] };
+    if (event.type !== "pane.agent_status_changed")
+      return { contextChangedScopes: [], events: [], pendingStatuses: [] };
     const paneId = stringValue(event.pane_id) ?? stringValue(event.paneId);
-    if (!paneId) return { contextChangedScopes: [], events: [] };
+    if (!paneId) return { contextChangedScopes: [], events: [], pendingStatuses: [] };
     let agent = this.#stores.agents.findByPane({
       herdrSessionName: input.herdrSessionName,
       paneId,
     });
-    let recovered: AgentIndexRefreshResult | undefined;
+    let recovered: PendingResult<AgentIndexRefreshResult> | undefined;
     if (!agent) {
       recovered = await this.#refreshHerdrSessionNow(input);
       agent = this.#stores.agents.findByPane({ herdrSessionName: input.herdrSessionName, paneId });
     }
     if (!agent) {
-      return recovered
-        ? { contextChangedScopes: recovered.contextChangedScopes, events: recovered.events }
-        : { contextChangedScopes: [], events: [] };
+      return {
+        contextChangedScopes: recovered?.contextChangedScopes ?? [],
+        events: recovered?.events ?? [],
+        pendingStatuses: recovered?.pendingStatuses ?? [],
+      };
     }
-    const from = recovered ? "unknown" : agent.agentStatus;
+    const previous = agent;
+    const previousHistory = this.#context.getAgentSnapshot(agent.id)?.compactHistory;
+    if (!recovered) {
+      // Status events carry no native session identity. Refresh it from Herdr
+      // before opening a transcript, rather than waiting for the next tick.
+      const client = this.#clientFactory({ socketPath: input.socketPath });
+      try {
+        const snapshot = normalizeHerdrSessionSnapshot(await client.sessionSnapshot());
+        const live = snapshot.agents
+          .map(record)
+          .find(
+            (candidate) =>
+              (stringValue(candidate.pane_id) ?? stringValue(candidate.paneId)) === paneId,
+          );
+        if (!live) return { contextChangedScopes: [], events: [], pendingStatuses: [] };
+        const terminal = stringValue(live.terminal_id) ?? stringValue(live.terminalId);
+        if (terminal !== agent.terminalId || stringValue(live.agent) !== agent.agent) {
+          // A replaced pane is not the old worker's completion.
+          const result = await this.#refreshHerdrSessionNow(input);
+          return {
+            contextChangedScopes: result.contextChangedScopes,
+            events: result.events,
+            pendingStatuses: result.pendingStatuses,
+          };
+        }
+        agent =
+          this.#stores.agents.updateReportedSession({
+            agentSession: live.agent_session,
+            herdrSessionName: input.herdrSessionName,
+            paneId,
+          }) ?? agent;
+      } finally {
+        client.close();
+      }
+    }
+    const from = recovered ? "unknown" : previous.agentStatus;
     const to = parseAgentStatus(event.agent_status);
     const updated = this.#stores.agents.updateStatus({
       agentStatus: to,
@@ -270,11 +344,15 @@ export class AgentIndexService {
       paneId,
     });
     const current = updated ?? { ...agent, agentStatus: to };
-    const refreshed = await this.#context.refreshAgent({ agent: current, identityChanged: false });
+    const refreshed = await this.#context.refreshAgent({
+      agent: current,
+      identityChanged: !sameIdentity(previous, current),
+    });
     const scopes = new Map<string, AgentScope>();
     for (const scope of recovered?.contextChangedScopes ?? []) addScope(scopes, scope);
     if (refreshed.changed || from !== to) addScope(scopes, scopeOf(current));
     const events = [...(recovered?.events ?? [])];
+    const pendingStatuses = [...(recovered?.pendingStatuses ?? [])];
     const equivalent = events.some(
       (candidate) =>
         candidate.agentId === current.id &&
@@ -282,16 +360,20 @@ export class AgentIndexService {
         (candidate.payload as { to?: AgentStatus }).to === to,
     );
     if (!equivalent) {
-      const statusEvent = this.#appendStatusEvents({
-        agent: current,
-        compactHistory: refreshed.snapshot.compactHistory,
-        evidence: event,
-        from,
-        to,
-      });
+      const statusEvent = this.#recordStatus(
+        {
+          agent: current,
+          compactHistory: refreshed.snapshot.compactHistory,
+          evidence: event,
+          from,
+          to,
+        },
+        previousHistory,
+        pendingStatuses,
+      );
       if (statusEvent) events.push(statusEvent);
     }
-    return { contextChangedScopes: sortedScopes(scopes), events };
+    return { contextChangedScopes: sortedScopes(scopes), events, pendingStatuses };
   }
 
   async #registerPiSessionRefNow(input: {
@@ -344,15 +426,100 @@ export class AgentIndexService {
     return result;
   }
 
-  #appendStatusEvents(input: {
-    agent: AgentIndexRecord;
-    compactHistory:
-      | NonNullable<ReturnType<AgentContextService["getAgentSnapshot"]>>["compactHistory"]
-      | undefined;
-    evidence: Record<string, unknown>;
-    from: AgentStatus;
-    to: AgentStatus;
-  }): AgentEventRecord | undefined {
+  #recordStatus(
+    input: StatusObservation,
+    previousHistory: CompactAgentHistory | undefined,
+    pendingStatuses: PendingStatus[],
+  ): AgentEventRecord | undefined {
+    if (input.from === input.to) return undefined;
+    const pending = this.#pendingSettlements.get(input.agent.id);
+    if (pending) {
+      if (isSettled(input.from) && isSettled(input.to) && sameIdentity(pending.agent, input.agent))
+        return undefined;
+      pending.superseded = true;
+    }
+    const observedAt = Date.now();
+    const completion = input.from === "working" && isSettled(input.to);
+    const previousSettledRef = completion
+      ? (this.#stores.agentEvents.findPriorSettledEvent(input.agent.id, Number.MAX_SAFE_INTEGER)
+          ?.compactHistory?.lastAssistantMessage?.ref ?? null)
+      : null;
+    if (
+      completion &&
+      historyNeedsRetry(input.compactHistory, previousHistory, observedAt, previousSettledRef)
+    ) {
+      const next = { ...input, observedAt, previousHistory, previousSettledRef, superseded: false };
+      this.#pendingSettlements.set(input.agent.id, next);
+      pendingStatuses.push(next);
+      return undefined;
+    }
+    return this.#appendStatusEvents(input);
+  }
+
+  async #finishPendingStatuses<T extends AgentEventHandlingResult>(
+    sessionName: string,
+    result: T,
+    pendingStatuses: PendingStatus[],
+  ): Promise<T> {
+    if (pendingStatuses.length === 0) return result;
+    const scopes = new Map(
+      result.contextChangedScopes.map((scope) => [
+        `${scope.herdrSessionName}\0${scope.workspaceId}`,
+        scope,
+      ]),
+    );
+    const events = [...result.events];
+    // The delay lives OUTSIDE the session mutation queue and snapshot loop.
+    // A batch shares the wait; other panes can publish while this one flushes.
+    await Promise.all(
+      pendingStatuses.map(async (pending) => {
+        await sleep(Math.max(0, pending.observedAt + 500 - Date.now()));
+        await this.#enqueueSessionOperation(sessionName, async () => {
+          const current = this.#stores.agents.findByPane({
+            herdrSessionName: sessionName,
+            paneId: pending.agent.paneId,
+          });
+          let compactHistory = pending.compactHistory;
+          if (
+            !pending.superseded &&
+            current?.id === pending.agent.id &&
+            sameIdentity(current, pending.agent) &&
+            isSettled(current.agentStatus)
+          ) {
+            const refreshed = await this.#context.refreshAgent({
+              agent: current,
+              identityChanged: false,
+            });
+            compactHistory = refreshed.snapshot.compactHistory;
+            if (refreshed.changed) addScope(scopes, scopeOf(current));
+          } else {
+            compactHistory = compactHistory
+              ? { ...compactHistory, lastAssistantMessage: null }
+              : undefined;
+          }
+          if (
+            compactHistory &&
+            historyNeedsRetry(
+              compactHistory,
+              pending.previousHistory,
+              pending.observedAt,
+              pending.previousSettledRef,
+            )
+          ) {
+            compactHistory = { ...compactHistory, lastAssistantMessage: null };
+          }
+          const event = this.#appendStatusEvents({ ...pending, compactHistory });
+          if (event) events.push(event);
+        }).finally(() => {
+          if (this.#pendingSettlements.get(pending.agent.id) === pending)
+            this.#pendingSettlements.delete(pending.agent.id);
+        });
+      }),
+    );
+    return { ...result, contextChangedScopes: sortedScopes(scopes), events };
+  }
+
+  #appendStatusEvents(input: StatusObservation): AgentEventRecord | undefined {
     if (input.from === input.to || !input.compactHistory) return undefined;
     const observationId =
       eventIdentity(input.evidence) ??
@@ -396,6 +563,32 @@ export class AgentIndexService {
     }
     return lastEvent;
   }
+}
+
+function isSettled(status: AgentStatus): boolean {
+  return status === "idle" || status === "done";
+}
+
+function historyNeedsRetry(
+  history: CompactAgentHistory | undefined,
+  previous: CompactAgentHistory | undefined,
+  observedAt: number,
+  previousSettledRef: string | null,
+): boolean {
+  const assistant = history?.lastAssistantMessage;
+  if (!assistant?.text.trim()) return true;
+  const assistantAt = Date.parse(assistant.timestamp ?? "");
+  const userAt = Date.parse(history?.lastUserMessage?.timestamp ?? "");
+  if (Number.isFinite(assistantAt) && assistantAt >= observedAt) return false;
+  if (assistant.ref === previousSettledRef) return true;
+  if (Number.isFinite(userAt) && Number.isFinite(assistantAt)) return assistantAt < userAt;
+  // Without user timestamps, an unchanged prior excerpt predating this
+  // observation cannot prove a new completed turn. Prefer honest empty text.
+  return (
+    assistant.ref === previous?.lastAssistantMessage?.ref &&
+    Number.isFinite(assistantAt) &&
+    assistantAt < observedAt
+  );
 }
 
 function withPaneRevision(agent: unknown, revisionByPane: Map<string, number>): HerdrAgentLike {

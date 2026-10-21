@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { open, readdir, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { AgentHistoryRef, AgentSessionRef } from "@/observability/contracts.js";
 
@@ -23,7 +23,6 @@ export type AgentHistoryLookupInput = {
 
 type Candidate = {
   cwd: string | null;
-  mtimeMs: number;
   path: string;
   sessionId: string | null;
   source: AgentHistoryRef["source"];
@@ -44,6 +43,10 @@ export async function discoverAgentHistory(
       value: input.agentSession.value,
     };
   }
+
+  // A cwd is shared by concurrent agents. Without native identity even a
+  // same-directory newest transcript is somebody else's potential session.
+  if (!input.agentSession) return null;
 
   const cwd = input.cwd ?? input.foregroundCwd;
   const homeDir = input.homeDir ?? process.env.HOME ?? "";
@@ -85,27 +88,36 @@ export async function discoverAgentHistory(
     // Claude Code writes subagent transcripts under
     // <project>/<parent-id>/subagents/ that carry the PARENT sessionId on
     // every record. An exact header match that is a subagent copy is never
-    // the canonical main transcript. Multiple genuine mains (or
-    // subagent-only hits) stay unresolved — no newest-mtime selection.
+    // the canonical main transcript. A resumed main can exist in several
+    // project folders, with the original cwd still in its header. Select
+    // only a unique main in the current project folder, never by mtime.
     const mains = exact.filter((candidate) => !isSubagentTranscriptPath(candidate.path));
-    // IDs are authority, not hints for cwd ranking. Ambiguous copies and
-    // unavailable sessions stay unresolved rather than inventing a binding.
-    const match = mains.length === 1 ? mains[0] : undefined;
+    const local = mains.filter((candidate) => candidateInProject(candidate, cwd, homeDir));
+    const match = mains.length === 1 ? mains[0] : local.length === 1 ? local[0] : undefined;
     return match
       ? { kind: "agent_session", path: match.path, source: match.source, value: session.value }
       : null;
   }
-  const ranked = candidates.sort((a, b) => {
-    const aMatch = cwd && a.cwd === cwd ? 1 : 0;
-    const bMatch = cwd && b.cwd === cwd ? 1 : 0;
-    if (aMatch !== bMatch) return bMatch - aMatch;
-    if (a.mtimeMs !== b.mtimeMs) return b.mtimeMs - a.mtimeMs;
-    return a.path.localeCompare(b.path);
-  });
-  const best = ranked[0];
-  return best
-    ? { kind: "discovered_file", path: best.path, source: best.source, value: best.path }
-    : null;
+  return null;
+}
+
+function candidateInProject(
+  candidate: Pick<Candidate, "path" | "source" | "cwd">,
+  cwd: string | null,
+  homeDir: string,
+): boolean {
+  if (!cwd) return false;
+  if (candidate.source === "claude-jsonl") {
+    return (
+      dirname(candidate.path) ===
+      join(homeDir, ".claude", "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"))
+    );
+  }
+  if (candidate.source === "pi-jsonl") {
+    const slug = `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
+    return dirname(candidate.path) === join(homeDir, ".pi", "agent", "sessions", slug);
+  }
+  return candidate.cwd === cwd;
 }
 
 export function historySourceFromSessionRef(ref: AgentSessionRef): AgentHistoryRef["source"] {
@@ -166,7 +178,6 @@ async function scanRoot(root: string, source: AgentHistoryRef["source"]): Promis
     if (!stats?.isFile()) continue;
     candidates.push({
       ...(await readCandidateMetadata(path)),
-      mtimeMs: stats.mtimeMs,
       path,
       source,
     });
@@ -238,7 +249,6 @@ async function scanGeminiRoot(root: string): Promise<Candidate[]> {
       candidates.push({
         cwd,
         sessionId: stringValue(session?.sessionId),
-        mtimeMs: stats.mtimeMs,
         path,
         source: "gemini-json",
       });
@@ -360,6 +370,7 @@ async function readHeaderPrefix(path: string, limitBytes: number): Promise<strin
  * the exact session probe so a shared database keeps per-session identity.
  */
 export async function hintMatchesAgentSession(input: {
+  cwd?: string | null;
   hint: AgentHistoryRef;
   homeDir: string;
   session: AgentSessionRef;
@@ -386,6 +397,14 @@ export async function hintMatchesAgentSession(input: {
   const path = input.hint.path;
   if (!path || isSubagentTranscriptPath(path)) return false;
   const metadata = await readCandidateMetadata(path);
+  // A cached main in the old Claude project must not bypass duplicate-ID
+  // resolution after a resume into a different cwd.
+  if (
+    source === "claude-jsonl" &&
+    input.cwd &&
+    !candidateInProject({ path, source, cwd: metadata.cwd }, input.cwd, input.homeDir)
+  )
+    return false;
   return metadata.sessionId === input.session.value;
 }
 

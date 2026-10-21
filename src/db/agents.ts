@@ -170,6 +170,19 @@ export class AgentStore {
     return this.findByTerminal(input);
   }
 
+  updateReportedSession(input: {
+    agentSession: unknown;
+    herdrSessionName: string;
+    paneId: string;
+  }): AgentIndexRecord | undefined {
+    this.#sqlite
+      .prepare(
+        "update agents set agent_session_json = ? where herdr_session_name = ? and pane_id = ?",
+      )
+      .run(agentSessionJson(input.agentSession), input.herdrSessionName, input.paneId);
+    return this.findByPane(input);
+  }
+
   updateStatus(input: {
     agentStatus: AgentStatus;
     herdrSessionName: string;

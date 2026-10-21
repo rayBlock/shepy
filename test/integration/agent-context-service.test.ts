@@ -155,7 +155,7 @@ describe("AgentContextService refresh", () => {
     expect(retry.calls).toEqual([{ forceDiscovery: true }]);
   });
 
-  test("reuses a stored ref only for upward revisions with a changed source or unchanged revisions", async () => {
+  test("drops no-session stored refs with changed sources and unchanged revisions", async () => {
     const changed = await source("changed.jsonl");
     const harness = openAgent({ revision: 1 });
     harness.agentContextSnapshots.put({
@@ -166,7 +166,7 @@ describe("AgentContextService refresh", () => {
     const refreshed = refreshAgent(harness, { revision: 2 });
 
     await context(harness, fake.service).refreshAgent({ agent: refreshed, identityChanged: false });
-    expect(fake.calls).toEqual([{ forceDiscovery: false, preferredRef: changed.ref }]);
+    expect(fake.calls).toEqual([{ forceDiscovery: true }]);
 
     const unchanged = await source("unchanged.jsonl");
     const unchangedHarness = openAgent({ revision: 2 });
@@ -178,10 +178,10 @@ describe("AgentContextService refresh", () => {
       agent: unchangedHarness.agent,
       identityChanged: false,
     });
-    expect(unchangedFake.calls).toEqual([{ forceDiscovery: false, preferredRef: unchanged.ref }]);
+    expect(unchangedFake.calls).toEqual([{ forceDiscovery: true }]);
   });
 
-  test("forces discovery for an unchanged source after revision advance, revision reset, identity changes, and deleted paths", async () => {
+  test("never passes a no-session hint after revision advance, reset, identity changes, or deletion", async () => {
     const original = await source("original.jsonl");
     const cases = [
       { identityChanged: false, revision: 2, fingerprint: original.fingerprint },
@@ -205,7 +205,7 @@ describe("AgentContextService refresh", () => {
         agent,
         identityChanged: item.identityChanged,
       });
-      expect(fake.calls).toEqual([{ forceDiscovery: true, preferredRef: original.ref }]);
+      expect(fake.calls).toEqual([{ forceDiscovery: true }]);
     }
   });
 

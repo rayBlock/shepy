@@ -47,7 +47,7 @@ function claudeTranscript(id: string, text: string, cwd = "/repo") {
 async function claudeHome(name: string, id: string) {
   const homeDir = await mkdtemp(join(tmpdir(), name));
   homes.push(homeDir);
-  const projectDir = join(homeDir, ".claude", "projects", "-Users-repo");
+  const projectDir = join(homeDir, ".claude", "projects", "-repo");
   const subagentsDir = join(projectDir, id, "subagents");
   await mkdir(subagentsDir, { recursive: true });
   const main = join(projectDir, `${id}.jsonl`);
@@ -80,13 +80,17 @@ test("claude parent id resolves through the real service and reader to the main 
 test("a validated cached hint is reused without rediscovering the source root", async () => {
   const id = "11111111-2222-4333-8444-555555555555";
   const { homeDir, main } = await claudeHome("shepy-identity-f2-reuse-", id);
-  // Instrumentation: a second genuine main for the same id in another
-  // project directory. If the implementation rediscovers the root, this
-  // decoy makes the id ambiguous and the lookup must fail closed to null.
+  // A resumed session also has a main in another project. A validated
+  // current-project hint should avoid scanning both copies again.
   const otherProject = join(homeDir, ".claude", "projects", "-Users-other");
   await mkdir(otherProject, { recursive: true });
   await writeFile(join(otherProject, `${id}.jsonl`), claudeTranscript(id, "DECOY", "/other"));
-  const history = createAgentHistoryService({ homeDir });
+  const history = createAgentHistoryService({
+    homeDir,
+    discover: async () => {
+      throw new Error("a valid current-project hint must not rediscover");
+    },
+  });
   const hint = {
     kind: "agent_session" as const,
     path: main,
@@ -95,13 +99,11 @@ test("a validated cached hint is reused without rediscovering the source root", 
   };
   const resolved = await history.resolveCompactHistory(claudeSession(id), { preferredRef: hint });
   expect(resolved.compactHistory.lastAssistantMessage?.text).toBe("MAIN ONLY");
-  // Negative control: without the hint the same root is genuinely
-  // ambiguous and must stay unresolved — proving the pass above did not
-  // come from a scan that happened to pick the right file.
-  const withoutHint = await history.resolveCompactHistory(claudeSession(id), {
-    preferredRef: null,
-  });
-  expect(withoutHint.historyRef).toBeNull();
+  // The discovery control now intentionally chooses the cwd's folder.
+  const withoutHint = await createAgentHistoryService({ homeDir }).resolveCompactHistory(
+    claudeSession(id),
+  );
+  expect(withoutHint.historyRef?.path).toBe(main);
 });
 
 test("poisoned hints stamped with the requested id are rejected", async () => {
@@ -123,7 +125,7 @@ test("poisoned hints stamped with the requested id are rejected", async () => {
   expect(viaSubagent.compactHistory.lastAssistantMessage?.text).toBe("MAIN ONLY");
   // A different session's file stamped with the requested id: header
   // identity must reject it even though value/source/kind all match.
-  const foreignDir = join(homeDir, ".claude", "projects", "-Users-repo");
+  const foreignDir = join(homeDir, ".claude", "projects", "-repo");
   const foreignPath = join(foreignDir, "99999999-8888-4777-8666-555555555555.jsonl");
   await writeFile(foreignPath, claudeTranscript("99999999-8888-4777-8666-555555555555", "FOREIGN"));
   const foreignHint = {
