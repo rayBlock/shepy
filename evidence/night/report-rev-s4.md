@@ -57,4 +57,45 @@ Scratch (probe source `review-s4-probes-only.ts` sha256 `e70f47e5…`, logs `pro
 - The live store already holds 9 pane-shaped owner rows, including one `factory-engine-seat|w3J|w3J:p6S` whose session name is a workspace id. When the fix lands, decide whether old rows need a migration or one lease of patience. Owner: S4 builder.
 - The brief named the output `review-S4.md`; the dispatch prompt named this path, and I used the prompt's.
 
+## Recheck of f9a109b (correction for F1 and F2)
+**ACCEPT.** Candidate: `night/s4` at `f9a109b`, on top of `6ce5bf0`. I read the whole correction diff, which touches 6 files.
+
+How the fix works:
+- A takeover now needs both the owner's pane and its terminal to be missing from the live pane list (`src/herdr/owner-terminal.ts:36-38`).
+- An owner row whose recorded terminal is just its pane id, or that has no pane, never gets an early takeover (`src/observability/profile-delivery-service.ts:349-353`). Such rows can only be released by the holder, re-claimed by the holder with a resolved location, or taken after normal lease expiry.
+
+Results, on my own probes (the earlier scratch test plus two new cases) and the builder's new tests:
+- **F1 case (a), owner's pane missing from Shepy's agent index:** the rival is refused and Herdr is not called.
+- **F1 case (b), the same pane id in two Herdr sessions:** refused.
+- **Old-style rows (terminal recorded as the pane id), with both pane and terminal gone:** refused. This matches the 9 such rows in the live store.
+- **Owner resolved normally, pane still live:** refused.
+- **Good control:** a normally resolved owner whose pane and terminal are both gone is taken over at once by the rival, which receives the pending notice (`term_owner`, one `pane.list` call).
+- **Builder's new tests** (`missing-index`, `ambiguous-index`, `legacy-pane-gone`, `confirmed-terminal`, `owner-pane-still-live`): all pass in both full runs.
+- **One of my original controls still fails, as intended:** "owner terminal gone" fails because the fixture's `lane-b` session also has pane `w1:p1`. That makes the location ambiguous, so the row is now fenced.
+
+F2 is fixed in the report:
+- **Start command:** the `factory-seat()` line is identical to `~/.zshrc:43` apart from the added `SHEPY_PROFILE=engine-coordinator` prefix. Nothing is exported.
+- **Settings:** the SessionEnd Shepy object carries `"timeout":15`, the README example has it too, and all five guarded entries are listed. The report also says to install the new Shepy and upgrade its daemon before changing settings.
+
+Fit with main: the pair `6ce5bf0` + `f9a109b` cherry-picks cleanly onto main `0e5d529` (S1 landed). `f9a109b` alone conflicts, because it builds on `6ce5bf0`, so land the two together. The scratch worktree was discarded afterwards.
+
+### Recheck checks
+Same setup as before: `env -i`, a fresh HOME, TMPDIR `/private/tmp/rs4-*/t`, Node 24.18.0. Full runs started only when the 1-minute load was under 20.
+
+| Check | Result | Wall time |
+|---|---|---|
+| typecheck, `f9a109b` | exit 0 | 14 s |
+| typecheck, main `0e5d529` + S4 pair | exit 0 | 3 s |
+| hook file, `f9a109b` (load 18.1 at start, 15-min load 19.9) | 176 of 177 passed | 119 s |
+| hook file, main + S4 pair (load 9.8 at start, 15-min load 18.7) | 176 of 177 passed | 105 s |
+| the two timed-out tests, run alone | pass (1.1 s and 1.3 s) | 8 s and 2 s |
+
+Each full run had one 5-second timeout:
+- `f9a109b`: "a concurrent prompt's fresh record survives a slower Stop's stale write", a test S4 did not touch.
+- main + S4 pair: "public source CLI handover boundary: env-prompt", which spawns a source CLI through tsx.
+
+I count both as load, not defects: each passes alone, and each passed in the other runs.
+
+Probe source: `review-s4-recheck.test.ts` (sha256 `9584a591…`), with logs `r-probe*`, `tc-*`, `hook-*` and `iso-*`, in the same scratch folder as before. Not run: the full suite, `pnpm check` and a live Claude handover. The factory settings are not applied; that stays with the seat.
+
 rev-s4 done: evidence/night/report-rev-s4.md
