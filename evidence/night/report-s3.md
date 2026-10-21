@@ -1,52 +1,56 @@
 # S3 builder report
 
 Worker: s3. Worktree: `/Users/ray/dev/shepy-wt/night-s3`. Branch: `night/s3`.
-Base: `50ca705526a409aa363ba144f1d33d703a85c2f6`.
+**BUILT.** Terminal subscriptions bind their first native session once and refuse replacements. Not accepted or landed; independent review and the full batch gate remain with the factory seat.
+Candidate: `f13ec100699e141979993431fa558e5d341b3253`. Base: `50ca705526a409aa363ba144f1d33d703a85c2f6`. This report supersedes the blockers in `41782ac` under the seat's option-1 decision.
 
-**BLOCKED.** No implementation changes. The binding acceptance correction exposes an unresolved session-binding contract; the separate factory worktree was not assigned. This report is the partial delivery, not acceptance.
-
-## Acceptance block, recorded before coding
+## Revised acceptance block
 
 ```acceptance
 {
   "kind": "build",
-  "real_use": "worker.ts start creates a worker; the subscription row names its terminal and session; the worker's finish notice reaches the seat.",
-  "unhappy_paths": "Pane not found; pane has no agent yet; agent restarted in the same pane (new session); name reused elsewhere.",
+  "real_use": "Shepy subscribe --pane resolves one pane.get and stores one terminal selector with an optional native-session guard. Without a native session the row is pending, then binds the first observed session. Factory start is unchanged.",
+  "unhappy_paths": "Missing pane; no agent yet; wrong or missing workspace; changed native session; reused name in another pane.",
   "attack_tests": [
-    {"probe": "Subscribe by pane, then a different agent takes the same name in another pane: its finish does not reach the profile.", "good_input_control": "The subscribed terminal's finish does."},
-    {"probe": "Agent in the pane restarts with a new session: the old subscription does not silently follow; the caller is told.", "good_input_control": "Same session keeps delivering."}
+    {"probe": "Subscribe before detection or native publication: one pending terminal row, then first-session binding.", "good_input_control": "Already detected agent: same row shape, known native guard."},
+    {"probe": "Bound terminal restarts with another session: no replacement notice; profile show reports replacement refused with both ids.", "good_input_control": "Original session continues delivering after pane movement and daemon restart."},
+    {"probe": "A different terminal reuses the subscribed worker's name: its finish does not reach the profile.", "good_input_control": "The originally subscribed terminal's finish reaches the inbox."},
+    {"probe": "Wrong or missing workspace and missing pane refuse without a row; repeated pane, terminal and resolved-name subscriptions leave one row.", "good_input_control": "Correct workspace succeeds; distinct terminals keep distinct rows."}
   ],
-  "running_cost": {"time": "subscribe call wall", "cpu": "same", "memory": "none", "disk": "one row", "tokens": "null", "expected": "one Herdr call per subscribe"},
+  "running_cost": {"time": "subscribe wall", "cpu": "subscribe fixture process", "memory": "fixture RSS; production null", "disk": "one row", "tokens": null, "expected": "one pane.get per pane subscribe"},
   "ray_check": "none; internal"
 }
 ```
 
-Binding additions: `/Users/ray/dev/agent-factory/evidence/night/acceptance-check-2.md:21-35`: no-agent terminal binding, pane movement, wrong or missing workspace refusal, repeat-subscribe deduplication, and factory start timing. All remain unexecuted; no attack or passing-control proof is claimed.
+Binding amendments: `/Users/ray/dev/agent-factory/evidence/night/acceptance-check-2.md:21-35`; factory timing is superseded by the seat's explicit no-op decision.
 
-## Verified preparation and blockers
+## Acceptance proof
 
-- Read the brief, builder role, current PRIMER and role contract, plan slice 3, design research, README, and binding acceptance correction. The packet did not supply primer or role hashes.
-- `src/cli/shepy.ts:446-490` already accepts `--pane` but serializes `paneId`; it requires an explicit workspace. `src/daemon/observability-server.ts:473-482` stores that selector without resolving Herdr.
-- `src/herdr/pane-identity-resolver.ts:11-32` already resolves terminal and workspace with one `pane.get`; its result contains no native-session identity.
-- `src/observability/profile-selectors.ts:25-30,151-158` and `src/observability/schemas.ts:47-64` have separate terminal and session selector variants, not a terminal plus session binding. Two independent subscriptions would match either identity, not require both, and would not fence restart delivery.
-- The brief requires accepting a pane before an agent exists while also refusing silent attachment to a replacement session. The correction explicitly notes that factory starts subscribe before native session publication. The pending-binding behavior and selector schema need a seat decision under builder rule B07 before implementation.
-- Read factory code only by absolute path. `/Users/ray/dev/agent-factory/tools/seat/worker.ts:419` already subscribes by terminal; lines 423-427 retain the proof poll. Its README line 15 confirms native identity may appear only after prompting. No assigned factory worktree or branch exists in this packet, so no factory edits were made. WORKERFIX landing was not verified.
+- Twenty new integration cases use the public CLI, real daemon RPC, migrated on-disk SQLite, the real agent index and a producer-shaped local Herdr socket. An actual source CLI subprocess also subscribes successfully. Indexed working-to-done events reach the CLI inbox for the bound session, never the replacement.
+- Pending and bound rows survive reopening the database. First binding happens before delayed history publication, including Pi presence before agent detection. Stale cached identities cannot bind through inspection or repeated terminal subscribe; delayed replacement events cannot deliver after the original session returns.
+- Pane movement, name reuse, malformed pane metadata, absent native identity, workspace refusal, repeat deduplication and legacy name consolidation all have passing controls. Legacy notices survive consolidation. Event-time terminal, harness and native identity fence delivery, not merely the live index row.
+- Factory is a no-op: `/Users/ray/dev/agent-factory/tools/seat/worker.ts:419` already subscribes by terminal. Its pre-prompt proof at line 423 still works: an indexed terminal may be `matched` with `bindingState: pending`, while its guard is pending and cannot deliver outcomes. No factory file changed.
 
-## Checks and cost
+## Checks and retained failures
 
-- One preparation typecheck: `pnpm typecheck`, exit 0; Node v24.18.0, pnpm 11.9.0, TypeScript 6.0.3 from the lockfile installation. Wall 15.86 seconds, user CPU 10.05 seconds, system CPU 10.19 seconds, measured by `/usr/bin/time -p` across pnpm and its children, including the unexpected installation below.
-- Used `env -i` with inherited PATH prefixed by pinned Node, fresh private HOME and TMPDIR; all three Claude variables were absent. No application test, live Herdr operation, full gate, build, package check, or factory check ran.
-- **Procedure deviation:** although only `pnpm typecheck` was requested, pnpm automatically installed missing dependencies first: 260 packages downloaded, with dependency lifecycle scripts. This was not authorized by the no-install rule and is not a clean no-install measurement. No additional install, cleanup, or implementation followed. Ignored dependency files are retained for seat disposition, never staged.
-- Private scratch: `/private/tmp/shepy-s3.Dkd76A`; `typecheck.log` SHA-256 `015c4e7ff1422f469b713043f5ad2c466044ebcdf4f510c6b31dcd0f1a705898` preserves that deviation and successful typecheck. Peak memory and disk growth are null, not measured. Subscribe cost is null because no candidate exists. Input, cache-write, cache-read, output and summary tokens are each null because task-scoped usage was unavailable.
+- Node 24.18.0; pnpm 11.9.0; locked TypeScript 6.0.3, Vitest 4.1.9 and Biome 2.5.1. Every invocation used `env -i`, a fresh HOME and short TMPDIR; all three Claude variables were absent.
+- Final touched tests: **228 passed in 11 files**, exit 0, 14.82 seconds. Direct installed `tsc --noEmit`: exit 0, 11.62 seconds. Changed-file Biome check: exit 0, 0.82 seconds. `git diff --check` passed.
+- Final `pnpm package:check`, including its `pnpm build` prepack: exit 0, 32.19 seconds, 328 allowed files. Built CLI import/help/version smoke: exit 0, 1.00 second. No database schema migration was needed.
+- Full `pnpm check` was attempted twice under the required shared lock: both admissions exited **75, already locked**. The full check did not run; no lock bypass. Normal Git invocation used no hook bypass; the configured `.husky/_` runner was absent, so no hook gate is claimed.
+- Red baseline, delayed-event, factory-proof, legacy-JSON and Pi-presence probes are retained. Initial fixture-decoder and TypeScript errors were corrected as harness/build failures, not labelled production failures. No assertions were weakened. The earlier dependency-install deviation was approved; dependencies and build outputs are not committed.
 
-## Open for the factory seat
+Private proof folder: `/private/tmp/s3-proof.Lv9N1e`. `checks.md` gives exact commands, coverage, cost provenance and retained red logs. `final-touched.log` SHA-256: `d69b160634ec3f346fcffe2003a3e87475b1cefce29c642f5df1d96aeb4a9f21`.
 
-1. Recommended: approve one terminal selector with an optional native-session guard, plus an explicit pending state when no session exists. Decide when it may bind its first session and how `profile show` exposes replacement refusal. This preserves one row and restart fencing but changes the selector contract.
-2. Alternatively, split delivery: authorize pane-to-terminal resolution now, explicitly defer native-session fencing, and revise the acceptance block. Terminal-only subscriptions cannot claim the original restart probe passes.
-3. If the factory change remains required, assign its exact worktree and branch after confirming WORKERFIX; otherwise declare it a no-op because start already uses terminal subscription.
+## Cost and limits
 
-Next owner: factory seat for scope and contract decisions, dependency-install deviation disposition, and a corrected packet. No push, rebase, peer messages, profile claims, live worker starts, or foreign edits occurred.
+- One profile and worker, 20 repeat subscribes: exactly one Herdr call each, one row, 133-byte selector. Median in-process wall 1.58 milliseconds; CPU across 20 calls 33.89 milliseconds. One source CLI subprocess took 959 milliseconds including tsx startup; this is not installed-CLI latency.
+- Fixture-worker RSS rose 3.19 MiB; lifetime peak 107.64 MiB includes imports and test machinery, not daemon-only memory. Database plus extant sidecars stayed 188,416 bytes at the repeat-call endpoints; transient journal peak was not sampled. `cost.log` SHA-256: `03f8dde49f74c6815f74eedcf1ea6a744761286975963ffaf5877f80ca485f2b`.
+- Production memory, live worker-start time, multi-worker scaling and idle waits are null or untested: no live worker/resource-control grant was supplied. Input, cache-write, cache-read, output and summary tokens are each null because task-scoped harness counters were unavailable. No application inference was invoked.
+- Existing selectors without guards remain legacy until re-subscribed; unresolved name callers retain their old name semantics. A new guarded subscription remains pending if its harness never publishes native identity. No live seat wake, installation, push, rebase, foreign edit, profile claim or agent message was performed.
 
 ## Noticed beyond my task
 
-The available pnpm invocation installed dependencies while executing a check in a dependency-free worktree. Future fresh-HOME check instructions need an explicit no-install preflight or an admitted existing dependency link; otherwise validation itself can cross the packet's no-install boundary. Owner: factory seat.
+- S2 must judge pending-terminal cleanup from terminal liveness, not missing agent rows; `profile-service.ts` deliberately refuses to prune pending guards. Guarded lifecycle outcomes also need event-time native identity. Owner: factory seat and S2.
+- `README.md:163-166` still says the Pi claim is slash-command-only, while `packages/shepy-pi/src/index.ts:1212` registers `shepy_profile`. Left for S5's documentation pass.
+
+Next owner: factory seat for independent review, full batch validation when the shared lock is available, and landing. No resources were closed outside the owned test fixtures.
