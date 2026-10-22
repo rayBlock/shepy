@@ -202,9 +202,10 @@ describe("ObservabilityRpcServer", () => {
     seedAdditionalRuntimeAgents(harness);
     const codexDir = join(dir, ".codex", "sessions", "2026", "07", "09");
     mkdirSync(codexDir, { recursive: true });
+    const codexSessionId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
     writeFileSync(
-      join(codexDir, "rollout-2026-07-09T12-00-00-eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee.jsonl"),
-      `${JSON.stringify({ type: "session_meta", payload: { cwd: "/repo-codex" } })}\n${JSON.stringify({ type: "event_msg", payload: { type: "user_message", message: "codex user" } })}\n`,
+      join(codexDir, `rollout-2026-07-09T12-00-00-${codexSessionId}.jsonl`),
+      `${JSON.stringify({ type: "session_meta", payload: { id: codexSessionId, cwd: "/repo-codex" } })}\n${JSON.stringify({ type: "event_msg", payload: { type: "user_message", message: "codex user" } })}\n`,
     );
 
     const openCodeDir = join(dir, ".local", "share", "opencode");
@@ -237,15 +238,23 @@ describe("ObservabilityRpcServer", () => {
     writeFileSync(join(geminiProjectDir, ".project_root"), "/repo-gemini\n");
     writeFileSync(
       join(geminiChatsDir, "session-2026-07-09T12-00-00abcdef.json"),
-      JSON.stringify({ messages: [{ id: "g1", type: "user", content: "gemini user" }] }),
+      JSON.stringify({
+        sessionId: "abcdef",
+        messages: [{ id: "g1", type: "user", content: "gemini user" }],
+      }),
     );
 
+    // The public RPC refuses cwd-only discovery, then reads the exact native ID.
+    await expect(
+      client.request("agent.read", { limit: 10, target: "codex", workspaceId: "wB" }),
+    ).resolves.toMatchObject({ agent: { historyRef: null, messages: [] } });
+    seedAdditionalRuntimeAgents(harness, codexSessionId);
     await expect(
       client.request("agent.read", { limit: 10, target: "codex", workspaceId: "wB" }),
     ).resolves.toMatchObject({
       agent: {
-        historyRef: { source: "codex-jsonl" },
-        messages: [expect.objectContaining({ role: "user" })],
+        historyRef: { source: "codex-jsonl", value: codexSessionId },
+        messages: [expect.objectContaining({ role: "user", text: "codex user" })],
       },
     });
     // Old contract returned cwd-latest oc_1; without a native ID the read refuses.
@@ -649,7 +658,10 @@ async function tick(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
 
-function seedAdditionalRuntimeAgents(harness: ReturnType<typeof openObservabilityDbHarness>) {
+function seedAdditionalRuntimeAgents(
+  harness: ReturnType<typeof openObservabilityDbHarness>,
+  codexSessionId?: string,
+) {
   harness.herdrSessions.upsertRunning({
     name: "default",
     sessionDir: "/tmp/herdr",
@@ -659,6 +671,9 @@ function seedAdditionalRuntimeAgents(harness: ReturnType<typeof openObservabilit
     agents: [
       {
         agent: "codex",
+        agent_session: codexSessionId
+          ? { agent: "codex", kind: "id", source: "herdr:codex", value: codexSessionId }
+          : null,
         agent_status: "idle",
         cwd: "/repo-codex",
         pane_id: "wB:p-codex",
@@ -675,6 +690,7 @@ function seedAdditionalRuntimeAgents(harness: ReturnType<typeof openObservabilit
       },
       {
         agent: "gemini",
+        agent_session: { agent: "gemini", kind: "id", source: "herdr:gemini", value: "abcdef" },
         agent_status: "idle",
         cwd: "/repo-gemini",
         pane_id: "wB:p-gemini",

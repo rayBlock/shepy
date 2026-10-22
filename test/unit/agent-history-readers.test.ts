@@ -320,15 +320,25 @@ describe("CodexHistoryReader", () => {
       dir,
       "rollout-2026-07-09T13-00-00-dddddddd-dddd-4ddd-8ddd-dddddddddddd.jsonl",
     );
+    const sessionId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
     await writeFile(
       path,
-      `${JSON.stringify({ type: "session_meta", payload: { cwd: "/repo" } })}\n${JSON.stringify({ type: "event_msg", payload: { type: "user_message", message: "hello" } })}\n`,
+      `${JSON.stringify({ type: "session_meta", payload: { id: sessionId, cwd: "/repo" } })}\n${JSON.stringify({ type: "event_msg", payload: { type: "user_message", message: "hello" } })}\n`,
     );
 
     const service = createAgentHistoryService({ homeDir });
+    const lookup = { agent: "codex", cwd: "/repo", foregroundCwd: null };
+    // A cwd alone cannot bind a worker to this otherwise readable rollout.
+    await expect(service.read({ ...lookup, agentSession: null }, { limit: 10 })).resolves.toEqual({
+      historyRef: null,
+      messages: [],
+    });
     await expect(
       service.read(
-        { agent: "codex", agentSession: null, cwd: "/repo", foregroundCwd: null },
+        {
+          ...lookup,
+          agentSession: { agent: "codex", kind: "id", source: "herdr:codex", value: sessionId },
+        },
         { limit: 10 },
       ),
     ).resolves.toMatchObject({

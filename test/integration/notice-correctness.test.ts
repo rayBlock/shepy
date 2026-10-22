@@ -1,6 +1,7 @@
 import { appendFile, mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import * as timers from "node:timers/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, expect, test, vi } from "vitest";
 import { createAgentHistoryService } from "@/agent-history/service.js";
@@ -15,6 +16,8 @@ import {
   projectInboxOutcome,
 } from "@/observability/profile-delivery-service.js";
 import { cleanupTempDirs, openObservabilityDbHarness } from "./observability-db-harness.js";
+
+vi.mock("node:timers/promises", { spy: true });
 
 const homes: string[] = [];
 const databases: ReturnType<typeof openObservabilityDbHarness>[] = [];
@@ -246,10 +249,10 @@ test.each([
   const w = worker("fresh");
   w.agent_status = status;
   const f = await fixture([w]);
-  const started = performance.now();
+  const wait = vi.mocked(timers.setTimeout).mockClear();
   await f.status(w, status);
   expect(f.outcomes()).toEqual([]);
-  expect(performance.now() - started).toBeLessThan(400);
+  expect(wait).not.toHaveBeenCalled();
 });
 
 test("startup blocked emits once across restart and ticks; leaving and reentering emits again", async () => {
@@ -330,10 +333,23 @@ test.each([
     await rename(path, `${path}.saved`);
     await mkdir(path);
   }
-  const started = performance.now();
+  const { setTimeout: realSleep } = await vi.importActual<typeof timers>("node:timers/promises");
+  const retryStarted = Promise.withResolvers<void>();
+  const releaseRetry = Promise.withResolvers<void>();
+  // Keep the real settle wait, but hold its continuation until both the producer
+  // and the other pane have finished. Scheduler latency is not a product bound.
+  // Moving the wait inside the session queue deadlocks the fast pane and fails.
+  const settleWait = vi
+    .mocked(timers.setTimeout)
+    .mockClear()
+    .mockImplementation((delay) => {
+      retryStarted.resolve();
+      return realSleep(delay).then(() => releaseRetry.promise);
+    });
   const pending = f.status(a, "idle");
+  await retryStarted.promise;
   // The producer flushes independently of the second pane's work.
-  const writer = sleep(300).then(async () => {
+  const writer = realSleep(300).then(async () => {
     if (mode === "unreadable") {
       await appendFile(
         `${path}.saved`,
@@ -346,17 +362,18 @@ test.each([
     } else {
       await appendFile(path, line(a, "assistant", "SLOW FINAL", nextAnswerTime, "new-final"));
     }
-    return performance.now() - started;
   });
-  await sleep(60);
-  await appendFile(fast, line(b, "assistant", "FAST FINAL", answerTime, "final"));
-  const fastStarted = performance.now();
-  await f.status(b, "done");
-  const fastElapsed = performance.now() - fastStarted;
-  const [flushElapsed] = await Promise.all([writer, pending]);
-  expect(fastElapsed).toBeLessThan(350);
-  expect(flushElapsed).toBeLessThan(450);
-  expect(performance.now() - started).toBeGreaterThanOrEqual(450);
+  try {
+    await appendFile(fast, line(b, "assistant", "FAST FINAL", answerTime, "final"));
+    await f.status(b, "done");
+    await writer;
+    expect(f.outcomes().map((o) => o.assistantText)).toEqual(["FAST FINAL"]);
+    expect(settleWait).toHaveBeenCalledTimes(1);
+  } finally {
+    releaseRetry.resolve();
+    await pending;
+    await writer;
+  }
   expect(f.outcomes().map((o) => o.assistantText)).toEqual(["FAST FINAL", "SLOW FINAL"]);
 });
 
@@ -375,9 +392,9 @@ test("old text still missing after retry stays empty, not the previous turn; fre
     path,
     line(w, "assistant", "FRESH", new Date(Date.now() + 1000).toISOString(), "fresh"),
   );
-  const freshStarted = performance.now();
+  const wait = vi.mocked(timers.setTimeout).mockClear();
   await f.status(w, "idle");
-  expect(performance.now() - freshStarted).toBeLessThan(400);
+  expect(wait).not.toHaveBeenCalled();
   expect(f.outcomes().at(-1)?.assistantText).toBe("FRESH");
 });
 
@@ -391,7 +408,6 @@ test("watch stream publishes another pane while a missing final is pending and d
   const published = new Promise<void>((resolve) => {
     fastPublished = resolve;
   });
-  let started = 0;
   const manager = new HerdrSessionWatchManager({
     agents: f.db.agents,
     herdrSessions: f.db.herdrSessions,
@@ -407,7 +423,6 @@ test("watch stream publishes another pane while a missing final is pending and d
     clientFactory: () => ({
       close() {},
       async *subscribeEvents(_params, options) {
-        started = performance.now();
         slow.agent_status = "idle";
         yield { type: "pane.agent_status_changed", pane_id: slow.pane_id, agent_status: "idle" };
         fast.agent_status = "done";
@@ -426,7 +441,6 @@ test("watch stream publishes another pane while a missing final is pending and d
   try {
     await manager.start();
     await published;
-    expect(performance.now() - started).toBeLessThan(400);
     expect(f.outcomes().map((o) => o.assistantText)).toEqual(["WATCH FAST"]);
   } finally {
     await manager.stop();
@@ -670,7 +684,6 @@ test("P6 a snapshot batch publishes its fresh pane before the other pane's retry
     },
   });
   let slowAtFresh = true;
-  let elapsed = 0;
   try {
     await manager.start();
     await startedWatching;
@@ -680,17 +693,14 @@ test("P6 a snapshot batch publishes its fresh pane before the other pane's retry
       path,
       line(fast, "assistant", "FAST SNAPSHOT", new Date().toISOString(), "final"),
     );
-    const start = performance.now();
     await manager.rescanNow();
     await fresh;
     slowAtFresh = slowDelivered;
-    elapsed = performance.now() - start;
     await retried;
   } finally {
     await manager.stop();
   }
   expect(slowAtFresh).toBe(false);
-  expect(elapsed).toBeLessThan(400);
   expect(f.outcomes().map((o) => o.assistantText)).toEqual(["FAST SNAPSHOT", null]);
   expect(contextStatuses).toContainEqual(["idle", "working"]);
   expect(contextStatuses.at(-1)).toEqual(["idle", "idle"]);
@@ -720,9 +730,9 @@ test("snapshot completions with fresh text do not take the retry delay", async (
       );
     }),
   );
-  const started = performance.now();
+  const wait = vi.mocked(timers.setTimeout).mockClear();
   await f.refresh();
-  expect(performance.now() - started).toBeLessThan(400);
+  expect(wait).not.toHaveBeenCalled();
   expect(
     f
       .outcomes()
@@ -737,21 +747,34 @@ test("five missing finals in a snapshot share one wait rather than five serial s
   const paths = await Promise.all(workers.map((w) => source(f.home, w)));
   await f.refresh();
   for (const w of workers) w.agent_status = "idle";
-  const started = performance.now();
+  const { setTimeout: realSleep } = await vi.importActual<typeof timers>("node:timers/promises");
+  const allWaiting = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let waits = 0;
+  vi.mocked(timers.setTimeout).mockImplementation((delay) => {
+    if (++waits === workers.length) allWaiting.resolve();
+    return realSleep(delay).then(() => release.promise);
+  });
   const pending = f.refresh();
-  const writer = sleep(300).then(() =>
-    Promise.all(
+  // Every pane must enter its wait before any wait is released. Serial waits
+  // cannot reach this barrier; elapsed time under machine load is irrelevant.
+  await allWaiting.promise;
+  try {
+    await realSleep(300);
+    await Promise.all(
       workers.map((w, i) =>
         appendFile(
           paths[i] ?? "",
           line(w, "assistant", `${w.name} FINAL`, new Date().toISOString(), "final"),
         ),
       ),
-    ),
-  );
-  await Promise.all([pending, writer]);
-  expect(performance.now() - started).toBeGreaterThanOrEqual(450);
-  expect(performance.now() - started).toBeLessThan(1000);
+    );
+    expect(waits).toBe(workers.length);
+    expect(f.outcomes()).toEqual([]);
+  } finally {
+    release.resolve();
+    await pending;
+  }
   expect(f.outcomes()).toHaveLength(5);
   expect(f.outcomes().every((o) => o.assistantText?.endsWith("FINAL"))).toBe(true);
 });
@@ -760,9 +783,9 @@ test("five-agent startup adds no per-agent sleep; missing transcript does not bo
   const workers = Array.from({ length: 5 }, (_, i) => worker(`startup-${i}`));
   for (const w of workers) w.agent_status = "idle";
   const f = await fixture(workers);
-  const started = performance.now();
+  const wait = vi.mocked(timers.setTimeout).mockClear();
   await f.refresh();
-  expect(performance.now() - started).toBeLessThan(400);
+  expect(wait).not.toHaveBeenCalled();
   const missing = workers[0];
   if (!missing) throw new Error("missing worker");
   missing.agent_session = {
