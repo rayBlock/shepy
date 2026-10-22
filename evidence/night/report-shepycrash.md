@@ -1,5 +1,9 @@
 # SHEPYCRASH (15.367), correction and carry
 
+## Round 3 acceptance, recorded before implementation
+The seat chose finding 1 option (a) in independent review `a97df00:evidence/night/review-SHEPYCRASH-2.md`. Before code changes, an actual Claude `/usage` invocation in a fresh mode-0700 HOME and TMPDIR ran a SessionStart hook using the built Shepy CLI with a recording preload. The observed chain was hook Node PID 37359 (`/Users/ray/.local/share/mise/installs/node/24.18.0/bin/node`), direct parent Claude PID 37275 (`/Users/ray/.local/bin/claude`). No shell or extra runtime wrapper was present. `/usage` reported zero API duration and zero model tokens; only private fixture settings were used, with no Herdr variables, live profile or live daemon access. Raw receipt: `/private/tmp/shepycrash.TJ4Ogt/r3-real-chain.log`.
+Design to that observation: accept the nearest parent only when it is Claude directly or through `sh`, `bash` or `zsh` layers; any other intervening process is unknown. No generic Node wrapper is admitted. Stop at that Claude instead of walking above it, closing finding 3. Preserve daemon foreground-PID verification. Prove named, renamed and orphan nested cases and crash recovery through the real hook CLI; prove ps failure and the real one-second bound; consolidate logging cases. Gate with fresh private mode-0700 directories, focused tests, tsc, Biome and one locked full suite; retain the below-15 start ceiling and the two known Codex failures. Deadline: 18:00 local.
+
 PARTIAL: corrections are committed and carried; independent recheck and full-gate acceptance remain open because the suite is not green.
 Builder: shepycrash. Worktree: `/Users/ray/dev/shepy-wt/night-shepycrash`. Branch: `night/shepycrash-2`. Base: `7aa8adb` (SHEPYTRIM landed). Code candidate: `58d7e1a`; the following documentation commit changes no source.
 
