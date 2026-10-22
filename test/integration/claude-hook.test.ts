@@ -2669,9 +2669,9 @@ describe("claude-hook expected-failure surfaces", () => {
   test("a malformed lease response is an expected no-op that warns once it repeats", async () => {
     const fixture = await openHookServer();
     projectOutcome(fixture, "hook-skew", "skew outcome");
-    // Version-skew shape this build's daemon cannot produce
-    // (projectInboxOutcome always sets excerpt.text), but the hook must not
-    // trust that: the lease response is a runtime boundary. Before round 4
+    // Version-skew shapes this build's daemon cannot produce: first a
+    // missing excerpt.text, then a non-agent sourceKind with a valid snapshot.
+    // The lease response is a runtime boundary. Before round 4
     // the hook cast it unchecked, formatHookContext threw a TypeError, the
     // CLI exited 1 — and the record had already been promoted to
     // "delivered", so the next turn acked an outcome nobody ever saw.
@@ -2681,17 +2681,19 @@ describe("claude-hook expected-failure surfaces", () => {
       leaseCalls += 1;
       const simulatedNow = Date.now() + leaseCalls * 3 * 60_000;
       keepOwnerLeaseAheadOfSimulatedNow(fixture, simulatedNow);
-      // The excerpt shape is invalid on purpose — the cast exists to let the
-      // test put a wire-level lie past TypeScript, which is exactly the
-      // version skew a real daemon upgrade could produce.
+      // The cast admits deliberately invalid wire shapes, not runtime data.
       const leased = realLease({ ...input, now: simulatedNow });
-      const obligations = leased.obligations.map((obligation) => ({
-        ...obligation,
-        outcome:
-          obligation.outcome === null
-            ? null
-            : { ...obligation.outcome, excerpt: { truncated: false } },
-      }));
+      const obligations = leased.obligations.map((obligation) =>
+        leaseCalls === 1
+          ? {
+              ...obligation,
+              outcome:
+                obligation.outcome === null
+                  ? null
+                  : { ...obligation.outcome, excerpt: { truncated: false } },
+            }
+          : { ...obligation, sourceKind: "legacy-non-agent" },
+      );
       return { expired: leased.expired, obligations } as unknown as ReturnType<typeof realLease>;
     };
 

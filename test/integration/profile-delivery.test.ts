@@ -1555,6 +1555,80 @@ describe("Phase 3 gate — durable delivery obligations", () => {
   });
 });
 
+test("legacy Pi source-kind fields are accepted and ignored over daemon RPC for one release", async () => {
+  const { built, client, server } = await rpcFixture();
+  try {
+    const plain = (await client.request("profile.claim", CLAIM_PANE_X)) as {
+      result: { kind: string; leaseToken: string };
+    };
+    expect(plain.result.kind).toBe("claimed");
+    await expect(
+      client.request("inbox.lease", { leaseToken: plain.result.leaseToken, profileId: "driffs" }),
+    ).resolves.toMatchObject({ obligations: [] });
+
+    const legacy = (await client.request("profile.claim", {
+      ...CLAIM_PANE_X,
+      acceptedSourceKinds: ["agent", "profile-demand"],
+      currentLeaseToken: plain.result.leaseToken,
+    })) as { result: { kind: string; leaseToken: string; owner: Record<string, unknown> } };
+    expect(legacy.result.kind).toBe("reclaimed");
+    expect(legacy.result.owner).not.toHaveProperty("acceptedSourceKinds");
+    expect(
+      built.sqlite
+        .prepare("select accepted_source_kinds_json from profile_owners where profile_id = ?")
+        .get("driffs"),
+    ).toEqual({ accepted_source_kinds_json: '["agent"]' });
+
+    const worker = built.agents.list().find((row) => row.name === "driffs-worker");
+    if (!worker) throw new Error("fixture: driffs-worker missing");
+    const events = ["old-pi-both", "old-pi-ignored", "plain-control"].map((idempotencyKey) => {
+      const event = built.agentEvents.append({
+        agentId: worker.id,
+        compactHistory: null,
+        herdrSessionName: "default",
+        idempotencyKey,
+        paneId: worker.paneId,
+        payload: { agent: "hermes", from: "working", name: worker.name, to: "done" },
+        type: "agent.done",
+        workspaceId: "wA",
+      });
+      built.delivery.projectAgentEvent(event);
+      return event;
+    });
+    // Both the old Pi payload and a non-agent-only list are ignored: neither
+    // can suppress worker outcomes or restore delivery of the removed source.
+    for (const [index, fields] of [
+      { sourceKinds: ["agent", "profile-demand"] },
+      { sourceKinds: ["profile-demand"] },
+      {},
+    ].entries()) {
+      const lease = (await client.request("inbox.lease", {
+        ...fields,
+        leaseToken: legacy.result.leaseToken,
+        maxBatch: 1,
+        profileId: "driffs",
+      })) as { obligations: Array<{ agentEventId: number }> };
+      expect(lease.obligations.map((row) => row.agentEventId)).toEqual([events[index]?.id]);
+    }
+    await expect(
+      client.request("inbox.lease", {
+        leaseToken: "not-the-owner",
+        profileId: "driffs",
+        sourceKinds: ["agent", "profile-demand"],
+      }),
+    ).rejects.toThrow(/not the active owner/);
+    await expect(
+      client.request("profile.claim", { ...CLAIM_PANE_X, unrelatedField: true }),
+    ).rejects.toThrow("Invalid RPC params");
+    const info = (await client.request("daemon.info", {})) as { capabilities?: string[] };
+    expect(info.capabilities ?? []).not.toContain("profile-demand-v1");
+  } finally {
+    client.close();
+    await server.stop();
+    built.sqlite.close();
+  }
+});
+
 describe("inbox mutates only for the token that currently owns the profile", () => {
   test("the A2-1-adjacent attack: inbox.lease with an arbitrary token is refused", async () => {
     const { built, client, server } = await rpcFixture();

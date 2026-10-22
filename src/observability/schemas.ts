@@ -185,6 +185,13 @@ export const agentOrchestratorAckInputSchema = Type.Object(
   { additionalProperties: false },
 );
 
+// One-release compatibility for already-running Pi extensions. These fields
+// retain their old wire shape but are ignored by the owner and inbox services.
+const legacySourceKindsSchema = Type.Array(
+  Type.Union([Type.Literal("agent"), Type.Literal("profile-demand")]),
+  { minItems: 1, uniqueItems: true },
+);
+
 export const profileClaimInputSchema = Type.Object(
   {
     claudeMessagingSocket: Type.Optional(
@@ -202,6 +209,7 @@ export const profileClaimInputSchema = Type.Object(
     // waits out the lease. Identity fields are public by design and
     // authenticate nothing.
     currentLeaseToken: Type.Optional(Type.String({ minLength: 1 })),
+    acceptedSourceKinds: Type.Optional(legacySourceKindsSchema),
     harnessKind: Type.String({ minLength: 1 }),
     harnessSessionRefJson: Type.String({ minLength: 1 }),
     // Host location is optional ALL-OR-NONE: a standalone owner carries none
@@ -248,6 +256,7 @@ export const inboxListInputSchema = Type.Object(
 export const inboxLeaseInputSchema = Type.Object(
   {
     leaseToken: Type.String({ minLength: 1 }),
+    sourceKinds: Type.Optional(legacySourceKindsSchema),
     maxBatch: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
     profileId: Type.String({ minLength: 1 }),
   },
