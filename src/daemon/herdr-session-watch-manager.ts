@@ -33,9 +33,20 @@ export type SessionWatchHealth = {
 
 type Watcher = {
   abort: AbortController;
-  client: Pick<HerdrSocketClient, "close" | "subscribeEvents">;
   entry: HerdrSessionListEntry;
   loop: Promise<void>;
+  refreshRequested: boolean;
+  continuousPaneIds: string[];
+  wake?: (() => void) | undefined;
+};
+
+type Stream = {
+  abort: AbortController;
+  client: Pick<HerdrSocketClient, "close" | "subscribeEvents">;
+  ended: boolean;
+  loop: Promise<void>;
+  paneIds: string[];
+  ready: Promise<void>;
 };
 
 export class HerdrSessionWatchManager {
@@ -178,8 +189,13 @@ export class HerdrSessionWatchManager {
     for (const entry of running) {
       if (this.#stopping || generation !== this.#lifecycleGeneration) return;
       const existing = this.#watchers.get(entry.name);
-      if (existing) await this.#retireWatcher(entry.name, existing);
-      await this.#startWatcher(entry, generation);
+      if (existing && existing.entry.socketPath === entry.socketPath) {
+        existing.entry = entry;
+        this.#requestRefresh(existing);
+      } else {
+        if (existing) await this.#retireWatcher(entry.name, existing);
+        await this.#startWatcher(entry, generation);
+      }
     }
     if (!this.#stopping && generation === this.#lifecycleGeneration) {
       this.#lastFullRescanAt = Date.now();
@@ -204,22 +220,24 @@ export class HerdrSessionWatchManager {
       sessionDir: entry.sessionDir,
       socketPath: entry.socketPath,
     });
-    const abort = new AbortController();
-    const client = this.#clientFactory({ socketPath: entry.socketPath });
-    const loop = this.#watch(entry, client, abort.signal).catch(() => undefined);
-    this.#watchers.set(entry.name, { abort, client, entry, loop });
+    const watcher: Watcher = {
+      abort: new AbortController(),
+      entry,
+      loop: Promise.resolve(),
+      refreshRequested: true,
+      continuousPaneIds: [],
+    };
+    watcher.loop = this.#watch(watcher).catch(() => undefined);
+    this.#watchers.set(entry.name, watcher);
     if (this.#stopping || generation !== this.#lifecycleGeneration) {
-      abort.abort();
-      client.close();
-      this.#watchers.delete(entry.name);
-      await loop;
+      await this.#retireWatcher(entry.name, watcher);
     }
   }
 
   #retireWatcher(name: string, watcher: Watcher): Promise<void> {
     if (this.#watchers.get(name) === watcher) this.#watchers.delete(name);
     watcher.abort.abort();
-    watcher.client.close();
+    watcher.wake?.();
     this.#retiringWatcherLoops.add(watcher.loop);
     const clear = () => this.#retiringWatcherLoops.delete(watcher.loop);
     void watcher.loop.then(clear, clear);
@@ -233,25 +251,109 @@ export class HerdrSessionWatchManager {
     await Promise.all([...retiring, ...this.#retiringWatcherLoops]);
   }
 
-  async #watch(
-    entry: HerdrSessionListEntry,
-    client: Pick<HerdrSocketClient, "close" | "subscribeEvents">,
-    signal: AbortSignal,
-  ): Promise<void> {
+  #requestRefresh(watcher: Watcher): void {
+    watcher.refreshRequested = true;
+    watcher.wake?.();
+  }
+
+  async #watch(watcher: Watcher): Promise<void> {
+    const signal = watcher.abort.signal;
     const publications = new Set<Promise<void>>();
-    while (!signal.aborted) {
-      let restart = false;
+    const streams = new Set<Stream>();
+    let primary: Stream | undefined;
+    let paneIds = this.#agents.listForHerdrSession(watcher.entry.name).map((agent) => agent.paneId);
+    try {
+      while (!signal.aborted) {
+        watcher.refreshRequested = false;
+        try {
+          const covered = () =>
+            [...streams].filter((stream) => !stream.ended).flatMap((stream) => stream.paneIds);
+          const missing = paneIds.filter((id) => !covered().includes(id));
+          if (!primary || primary.ended || missing.length) {
+            const lifecycle = !primary || primary.ended;
+            const next = this.#openStream(watcher, missing, publications, lifecycle);
+            streams.add(next);
+            await next.ready;
+            if (lifecycle) primary = next;
+          }
+          watcher.continuousPaneIds = watcher.continuousPaneIds.filter((id) =>
+            covered().includes(id),
+          );
+          const agents = await this.#refresh(watcher.entry);
+          watcher.continuousPaneIds = covered();
+          paneIds = agents.map((agent) => agent.paneId);
+          // Herdr status events carry no sequence number. Re-subscribing
+          // existing panes on an overlapping socket can replay working/done
+          // out of order. Keep their original stream; add ONLY new pane IDs.
+          // Retire a data stream when none of its panes remain. The primary
+          // stream stays for global lifecycle events, even with no panes.
+          for (const stream of streams) {
+            if (stream === primary && !stream.ended) continue;
+            if (!stream.ended && stream.paneIds.some((id) => paneIds.includes(id))) continue;
+            stream.abort.abort();
+            stream.client.close();
+            await stream.loop;
+            streams.delete(stream);
+          }
+          if (signal.aborted) return;
+          if (primary?.ended || paneIds.some((id) => !covered().includes(id))) continue;
+          if (!watcher.refreshRequested) {
+            await new Promise<void>((resolve) => {
+              watcher.wake = resolve;
+              if (watcher.refreshRequested || signal.aborted) resolve();
+            });
+            watcher.wake = undefined;
+          }
+        } catch {
+          if (signal.aborted) return;
+          // Failed candidates do not retire healthy existing subscriptions.
+          for (const stream of streams) {
+            if (!stream.ended) continue;
+            stream.abort.abort();
+            stream.client.close();
+            await stream.loop;
+            streams.delete(stream);
+          }
+          await delay(this.#reconnectDelayMs, signal);
+        }
+      }
+    } finally {
+      for (const stream of streams) {
+        stream.abort.abort();
+        stream.client.close();
+      }
+      await Promise.all([...streams].map((stream) => stream.loop));
+      await Promise.all(publications);
+    }
+  }
+
+  #openStream(
+    watcher: Watcher,
+    paneIds: string[],
+    publications: Set<Promise<void>>,
+    lifecycle: boolean,
+  ): Stream {
+    const { entry } = watcher;
+    const abort = new AbortController();
+    const signal = AbortSignal.any([watcher.abort.signal, abort.signal]);
+    const client = this.#clientFactory({ socketPath: entry.socketPath });
+    let subscribed!: () => void;
+    let failed!: (error: unknown) => void;
+    const ready = new Promise<void>((resolve, reject) => {
+      subscribed = resolve;
+      failed = reject;
+    });
+    const stream: Stream = { abort, client, ended: false, loop: Promise.resolve(), paneIds, ready };
+    stream.loop = (async () => {
       try {
-        const agents = await this.#refresh(entry);
-        if (signal.aborted) return;
-        const paneIds = agents.map((agent) => agent.paneId);
-        for await (const event of client.subscribeEvents({ paneIds }, { signal })) {
+        for await (const event of client.subscribeEvents(
+          { lifecycle, paneIds },
+          { signal, onSubscribed: subscribed },
+        )) {
           if (signal.aborted) return;
           const eventRecord = record(event);
           if (eventRecord.type === "pane.agent_status_changed") {
-            // The index serializes mutations, but a missing final gets one
-            // delayed history read. Keep consuming other panes during that
-            // wait; drain all admitted publications before retiring this loop.
+            // A settlement retry must not stop either stream pump.
             const publication = this.#index
               .handleHerdrEvent({
                 event,
@@ -259,32 +361,37 @@ export class HerdrSessionWatchManager {
                 sessionDir: entry.sessionDir,
                 socketPath: entry.socketPath,
               })
-              .then((result) => {
+              .then((result) =>
                 this.#publishResult({
                   agents: this.#agents.listForHerdrSession(entry.name),
                   herdrSessionName: entry.name,
                   ...result,
-                });
-              })
+                }),
+              )
               .catch((error) => {
                 console.error("Shepy status event failed (snapshot will reconcile):", error);
               });
             publications.add(publication);
             void publication.then(() => publications.delete(publication));
-            continue;
-          }
-          if (shouldRestartSubscription(eventRecord.type)) {
-            restart = true;
-            break;
+          } else if (isTopologyEvent(eventRecord.type)) {
+            this.#requestRefresh(watcher);
           }
         }
-      } catch {
-        if (signal.aborted) return;
+      } catch (error) {
+        failed(error);
       } finally {
-        await Promise.all(publications);
+        stream.ended = true;
+        failed(new Error("Herdr event stream closed before subscription"));
+        if (!signal.aborted) {
+          watcher.continuousPaneIds = watcher.continuousPaneIds.filter(
+            (id) => !paneIds.includes(id),
+          );
+          this.#requestRefresh(watcher);
+        }
+        client.close();
       }
-      if (!restart) await delay(this.#reconnectDelayMs, signal);
-    }
+    })();
+    return stream;
   }
 
   #refresh(entry: HerdrSessionListEntry): Promise<AgentIndexRecord[]> {
@@ -293,6 +400,7 @@ export class HerdrSessionWatchManager {
         herdrSessionName: entry.name,
         sessionDir: entry.sessionDir,
         socketPath: entry.socketPath,
+        continuousPaneIds: this.#watchers.get(entry.name)?.continuousPaneIds ?? [],
       },
       (ready) => this.#publishResult({ herdrSessionName: entry.name, ...ready }),
     );
@@ -324,19 +432,17 @@ export class HerdrSessionWatchManager {
 async function delay(ms: number, signal: AbortSignal): Promise<void> {
   if (ms <= 0 || signal.aborted) return;
   await new Promise<void>((resolve) => {
-    const timeout = setTimeout(resolve, ms);
-    signal.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timeout);
-        resolve();
-      },
-      { once: true },
-    );
+    const finish = () => {
+      clearTimeout(timeout);
+      signal.removeEventListener("abort", finish);
+      resolve();
+    };
+    const timeout = setTimeout(finish, ms);
+    signal.addEventListener("abort", finish, { once: true });
   });
 }
 
-function shouldRestartSubscription(type: unknown): boolean {
+function isTopologyEvent(type: unknown): boolean {
   return (
     type === "pane.agent_detected" ||
     type === "pane.exited" ||

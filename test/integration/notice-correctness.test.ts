@@ -404,6 +404,7 @@ test("watch stream publishes another pane while a missing final is pending and d
   const f = await fixture([slow, fast]);
   await source(f.home, slow);
   await source(f.home, fast, "WATCH FAST");
+  await f.refresh();
   let fastPublished!: () => void;
   const published = new Promise<void>((resolve) => {
     fastPublished = resolve;
@@ -423,6 +424,7 @@ test("watch stream publishes another pane while a missing final is pending and d
     clientFactory: () => ({
       close() {},
       async *subscribeEvents(_params, options) {
+        options?.onSubscribed?.();
         slow.agent_status = "idle";
         yield { type: "pane.agent_status_changed", pane_id: slow.pane_id, agent_status: "idle" };
         fast.agent_status = "done";
@@ -662,6 +664,7 @@ test("P6 a snapshot batch publishes its fresh pane before the other pane's retry
     clientFactory: () => ({
       close() {},
       async *subscribeEvents(_params, options) {
+        options?.onSubscribed?.();
         if (!options?.signal?.aborted)
           await new Promise<void>((resolve) =>
             options?.signal?.addEventListener("abort", () => resolve(), { once: true }),

@@ -1,3 +1,4 @@
+import { stat } from "node:fs/promises";
 import { historySourceFromSessionRef } from "@/agent-history/discovery.js";
 import type { AgentHistoryService } from "@/agent-history/service.js";
 import { emptyCompactHistory } from "@/agent-history/service.js";
@@ -18,6 +19,8 @@ import type {
 export type RefreshAgentContextInput = {
   agent: AgentIndexRecord;
   identityChanged: boolean;
+  /** Snapshot reconciliation persists the event before advancing this cache. */
+  deferPersist?: boolean;
 };
 
 export type RefreshAgentContextResult = {
@@ -68,7 +71,31 @@ export class AgentContextService {
     if (previous && sameSnapshotPayload(previous, next)) {
       return { changed: false, snapshot: previous };
     }
-    return { changed: true, snapshot: this.#stores.agentContextSnapshots.put(next) };
+    return {
+      changed: true,
+      snapshot: input.deferPersist
+        ? { ...next, updatedAt: new Date() }
+        : this.persistSnapshot(next),
+    };
+  }
+
+  persistSnapshot(
+    snapshot: Omit<AgentContextSnapshotRecord, "updatedAt">,
+  ): AgentContextSnapshotRecord {
+    return this.#stores.agentContextSnapshots.put(snapshot);
+  }
+
+  /** Pane revisions do not advance for every turn. Stat the bound source
+   * before deciding that an unchanged pane can reuse its cached history. */
+  async historySourceChanged(agentId: string): Promise<boolean> {
+    const fingerprint = this.#stores.agentContextSnapshots.get(agentId)?.sourceFingerprint;
+    if (!fingerprint) return false;
+    const current = await stat(fingerprint.path).catch(() => null);
+    return (
+      !current ||
+      current.size !== fingerprint.size ||
+      Math.trunc(current.mtimeMs) !== fingerprint.mtimeMs
+    );
   }
 
   getAgentSnapshot(agentId: string): AgentContextSnapshotRecord | undefined {

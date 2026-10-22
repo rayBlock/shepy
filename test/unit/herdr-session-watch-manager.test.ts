@@ -182,9 +182,13 @@ describe("HerdrSessionWatchManager", () => {
     const manager = managerFor(harness, {
       clientFactory: () => ({
         close() {},
-        async *subscribeEvents() {
+        async *subscribeEvents(_params, options) {
           subscriptions += 1;
-          yield* [];
+          options?.onSubscribed?.();
+          if (!options?.signal?.aborted)
+            await new Promise<void>((resolve) =>
+              options?.signal?.addEventListener("abort", () => resolve(), { once: true }),
+            );
         },
       }),
       index: {
@@ -212,7 +216,7 @@ describe("HerdrSessionWatchManager", () => {
     await rescanning;
 
     expect(harness.herdrSessions.get("default").running).toBe(false);
-    expect(subscriptions).toBe(0);
+    expect(subscriptions).toBe(1);
     await manager.stop();
     harness.sqlite.close();
   });
@@ -233,6 +237,7 @@ describe("HerdrSessionWatchManager", () => {
         return {
           close() {},
           async *subscribeEvents(_params, options) {
+            options?.onSubscribed?.();
             await new Promise<void>((resolve) =>
               options?.signal?.addEventListener("abort", () => resolve(), { once: true }),
             );
@@ -323,8 +328,9 @@ describe("HerdrSessionWatchManager", () => {
     const manager = managerFor(harness, {
       clientFactory: () => ({
         close() {},
-        async *subscribeEvents() {
+        async *subscribeEvents(_params, options) {
           subscribeCalls += 1;
+          options?.onSubscribed?.();
           if (subscribeCalls === 1) return;
           yield { agent_status: "idle", pane_id: "wB:p2", type: "pane.agent_status_changed" };
           await new Promise((resolve) => setTimeout(resolve, 20));
@@ -360,6 +366,7 @@ describe("HerdrSessionWatchManager", () => {
         close() {},
         async *subscribeEvents(_params, options) {
           subscribeCalls += 1;
+          options?.onSubscribed?.();
           if (subscribeCalls === 1) {
             yield { type: "pane.moved" };
             return;
@@ -382,8 +389,11 @@ describe("HerdrSessionWatchManager", () => {
           );
           return {
             agents: [agent],
-            contextChangedScopes: [{ herdrSessionName: "default", workspaceId: agent.workspaceId }],
-            events: [event(agent.workspaceId)],
+            contextChangedScopes:
+              refreshCalls <= 2
+                ? [{ herdrSessionName: "default", workspaceId: agent.workspaceId }]
+                : [],
+            events: refreshCalls <= 2 ? [event(agent.workspaceId)] : [],
           };
         },
       },
@@ -393,17 +403,17 @@ describe("HerdrSessionWatchManager", () => {
       reconnectDelayMs: 0,
     });
     await manager.start();
-    await waitFor(() => subscribeCalls === 2);
+    await waitFor(() => operations.includes("event:wB"));
     await manager.stop();
     harness.sqlite.close();
-    expect(operations).toEqual([
-      "reconcile:wA:p1",
+    expect(operations.filter((op) => !op.startsWith("reconcile:"))).toEqual([
       "context:wA",
       "event:wA",
-      "reconcile:wB:p3",
       "context:wB",
       "event:wB",
     ]);
+    expect(operations.indexOf("reconcile:wA:p1")).toBeLessThan(operations.indexOf("context:wA"));
+    expect(operations.indexOf("reconcile:wB:p3")).toBeLessThan(operations.indexOf("context:wB"));
   });
 });
 
@@ -424,6 +434,7 @@ function managerFor(
       close() {},
       async *subscribeEvents(_params, options) {
         if (options?.signal?.aborted) return;
+        options?.onSubscribed?.();
         await new Promise<void>((resolve) =>
           options?.signal?.addEventListener("abort", () => resolve(), { once: true }),
         );

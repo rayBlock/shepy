@@ -57,6 +57,9 @@ export type AgentIndexServiceStores = {
 };
 
 type RefreshInput = {
+  /** A healthy stream already covers these panes. Its queued working/done
+   * events, not a simultaneous snapshot, own their same-status completions. */
+  continuousPaneIds?: string[];
   herdrSessionName: string;
   sessionDir: string;
   socketPath: string;
@@ -67,6 +70,8 @@ type StatusObservation = {
   compactHistory: CompactAgentHistory | undefined;
   evidence: Record<string, unknown>;
   from: AgentStatus;
+  /** Reconcile a turn whose working phase was missed during disconnection. */
+  reconciledFinal?: boolean;
   /** Where a screen-text read for this observation goes, when it needs one. */
   socketPath?: string;
   to: AgentStatus;
@@ -398,21 +403,48 @@ export class AgentIndexService {
           // requiring a pane revision, and heal pre-fix fallback snapshots.
           (agent.agentSession?.kind === "path" &&
             (cached.historyRef?.kind !== "agent_session" ||
-              cached.historyRef.path !== agent.agentSession.value));
+              cached.historyRef.path !== agent.agentSession.value)) ||
+          (await this.#context.historySourceChanged(agent.id));
         let refreshed = cached;
+        let contextChanged = false;
         if (dirty) {
-          const result = await this.#context.refreshAgent({ agent, identityChanged });
+          const result = await this.#context.refreshAgent({
+            agent,
+            identityChanged,
+            deferPersist: true,
+          });
           refreshed = result.snapshot;
+          contextChanged = result.changed;
           if (result.changed) addScope(scopes, scopeOf(agent));
         }
         if (metadataChanged) {
           if (prior && !sameScope(scopeOf(prior), scopeOf(agent))) addScope(scopes, scopeOf(prior));
           addScope(scopes, scopeOf(agent));
         }
+        const finalRef = refreshed?.compactHistory.lastAssistantMessage?.ref;
+        const changedSettledFinal = Boolean(
+          prior &&
+            !identityChanged &&
+            isSettled(prior.agentStatus) &&
+            isSettled(agent.agentStatus) &&
+            finalRef &&
+            finalRef !== cached?.compactHistory.lastAssistantMessage?.ref,
+        );
+        const awaitingStreamFinal =
+          changedSettledFinal && input.continuousPaneIds?.includes(agent.paneId);
+        const reconciledFinal = Boolean(
+          changedSettledFinal &&
+            !awaitingStreamFinal &&
+            finalRef !==
+              this.#stores.agentEvents.findPriorSettledEvent(agent.id, Number.MAX_SAFE_INTEGER)
+                ?.compactHistory?.lastAssistantMessage?.ref &&
+            !historyNeedsRetry(refreshed?.compactHistory, cached?.compactHistory, Date.now(), null),
+        );
         if (
           (prior && prior.agentStatus !== agent.agentStatus) ||
           (!prior && agent.agentStatus === "blocked") ||
-          this.#pendingSettlements.has(agent.id)
+          this.#pendingSettlements.has(agent.id) ||
+          reconciledFinal
         ) {
           const event = this.#recordStatus(
             {
@@ -420,8 +452,13 @@ export class AgentIndexService {
               compactHistory:
                 refreshed?.compactHistory ??
                 this.#context.getAgentSnapshot(agent.id)?.compactHistory,
-              evidence: { id: `snapshot:${agent.lastSeenAt.getTime()}` },
+              evidence: {
+                id: reconciledFinal
+                  ? `snapshot-final:${finalRef}`
+                  : `snapshot:${agent.lastSeenAt.getTime()}`,
+              },
               from: prior?.agentStatus ?? "unknown",
+              reconciledFinal,
               socketPath: input.socketPath,
               to: agent.agentStatus,
             },
@@ -438,6 +475,10 @@ export class AgentIndexService {
             paneId: agent.paneId,
           });
         }
+        // Never advance the same-status final cursor before its durable
+        // event. An append failure or crash must leave reconciliation retryable.
+        if (contextChanged && refreshed && !awaitingStreamFinal)
+          this.#context.persistSnapshot(refreshed);
       }
       return {
         agents: this.#stores.agents.listForHerdrSession(input.herdrSessionName),
@@ -638,7 +679,7 @@ export class AgentIndexService {
       // still said working when this newer observation arrived.
       input = { ...input, from: pending.to };
     }
-    if (input.from === input.to) return undefined;
+    if (input.from === input.to && !input.reconciledFinal) return undefined;
     const observedAt = Date.now();
     const completion = input.from === "working" && isSettled(input.to);
     const previousSettledRef = completion
@@ -791,7 +832,7 @@ export class AgentIndexService {
     persistStatus = true,
   ): AgentEventRecord | undefined {
     const compactHistory = input.compactHistory;
-    if (input.from === input.to || !compactHistory) return undefined;
+    if ((input.from === input.to && !input.reconciledFinal) || !compactHistory) return undefined;
     const append = () => this.#appendStatusEventRecords({ ...input, compactHistory });
     return persistStatus
       ? this.#stores.agents.commitStatusEvent(

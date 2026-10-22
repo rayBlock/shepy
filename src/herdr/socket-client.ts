@@ -271,8 +271,8 @@ export class HerdrSocketClient {
   }
 
   async *subscribeEvents(
-    params: { paneIds?: string[] } = {},
-    options: { signal?: AbortSignal } = {},
+    params: { lifecycle?: boolean; paneIds?: string[] } = {},
+    options: { onSubscribed?: () => void; signal?: AbortSignal } = {},
   ): AsyncIterable<unknown> {
     const queue: unknown[] = [];
     let failure: Error | undefined;
@@ -302,14 +302,17 @@ export class HerdrSocketClient {
         "events.subscribe",
         {
           subscriptions: [
-            ...[
-              "pane.agent_detected",
-              "pane.exited",
-              "pane.closed",
-              "pane.created",
-              "pane.moved",
-              "workspace.closed",
-            ].map((type) => ({ type })),
+            ...(params.lifecycle === false
+              ? []
+              : [
+                  "pane.agent_detected",
+                  "pane.exited",
+                  "pane.closed",
+                  "pane.created",
+                  "pane.moved",
+                  "workspace.closed",
+                ]
+            ).map((type) => ({ type })),
             ...(params.paneIds ?? []).map((pane_id) => ({
               pane_id,
               type: "pane.agent_status_changed" as const,
@@ -319,13 +322,27 @@ export class HerdrSocketClient {
         requestOptions,
       );
       if (options.signal?.aborted) return;
+      // Admit notifications received with/before the ACK before the caller
+      // queues its catch-up snapshot. Otherwise a buffered working/done pair
+      // could replay after that snapshot synthesized the same completion.
+      while (queue.length > 0 && !options.signal?.aborted) yield queue.shift();
+      if (failure) throw failure;
+      if (options.signal?.aborted) return;
+      options.onSubscribed?.();
       while (!options.signal?.aborted) {
         if (failure) throw failure;
         if (queue.length === 0) {
-          await new Promise<void>((resolve) => {
-            wake = resolve;
-            options.signal?.addEventListener("abort", () => resolve(), { once: true });
-          });
+          let onAbort: (() => void) | undefined;
+          try {
+            await new Promise<void>((resolve) => {
+              wake = resolve;
+              onAbort = resolve;
+              options.signal?.addEventListener("abort", onAbort, { once: true });
+            });
+          } finally {
+            if (onAbort) options.signal?.removeEventListener("abort", onAbort);
+            wake = undefined;
+          }
         }
         if (failure) throw failure;
         while (queue.length > 0) {
