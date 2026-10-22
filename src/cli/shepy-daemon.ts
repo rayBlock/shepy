@@ -20,8 +20,8 @@ async function main(): Promise<void> {
   // warning listener, or it would also print an un-timestamped duplicate.
   process.removeAllListeners("warning");
   process.on("warning", (warning) => console.warn(warning.stack ?? warning));
-  process.on("uncaughtException", (error) => {
-    console.error(error.stack ?? error);
+  process.on("uncaughtException", (error: unknown) => {
+    console.error(error instanceof Error ? (error.stack ?? error.message) : error);
     exit(1); // A fatal exception must not leave a partially failed daemon running.
   });
   if (argv.length > 2) {

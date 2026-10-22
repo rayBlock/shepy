@@ -4094,6 +4094,7 @@ describe("Claude profile handover", () => {
   test.each([
     "cli-error",
     "process-events",
+    "null-exception",
   ])("daemon %s output in the real entrypoint has ISO timestamps", {
     timeout: 15_000,
   }, async (mode) => {
@@ -4107,9 +4108,9 @@ describe("Claude profile handover", () => {
     const loader = join(dir, "process-events.mjs");
     writeFileSync(
       loader,
-      `process.once('message', () => {
+      `process.once('message', mode => {
       process.emitWarning('fixture warning first\\nfixture warning second', {type:'FixtureWarning'});
-      setImmediate(() => { throw new Error('fixture fatal first\\nfixture fatal second'); });
+      setImmediate(() => { if (mode === 'null-exception') throw null; throw new Error('fixture fatal first\\nfixture fatal second'); });
     });`,
     );
     const child = spawn(
@@ -4117,7 +4118,7 @@ describe("Claude profile handover", () => {
       [
         "--import",
         "tsx",
-        ...(mode === "process-events" ? ["--import", loader] : []),
+        ...(mode !== "cli-error" ? ["--import", loader] : []),
         "src/cli/shepy-daemon.ts",
         ...(mode === "cli-error" ? ["invalid-argument"] : []),
       ],
@@ -4132,9 +4133,9 @@ describe("Claude profile handover", () => {
     if (!child.stdout || !child.stderr) throw new Error("fixture daemon pipes missing");
     child.stdout.on("data", (data) => {
       stdout += data.toString();
-      if (mode === "process-events" && !triggered && stdout.includes("Shepy daemon listening")) {
+      if (mode !== "cli-error" && !triggered && stdout.includes("Shepy daemon listening")) {
         triggered = true;
-        child.send("emit fixture events");
+        child.send(mode);
       }
     });
     child.stderr.on("data", (data) => {
@@ -4153,8 +4154,11 @@ describe("Claude profile handover", () => {
       expect(triggered).toBe(true);
       expect(stderr.match(/FixtureWarning: fixture warning first/g)).toHaveLength(1);
       expect(stderr).toContain("fixture warning second");
-      expect(stderr).toContain("Error: fixture fatal first");
-      expect(stderr).toContain("fixture fatal second");
+      if (mode === "null-exception") expect(stderr).toMatch(/Z null\n/);
+      else {
+        expect(stderr).toContain("Error: fixture fatal first");
+        expect(stderr).toContain("fixture fatal second");
+      }
     }
   });
 
