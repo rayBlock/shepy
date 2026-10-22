@@ -17,7 +17,7 @@ Reviewer rev-shstream (Sonnet), blinded discovery, read-only. Candidate Shepy `9
 
 **F4 MEDIUM, backstop yields forever on a covered pane.** `agent-index-service.ts:433,480`: while a stream covers the pane, a changed settled final is left to the stream and the cursor never advances. If Herdr emits no status event (a turn shorter than its detection poll, which the research did not test), nothing is ever recorded until the stream drops. Reproduction A4: transcript final changes, no events, a topology refresh and a full rescan: 0 outcomes. Cost side: a stale cursor makes every refresh re-stat and re-resolve that agent. Suggest a bounded grace (for example one refresh cycle) after which the backstop records the done.
 
-**F5 LOW:** (a) A stream that ACKs then closes at once reconnects with no delay (`:299` continues; delay only on error). (b) The README line "Pending completion outcomes ... A reused name" is unchanged, but the README now says overlapping subscriptions cannot replay; true only for disjoint pane sets, which is what the code does. (c) Same size and same mtime rewrite is undetected, as the report says; a clock moving back is detected because the test is `!==` (read, not run).
+**F5 LOW:** (a) A stream that ACKs then closes at once reconnects with no delay (`:299` continues; delay only on error). (b) Same size and same mtime rewrite is undetected, as the report says; a clock moving back is detected because the test is `!==` (read, not run).
 
 ## Checks I ran
 - Passed: `tsc` 3.7 s; biome 2.2 s; 5 focused files, 50 tests, 10.6 s (including both new files, 5 repeats of `short-turn-stream`, 0.7 s each alone).
