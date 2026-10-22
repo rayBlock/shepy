@@ -308,12 +308,15 @@ describe("delivered final replay dedup", () => {
     const built = fixture({ now: () => clock });
     const worker = built.agents.list().find((row) => row.name === "driffs-worker");
     if (!worker) throw new Error("fixture worker missing");
+    let entry = 0;
     const append = (text: string, session = "session-one", agentId = worker.id) => {
       const stored = built.agentEvents.append({
         agentId,
         compactHistory: {
           historyRef: { kind: "agent_session", source: "opencode-sqlite", value: session },
-          lastAssistantMessage: { ref: `prt-${text}`, text, timestamp: null },
+          // These content-fingerprint tests model distinct native entries,
+          // not a replay of one final reference (covered by short-turn-stream).
+          lastAssistantMessage: { ref: `prt-${session}-${entry++}`, text, timestamp: null },
         } as never,
         herdrSessionName: "default",
         paneId: worker.paneId,
@@ -509,7 +512,7 @@ describe("OpenCode source-entry projection", () => {
     emit(55656, "opencode-sqlite", "/tmp/opencode.db#entry=prt_other", "final");
     expect(built.delivery.inboxList({ profileId: "driffs" })).toHaveLength(3);
     emit(55657, "pi-jsonl", "/tmp/pi.jsonl#entry=prt_10094bc4b0012sSQGiygvMwZWq");
-    emit(55653, "pi-jsonl", "/tmp/pi.jsonl#entry=prt_10094bc4b0012sSQGiygvMwZWq");
+    emit(55653, "pi-jsonl", "/tmp/pi.jsonl#entry=prt_another_native_final");
     expect(built.delivery.inboxList({ profileId: "driffs" })).toHaveLength(5);
     const reopened = build(built.path);
     emit(55654, "opencode-sqlite", ref);

@@ -37,6 +37,7 @@ type Watcher = {
   loop: Promise<void>;
   refreshRequested: boolean;
   continuousPaneIds: string[];
+  reconnectAt: number;
   wake?: (() => void) | undefined;
 };
 
@@ -226,6 +227,7 @@ export class HerdrSessionWatchManager {
       loop: Promise.resolve(),
       refreshRequested: true,
       continuousPaneIds: [],
+      reconnectAt: 0,
     };
     watcher.loop = this.#watch(watcher).catch(() => undefined);
     this.#watchers.set(entry.name, watcher);
@@ -261,11 +263,20 @@ export class HerdrSessionWatchManager {
     const publications = new Set<Promise<void>>();
     const streams = new Set<Stream>();
     let primary: Stream | undefined;
+    let needsSnapshot = false;
     let paneIds = this.#agents.listForHerdrSession(watcher.entry.name).map((agent) => agent.paneId);
     try {
       while (!signal.aborted) {
         watcher.refreshRequested = false;
         try {
+          // A failed subscribe can mean that an indexed pane disappeared.
+          // Refresh before any retry; if refresh fails, never reuse stale IDs.
+          if (needsSnapshot) {
+            paneIds = (await this.#refresh(watcher.entry)).map((agent) => agent.paneId);
+            needsSnapshot = false;
+          }
+          await delay(Math.max(0, watcher.reconnectAt - Date.now()), signal);
+          if (signal.aborted) return;
           const covered = () =>
             [...streams].filter((stream) => !stream.ended).flatMap((stream) => stream.paneIds);
           const missing = paneIds.filter((id) => !covered().includes(id));
@@ -306,6 +317,7 @@ export class HerdrSessionWatchManager {
           }
         } catch {
           if (signal.aborted) return;
+          needsSnapshot = true;
           // Failed candidates do not retire healthy existing subscriptions.
           for (const stream of streams) {
             if (!stream.ended) continue;
@@ -383,6 +395,7 @@ export class HerdrSessionWatchManager {
         stream.ended = true;
         failed(new Error("Herdr event stream closed before subscription"));
         if (!signal.aborted) {
+          watcher.reconnectAt = Date.now() + this.#reconnectDelayMs;
           watcher.continuousPaneIds = watcher.continuousPaneIds.filter(
             (id) => !paneIds.includes(id),
           );

@@ -342,8 +342,8 @@ export class ProfileDeliveryService {
     const contentSha256 =
       openCode && sourceText ? createHash("sha256").update(sourceText).digest("hex") : null;
     // Herdr's done/idle are the same settled state, differing only in
-    // whether the completed tab has been seen. A within-settled transition is
-    // suppressed ONLY with evidence it is the SAME outcome already recorded:
+    // whether the completed tab has been seen. Even a working-to-settled
+    // replay is suppressed with evidence it is the SAME outcome recorded:
     // the append-time assistant reference must exactly match the agent's
     // prior settled event's reference. Herdr pane revisions do NOT prove
     // this (live workers stay at revision 1 across many completed turns).
@@ -362,7 +362,6 @@ export class ProfileDeliveryService {
       return [];
     if (
       (event.type === "agent.done" || event.type === "agent.idle") &&
-      (from === "done" || from === "idle") &&
       this.#sameSettledOutcomeAsPrior(event, from)
     )
       return [];
@@ -605,8 +604,8 @@ export class ProfileDeliveryService {
 
   /**
    * True only when BOTH the event and the agent's prior settled event carry
-   * the same non-empty append-time assistant reference — the live incident
-   * shape (working->done delivered, done->idle same final suppressed).
+   * the same non-empty append-time assistant reference from the same source
+   * and session, even when the replay includes another working phase.
    * Any missing evidence (no store, no prior, null refs) returns false, so
    * the caller delivers. The comparison reads persisted events: a daemon
    * restart re-derives it from the same rows, no in-memory dedup.
@@ -616,7 +615,20 @@ export class ProfileDeliveryService {
     const prior = this.#agentEvents.findPriorSettledEvent(event.agentId, event.id);
     const currentRef = event.compactHistory?.lastAssistantMessage?.ref ?? null;
     const priorRef = prior?.compactHistory?.lastAssistantMessage?.ref ?? null;
-    if (currentRef !== null && currentRef === priorRef) return true;
+    const currentHistory = event.compactHistory;
+    const priorHistory = prior?.compactHistory;
+    const sameSource =
+      currentHistory?.source === priorHistory?.source &&
+      currentHistory?.historyRef?.kind === priorHistory?.historyRef?.kind &&
+      currentHistory?.historyRef?.source === priorHistory?.historyRef?.source &&
+      currentHistory?.historyRef?.value === priorHistory?.historyRef?.value &&
+      currentHistory?.historyRef?.path === priorHistory?.historyRef?.path;
+    // OpenCode edits an existing source entry in place; its entry/content
+    // projection below still owns that stronger identity contract.
+    const sameContent =
+      currentHistory?.source !== "opencode-sqlite" ||
+      currentHistory.lastAssistantMessage?.text === priorHistory?.lastAssistantMessage?.text;
+    if (currentRef !== null && currentRef === priorRef && sameSource && sameContent) return true;
     // A kind with no reader has no assistant reference at all. Its prior
     // completion carried a screen tail; a later done/idle change with no text
     // of its own is Herdr marking the same turn seen. Screen text has no turn

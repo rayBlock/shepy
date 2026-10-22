@@ -174,7 +174,7 @@ describe("HerdrSessionWatchManager", () => {
   test("awaits a removed watcher before finalizing the stopped session", async () => {
     const harness = openObservabilityDbHarness();
     let sessions = [entry()];
-    let subscriptions = 0;
+    const subscriptionAbortStates: boolean[] = [];
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
@@ -183,7 +183,7 @@ describe("HerdrSessionWatchManager", () => {
       clientFactory: () => ({
         close() {},
         async *subscribeEvents(_params, options) {
-          subscriptions += 1;
+          subscriptionAbortStates.push(options?.signal?.aborted ?? false);
           options?.onSubscribed?.();
           if (!options?.signal?.aborted)
             await new Promise<void>((resolve) =>
@@ -216,7 +216,7 @@ describe("HerdrSessionWatchManager", () => {
     await rescanning;
 
     expect(harness.herdrSessions.get("default").running).toBe(false);
-    expect(subscriptions).toBe(1);
+    expect(subscriptionAbortStates).toEqual([false]);
     await manager.stop();
     harness.sqlite.close();
   });
@@ -320,7 +320,8 @@ describe("HerdrSessionWatchManager", () => {
     harness.sqlite.close();
   });
 
-  test("reconnects when Herdr event stream closes without a restart event", async () => {
+  test("backs off when Herdr acknowledges then closes its event stream, then reconnects", async () => {
+    vi.useFakeTimers();
     const harness = openObservabilityDbHarness();
     const received: unknown[] = [];
     let subscribeCalls = 0;
@@ -333,7 +334,10 @@ describe("HerdrSessionWatchManager", () => {
           options?.onSubscribed?.();
           if (subscribeCalls === 1) return;
           yield { agent_status: "idle", pane_id: "wB:p2", type: "pane.agent_status_changed" };
-          await new Promise((resolve) => setTimeout(resolve, 20));
+          if (!options?.signal?.aborted)
+            await new Promise<void>((resolve) =>
+              options?.signal?.addEventListener("abort", () => resolve(), { once: true }),
+            );
         },
       }),
       index: {
@@ -346,10 +350,13 @@ describe("HerdrSessionWatchManager", () => {
         },
       },
       onAgentEvent: (item) => received.push(item),
-      reconnectDelayMs: 0,
+      reconnectDelayMs: 25,
     });
     await manager.start();
-    await waitFor(() => handled > 0);
+    await vi.advanceTimersByTimeAsync(24);
+    expect(subscribeCalls).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(handled).toBe(1);
     await manager.stop();
     harness.sqlite.close();
     expect(subscribeCalls).toBeGreaterThanOrEqual(2);

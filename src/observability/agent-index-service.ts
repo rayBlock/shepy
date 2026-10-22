@@ -57,8 +57,8 @@ export type AgentIndexServiceStores = {
 };
 
 type RefreshInput = {
-  /** A healthy stream already covers these panes. Its queued working/done
-   * events, not a simultaneous snapshot, own their same-status completions. */
+  /** A healthy stream covers these panes. Give its queued working/done
+   * events one refresh cycle before synthesizing a same-status completion. */
   continuousPaneIds?: string[];
   herdrSessionName: string;
   sessionDir: string;
@@ -101,6 +101,7 @@ export class AgentIndexService {
     previousAgents: AgentIndexRecord[];
   }) => void;
   readonly #pendingSettlements = new Map<string, PendingStatus>();
+  readonly #coveredSettledFinals = new Map<string, string>();
   readonly #mutationEpochBySession = new Map<string, number>();
   readonly #pendingPiSessionRefs = new Map<string, AgentSessionRef>();
   readonly #refreshInFlightBySession = new Map<
@@ -306,6 +307,7 @@ export class AgentIndexService {
         agents: snapshotAgents,
         beforeRemove: (removed, previousAgents) => {
           for (const prior of removed) {
+            this.#coveredSettledFinals.delete(prior.id);
             const pending = this.#pendingSettlements.get(prior.id);
             if (pending && !pending.supersededEvent) {
               const final = this.#appendStatusEvents(
@@ -430,16 +432,19 @@ export class AgentIndexService {
             finalRef &&
             finalRef !== cached?.compactHistory.lastAssistantMessage?.ref,
         );
-        const awaitingStreamFinal =
-          changedSettledFinal && input.continuousPaneIds?.includes(agent.paneId);
-        const reconciledFinal = Boolean(
+        const awaitingStreamFinal = Boolean(
           changedSettledFinal &&
-            !awaitingStreamFinal &&
-            finalRef !==
-              this.#stores.agentEvents.findPriorSettledEvent(agent.id, Number.MAX_SAFE_INTEGER)
-                ?.compactHistory?.lastAssistantMessage?.ref &&
-            !historyNeedsRetry(refreshed?.compactHistory, cached?.compactHistory, Date.now(), null),
+            input.continuousPaneIds?.includes(agent.paneId) &&
+            this.#coveredSettledFinals.get(agent.id) !== finalRef,
         );
+        // A healthy stream gets one refresh cycle to publish its queued final,
+        // never an indefinite veto over transcript-backed reconciliation.
+        if (awaitingStreamFinal && finalRef) this.#coveredSettledFinals.set(agent.id, finalRef);
+        else this.#coveredSettledFinals.delete(agent.id);
+        const reconciledFinal =
+          changedSettledFinal &&
+          !awaitingStreamFinal &&
+          this.#hasNewSettledFinal(agent.id, refreshed?.compactHistory, cached?.compactHistory);
         if (
           (prior && prior.agentStatus !== agent.agentStatus) ||
           (!prior && agent.agentStatus === "blocked") ||
@@ -569,10 +574,18 @@ export class AgentIndexService {
     const from = recovered ? "unknown" : previous.agentStatus;
     const to = parseAgentStatus(event.agent_status);
     const current = { ...agent, agentStatus: to };
+    this.#coveredSettledFinals.delete(current.id);
+    const identityChanged = !sameIdentity(previous, current);
     const refreshed = await this.#context.refreshAgent({
       agent: current,
-      identityChanged: !sameIdentity(previous, current),
+      identityChanged,
+      deferPersist: true,
     });
+    const reconciledFinal =
+      !identityChanged &&
+      isSettled(from) &&
+      isSettled(to) &&
+      this.#hasNewSettledFinal(current.id, refreshed.snapshot.compactHistory, previousHistory);
     const scopes = new Map<string, AgentScope>();
     for (const scope of recovered?.contextChangedScopes ?? []) addScope(scopes, scope);
     if (refreshed.changed || from !== to) addScope(scopes, scopeOf(current));
@@ -591,6 +604,7 @@ export class AgentIndexService {
           compactHistory: refreshed.snapshot.compactHistory,
           evidence: event,
           from,
+          reconciledFinal,
           socketPath: input.socketPath,
           to,
         },
@@ -599,6 +613,7 @@ export class AgentIndexService {
       );
       if (statusEvent) events.push(statusEvent);
     }
+    if (refreshed.changed) this.#context.persistSnapshot(refreshed.snapshot);
     return { contextChangedScopes: sortedScopes(scopes), events, pendingStatuses };
   }
 
@@ -655,6 +670,22 @@ export class AgentIndexService {
       }
     });
     return result;
+  }
+
+  #hasNewSettledFinal(
+    agentId: string,
+    history: CompactAgentHistory | undefined,
+    previous: CompactAgentHistory | undefined,
+  ): boolean {
+    const ref = history?.lastAssistantMessage?.ref;
+    return Boolean(
+      ref &&
+        ref !== previous?.lastAssistantMessage?.ref &&
+        ref !==
+          this.#stores.agentEvents.findPriorSettledEvent(agentId, Number.MAX_SAFE_INTEGER)
+            ?.compactHistory?.lastAssistantMessage?.ref &&
+        !historyNeedsRetry(history, previous, Date.now(), null),
+    );
   }
 
   #recordStatus(
@@ -763,7 +794,15 @@ export class AgentIndexService {
               pending.previousSettledRef,
             )
           ) {
-            compactHistory = { ...compactHistory, lastAssistantMessage: null };
+            const priorSettled = this.#stores.agentEvents.findPriorSettledEvent(
+              pending.agent.id,
+              Number.MAX_SAFE_INTEGER,
+            )?.compactHistory;
+            // Preserve a proven repeated turn's reference for projection dedup.
+            // A newer user with an unflushed final still gets honest empty text.
+            if (!sameRecordedTurn(compactHistory, priorSettled)) {
+              compactHistory = { ...compactHistory, lastAssistantMessage: null };
+            }
           }
           const persistStatus =
             current?.id === pending.agent.id &&
@@ -904,6 +943,18 @@ function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T> {
     timer = setTimeout(() => reject(new Error("screen read deadline")), ms);
   });
   return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
+}
+
+function sameRecordedTurn(
+  history: CompactAgentHistory,
+  prior: CompactAgentHistory | null | undefined,
+): boolean {
+  const ref = history.lastAssistantMessage?.ref;
+  return Boolean(
+    ref &&
+      ref === prior?.lastAssistantMessage?.ref &&
+      history.lastUserMessage?.ref === prior?.lastUserMessage?.ref,
+  );
 }
 
 function historyNeedsRetry(
