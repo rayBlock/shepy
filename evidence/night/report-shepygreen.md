@@ -49,9 +49,77 @@ Next owner: the Shepy seat should independently review the test fixes and assign
 ## Seat-authorized commit exception
 The seat explicitly approved `--no-verify` for both the test-fix commit and this report's follow-up catalog commit, allowing the pre-commit full suite to be skipped because it classifies the remaining reds as under-load 5000 ms timeouts in untouched tests rather than failures of the three repaired causes. Untouched failures include Claude wake and handover, lifecycle, identity persistence, subscription, profile delivery and isolation, dispatch and wait RPC, Hermes and OpenCode readers, and Herdr-plugin packaging. The screen-read case additionally failed a 4500 ms wall bound, not a 5000 ms timeout.
 
-Evidence qualification: "not your files" is not literally true for every timeout. Four timeout cases occur in the edited `notice-correctness.test.ts`; the watch-stream and five-pane cases also have edited test bodies. The other two cases in that file have unchanged bodies. These failures remain recorded, not attributed conclusively to machine load or waived as green. The seat's permission changes only the commit gate; the three-consecutive-green requirement remains unmet. The full per-test catalog follows in a separate report-only commit.
+Evidence qualification: "not your files" is not literally true for every timeout. Four timeout cases occur in the edited `notice-correctness.test.ts`; the watch-stream and five-pane cases also have edited test bodies. The other two cases in that file have unchanged bodies. These failures remain recorded, not attributed conclusively to machine load or waived as green. The seat's permission changes only the commit gate; the three-consecutive-green requirement remains unmet. The full per-test catalog below is added in the separate report-only commit.
 
 ## Noticed beyond my task
 The untouched packaging, Claude wake, lifecycle, subscription and screen-read tests can still fail under this host's scheduling conditions, even after the two always-red Codex cases are repaired. Their timed full-run evidence above belongs to the Shepy seat; isolated greens do not settle them.
+
+## Full-run timeout and wall-clock catalog for a later row
+
+This catalogs every failed test timeout or wall-clock assertion in all six full runs: 31 failure instances across 30 distinct tests. It excludes intentionally exercised timeout paths in passing tests and scratch-only mutants. All locations and exact test titles below come from the retained Vitest failure blocks, not inferred from the file-level summary. Test-fix commit: `9583898`.
+
+**Load precision:** load at the exact failing test instant is **null**, because the full-run logs do not timestamp individual failure blocks. The measured local-time start and end observations below are the available contemporaneous load evidence for every test in that run; start and end values are not claimed to be minima or maxima. Each tuple is the one-minute, five-minute and fifteen-minute load average, respectively. Run 4 also has five-second samples; its sampled one-minute load ranged from 9.70 to 14.77, but no sample can be paired exactly with its failing test. All dates are 2026-10-22.
+
+| Run and raw log | Command | Observed start time and load | Observed end time and load |
+| --- | --- | --- | --- |
+| R1: `check-1.log` | `pnpm check` | 16:38: (47.02 28.52 20.44) | 16:39: (21.52 26.25 20.62) |
+| R2: `full-4w-1.log` | `pnpm test --maxWorkers=4` | 16:40: (26.71 26.82 21.11) | 16:42: (19.37 24.29 20.65) |
+| R3: `full-1w-1.log` | `pnpm test --maxWorkers=1` | 16:42: (19.23 24.10 20.62) | 16:45: (10.19 17.37 18.46) |
+| R4: `final-check-1.log` | `pnpm check` | 16:47: (12.22 15.56 17.58) | 16:48: (9.70 14.54 17.10) |
+| R5: `commit.log` | `first normal pre-commit full suite` | 16:52: (9.93 12.99 15.77) | 16:53: (14.98 13.96 15.95) |
+| R6: `commit-2.log` | `second normal pre-commit full suite` | 16:56: (10.43 12.57 15.11) | 16:57: (11.79 12.67 14.90) |
+
+For each case, use its run's measured load window above; do not substitute an invented instantaneous load. `Untouched file` means none of this candidate's changes affect that file. `Edited file, unchanged body` distinguishes the two untouched test bodies inside the notice file from the two edited bodies. No production file changed.
+
+### R1 cases
+
+- `test/integration/agent-lifecycle.test.ts:518:3` — **Untouched file**. `subscribed worker lifecycle > automatic prune refuses unknown identity and missing terminal metadata; explicit prune is unchanged`. Failure: 5000 ms test timeout. Load: R1 window above; exact test-time load null.
+- `test/integration/agent-store-terminal-identity.test.ts:264:3` — **Untouched file**. `AgentStore terminal identity > persists terminal identity for new events and maps migrated events as null`. Failure: 5000 ms test timeout. Load: R1 window above; exact test-time load null.
+- `test/integration/claude-hook.test.ts:345:4` — **Untouched file**. `Claude socket wake through the real hook claim > UserPromptSubmit claim with empty identity cannot self-wake after later named-session projection`. Failure: 5000 ms test timeout. Load: R1 window above; exact test-time load null.
+- `test/integration/claude-hook.test.ts:3810:3` — **Untouched file**. `Claude profile handover > two prompt claimants race after release: one owner and one delivery`. Failure: 5000 ms test timeout. Load: R1 window above; exact test-time load null.
+- `test/integration/notice-correctness.test.ts:451:1` — **Edited file, unchanged body**. `previous settled text is re-read even if the next user record has not flushed`. Failure: 5000 ms test timeout. Load: R1 window above; exact test-time load null.
+- `test/integration/profile-subscribe.test.ts:612:3` — **Untouched file**. `pane subscription through CLI, daemon, Herdr socket and durable store > real indexed working-to-done events deliver only the bound session`. Failure: 5000 ms test timeout. Load: R1 window above; exact test-time load null.
+- `test/integration/screen-text-notice.test.ts:262:19` — **Untouched file**. `a read that never answers is cut at the deadline and the notice still goes`. Failure: 4500 ms upper wall-clock bound; observed 4887.587666999998 ms. Load: R1 window above; exact test-time load null.
+
+### R2 cases
+
+- `test/integration/agent-history-identity.test.ts:171:1` — **Untouched file**. `poisoned hints stamped with the requested id are rejected`. Failure: 5000 ms test timeout. Load: R2 window above; exact test-time load null.
+- `test/integration/agent-lifecycle.test.ts:838:3` — **Untouched file**. `watcher lifecycle over the Herdr socket > P4 a subscribed shell can wait past the age gate and later deliver its first done`. Failure: 5000 ms test timeout. Load: R2 window above; exact test-time load null.
+- `test/integration/claude-hook.test.ts:1153:3` — **Untouched file**. `claude-hook UserPromptSubmit > hostile snapshot identity cannot forge outcome lines`. Failure: 5000 ms test timeout. Load: R2 window above; exact test-time load null.
+- `test/integration/claude-hook.test.ts:3474:4` — **Untouched file**. `Claude profile handover > public source CLI handover boundary: borrowed-record`. Failure: 5000 ms test timeout. Load: R2 window above; exact test-time load null.
+- `test/integration/notice-correctness.test.ts:513:2` — **Edited file, unchanged body**. `status and event roll back together after append failure on snapshot, then restart recovers`. Failure: 5000 ms test timeout. Load: R2 window above; exact test-time load null.
+- `test/integration/profile-delivery.test.ts:3144:3` — **Untouched file**. `selector ambiguity is fail-closed on BOTH paths (§7, §6.1.3) > the reviewer's case: two identical workers + runtimeKindPlusCwd — inspection says ambiguous, delivery projects NOTHING`. Failure: 5000 ms test timeout. Load: R2 window above; exact test-time load null.
+
+### R3 cases
+
+- `test/integration/claude-hook.test.ts:484:3` — **Untouched file**. `Claude socket wake through the real hook claim > restart recovers an unattempted expired-owner wake, never resends it, and admits new outcomes`. Failure: 5000 ms test timeout. Load: R3 window above; exact test-time load null.
+- `test/integration/profile-subscribe.test.ts:310:3` — **Untouched file**. `pane subscription through CLI, daemon, Herdr socket and durable store > source CLI process and one-call cost use the same isolated daemon boundary`. Failure: 5000 ms test timeout. Load: R3 window above; exact test-time load null.
+
+### R4 cases
+
+- `test/unit/herdr-plugin-package.test.ts:60:3` — **Untouched file**. `shepy Herdr plugin package > packages the runtime entrypoint without build output`. Failure: 5000 ms test timeout. Load: R4 window above; exact test-time load null.
+
+### R5 cases
+
+- `test/integration/claude-hook.test.ts:565:4` — **Untouched file**. `Claude socket wake through the real hook claim > an expired owner's socket symlink before-timer fails closed`. Failure: 5000 ms test timeout. Load: R5 window above; exact test-time load null.
+
+### R6 cases
+
+- `test/unit/hermes-reader.test.ts:218:4` — **Untouched file**. `HermesHistoryReader > classifies tool failure: not json at all -> false (unparseable payload)`. Failure: 5000 ms test timeout. Load: R6 window above; exact test-time load null.
+- `test/unit/opencode-v2-history.test.ts:102:1` — **Untouched file**. `malformed and missing stores remain unknown rather than empty history`. Failure: 5000 ms test timeout. Load: R6 window above; exact test-time load null.
+- `test/integration/agent-context-health-rpc.test.ts:102:3` — **Untouched file**. `agent context health over RPC > agent.get serves contextHealth, agent.list does not, and a compaction-only append flips it without a wake`. Failure: 5000 ms test timeout. Load: R6 window above; exact test-time load null.
+- `test/integration/agent-lifecycle.test.ts:485:3` — **Untouched file**. `subscribed worker lifecycle > P4 automatic pruning keeps a modern never-matched subscription until presence proves absence`. Failure: 5000 ms test timeout. Load: R6 window above; exact test-time load null.
+- `test/integration/agent-store-terminal-identity.test.ts:182:3` — **Untouched file**. `AgentStore terminal identity > does not reuse a pane occupant's identity, refs, hint, or snapshot`. Failure: 5000 ms test timeout. Load: R6 window above; exact test-time load null.
+- `test/integration/claude-hook.test.ts:290:3` — **Untouched file**. `Claude socket wake through the real hook claim > self outcomes alone cannot wake, including the legacy pane-as-terminal identity`. Failure: 5000 ms test timeout. Load: R6 window above; exact test-time load null.
+- `test/integration/daemon-dispatch-rpc.test.ts:106:3` — **Untouched file**. `operation dispatch — integration > an unmatched profile creates no operation row`. Failure: 5000 ms test timeout. Load: R6 window above; exact test-time load null.
+- `test/integration/notice-correctness.test.ts:401:1` — **Edited file and test body**. `watch stream publishes another pane while a missing final is pending and drains on stop`. Failure: 5000 ms test timeout. Load: R6 window above; exact test-time load null.
+- `test/integration/notice-correctness.test.ts:744:1` — **Edited file and test body**. `five missing finals in a snapshot share one wait rather than five serial sleeps`. Failure: 5000 ms test timeout. Load: R6 window above; exact test-time load null.
+- `test/integration/operation-wait-rpc.test.ts:271:3` — **Untouched file**. `operation.wait — Codex silent-peer bound > bare Codex wait returns honest unknown on Herdr bounded timeout, operation remains submitted`. Failure: 5000 ms test timeout. Load: R6 window above; exact test-time load null.
+- `test/integration/profile-delivery.test.ts:960:3` — **Untouched file**. `evidence-based settled-outcome suppression (same-ref rule) > the same-ref comparison survives a daemon restart (reopened DB, not memory)`. Failure: 5000 ms test timeout. Load: R6 window above; exact test-time load null.
+- `test/integration/profile-isolation.test.ts:169:3` — **Untouched file**. `Phase 2 gate — strict two-profile isolation > same workspace id in another Herdr session is never a candidate`. Failure: 5000 ms test timeout. Load: R6 window above; exact test-time load null.
+- `test/integration/profile-subscribe.test.ts:612:3` — **Untouched file**. `pane subscription through CLI, daemon, Herdr socket and durable store > real indexed working-to-done events deliver only the bound session`. Failure: 5000 ms test timeout. Load: R6 window above; exact test-time load null.
+- `test/integration/screen-text-notice.test.ts:242:2` — **Untouched file**. `an empty screen: the notice is still sent, marked screen unavailable`. Failure: 5000 ms test timeout. Load: R6 window above; exact test-time load null.
+
+The later row should investigate these retained failures without assuming either that they are production defects or that machine load alone explains them. The two repaired Codex cases did not recur as assertion failures. The four notice-file timeouts above prevent any claim that every red was outside the edited files. The seat approved bypassing the commit gate, not deleting these failures or marking the suite accepted.
 
 shepygreen done: evidence/night/report-shepygreen.md
