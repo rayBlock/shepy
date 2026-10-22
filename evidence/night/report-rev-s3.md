@@ -3,7 +3,7 @@
 Worker: rev-s3. Worktree: `/Users/ray/dev/shepy-wt/night-rev-s3`, branch `night/rev-s3` (base `50ca705`).
 Candidate reviewed: `night/s3` at `f698a61` (code `f13ec10`).
 
-**ACCEPT WITH FIXES.** The full review is in `evidence/night/review-S3.md`.
+**ACCEPT WITH FIXES** on the first review. **Recheck of `night/s3-main` `a2fd350` against main `f8c108d`: ACCEPT.** F1 to F3 are fixed, and the S2 and S3 behaviour is kept. Full review and recheck: `evidence/night/review-S3.md`.
 
 - F1, medium: a pending row whose terminal is gone, or a `--terminal` row created with the wrong workspace, can never bind and is never pruned, by manual prune or by S2's automatic prune. Before S3, the same row was prunable. This conflicts with the seat's S2 ruling that rows whose pane is gone are pruned.
 - F2, low: the RPC accepts a session guard supplied by the caller.

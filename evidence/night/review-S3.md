@@ -42,3 +42,29 @@ Probe sources and logs: `/private/tmp/claude-501/-Users-ray-dev-shepy-wt-night-r
 - On `d3e5169`, the conflicts in item 4 must be resolved by hand when S2 and S3 both land. Owner: whoever lands second.
 
 Next owner: the factory seat. Fix F1, or give it to S2, then recheck.
+
+## Recheck: `night/s3-main` at `a2fd350`, against main `f8c108d` (S2 landed)
+
+**ACCEPT.** F1 to F3 are fixed, and both slices' behaviour survives the conflict resolution. Candidate code tip: `d21f85a`. It contains the five S3 commits cherry-picked with `-x` onto main, including the correction `407e6c2` (from `d2d74c2`). It adds one integration fix, `d21f85a`: first binding merges into a pending row that already exists for the same terminal. The earlier tip `night/s3` at `c3dac36` was not rechecked separately. This is a directed recheck of my findings, not a fresh review.
+
+Probes (`/private/tmp/claude-501/-Users-ray-dev-shepy-wt-night-rev-s3/4df67cca-ead9-4ace-9e67-a1e2060d8e12/scratchpad/probe2/rev-s3-recheck.test.ts`, 9 of 9 passed). The automatic prune runs the daemon's real call: a refresh, then `pruneSubscriptions` with the snapshot's presence data, at now plus 3 minutes.
+- **F1 fixed.** A pending row whose pane closed before any agent appeared is refused while younger than 2 minutes, then removed by the automatic prune (P4). A pending row whose pane is still alive but has no agent yet is kept by the automatic prune, because S2's presence check protects it (P1). A row whose indexed agent has no native session yet (`matched` with `bindingState: pending`) is kept by both prunes (P2). A `--terminal` row with the wrong workspace is removed by manual prune (P7). The doubled "pending: pending:" text is gone.
+- **F2 fixed.** A caller-supplied `agentSession`, whether a session object or `null`, is refused as "Invalid RPC params" and no row is created. The schema no longer admits the field, and `observability-server.ts:834` refuses it as a second layer. Control: a bare `--terminal` subscribe stores the guard from the daemon's own observation (P5).
+- **F3 fixed, through S2's gone path.** When a worker's pane closes before its first native session, the pending row gets exactly one gone notice and is removed, also after a restart and a second refresh (P9). Control: a bound row behaves the same (P8). Negative control: another terminal's gone event does not reach a pending row (P10). The exception sits at `profile-delivery-service.ts:372-377` and applies only to `agent.gone` on the exact same terminal. Scoped resolution against the frozen prior agents still applies.
+- The replacement session is still refused after a bind and a restart, with no notice (P6).
+
+Conflict resolution: `git diff f8c108d a2fd350` changes no S2 test. S2's prune rules are intact in `profile-service.ts:184-262`: legacy rows age out, and modern unmatched rows need the terminal or pane to be absent from a healthy snapshot. S3 only adds its own resolution kinds next to them. The index callbacks `onAgentGone`, `onAgentsMoved` and `onAgentsObserved` are all wired in `service.ts:132-139`. S2's `agent-lifecycle.test.ts` passed 30 of 30, three times each on base and candidate in isolation.
+
+Checks. All runs used a fresh HOME and TMPDIR, with the three Claude variables unset.
+- `tsc --noEmit`: exit 0, 5.9 s.
+- S2 and S3 test files plus the delivery, migration and hook files: 8 files run in parallel, 354 passed and 2 failed, 75 s.
+  - S2's `agent-lifecycle` P4 failed once in this run and passed 6 of 6 when run alone (3 each on base and candidate). Likely cause, not proven: the test fixes `now` at its start with a 1-second margin, so a slow parallel run makes the second row look younger than 2 minutes. This is test fragility, not an S3 defect.
+  - The other failure was a `claude-hook` timeout; base also had `claude-hook` failures in its full-suite run.
+- Full suite: `node scripts/run-tests.mjs` under `lockf -k /private/tmp/agent-factory-full-gate.lock`, back to back in one hold that started at 02:45 (load 8.5 for the candidate, 6.2 for base). Candidate: 1211 passed and 40 failed in 89 s. Base `f8c108d`: 1171 passed and 41 failed in 95 s. Both share the same 37 environmental failures (35 demand-validation "fixture source pairing mismatch", 1 codex `agent.read`, 1 codex reader registration). The rest are timing failures: candidate 3 in `notice-correctness`; base 2 in `notice-correctness` and 2 in `claude-hook`. The candidate has no failure outside the base pattern.
+
+Limits, not defects:
+- Manual prune removes a pending row whose pane is still alive but has no agent, once the row is older than 2 minutes (P1 manual). The README says so, and the automatic prune keeps that row.
+- A wrong-workspace `--terminal` row is kept by the automatic prune, because the terminal exists in another workspace. That follows S2's absence rule, and manual prune removes it.
+- Not checked against live Herdr close timing or a real seat wake.
+
+Noticed beyond my task: the 1-second time margin in S2's `agent-lifecycle.test.ts:489-514` (`now: Date.now() + 121000` against a 120000 ms age) can fail under parallel load. Owner: S2 or the seat.
