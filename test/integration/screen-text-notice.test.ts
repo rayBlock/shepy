@@ -234,7 +234,7 @@ test("a done then idle change on the same turn is one notice, even if the screen
   const texts = f.notices().map((n) => n.outcome.excerpt?.text);
   expect(texts).toHaveLength(2);
   expect(texts[1]).toBe("second answer");
-});
+}, 15_000);
 
 test.each([
   ["a failed read", new Error("agent_not_found")],
@@ -261,7 +261,7 @@ test("a read that never answers is cut at the deadline and the notice still goes
   // returns, so any finite bound under the 5 s test timeout discriminates.
   expect(elapsed).toBeLessThan(4_500);
   expect(f.notices()[0]?.outcome.textSource).toBe("screen-unavailable");
-});
+}, 15_000);
 
 test("a slow read for one pane does not hold back another pane's event", async () => {
   const slow = worker("slow");
@@ -276,7 +276,7 @@ test("a slow read for one pane does not hold back another pane's event", async (
   expect(f.notices().map((n) => n.outcome.name)).toEqual(["quick"]);
   await slowDone;
   expect(f.notices().map((n) => n.outcome.name)).toEqual(["quick", "slow"]);
-});
+}, 15_000);
 
 test("a 5 MB screen with ANSI is bounded in the notice and names no shepy agent read", async () => {
   const w = worker("alpha");
@@ -335,4 +335,16 @@ test("a completion first seen by a snapshot refresh carries the screen tail too"
     ["screen", "found by the poll"],
   ]);
   expect(f.reads).toHaveLength(1);
+});
+
+test("idle then done after a screen completion is a new unseen completion and notifies", async () => {
+  const w = worker("alpha");
+  const f = await fixture([w]);
+  f.screens.set(w.pane_id, reply("first answer"));
+  await f.refresh();
+  await f.status(w, "idle");
+  expect(f.notices()).toHaveLength(1);
+  await f.status(w, "done");
+  // Exactly one more notice, not zero (the old rule) and not two.
+  expect(f.notices()).toHaveLength(2);
 });

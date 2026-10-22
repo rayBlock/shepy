@@ -1912,26 +1912,34 @@ function formatInboxGet(result: { obligation?: unknown }): string {
         attemptCount?: number;
         id: string;
         lastErrorCode?: string | null;
-        outcome?: { excerpt?: { text?: string; truncated?: boolean } | null } | null;
+        outcome?: {
+          excerpt?: { text?: string; truncated?: boolean } | null;
+          textSource?: string | null;
+        } | null;
         state: string;
       }
     | null
     | undefined;
   if (!obligation) return "Obligation not found.";
   const excerpt = obligation.outcome?.excerpt ?? null;
+  const textSource = obligation.outcome?.textSource ?? null;
+  const fromScreen = textSource === "screen" || textSource === "screen-unavailable";
   return [
     `id: ${obligation.id}`,
     `state: ${obligation.state}`,
     `event: ${obligation.agentEventId ?? "UNKNOWN"}`,
     `attempts: ${inboxAttemptCount(obligation.attemptCount)}`,
     `last_error: ${obligation.lastErrorCode ? stripControlChars(obligation.lastErrorCode) : "-"}`,
-    "excerpt:",
+    // Screen text of a kind with no history reader is not an assistant answer.
+    fromScreen ? "screen text (not an assistant answer):" : "excerpt:",
     // The whole point of the read-back: the FULL excerpt, never truncated —
     // the hook's stub deferred it precisely because the summary could not
     // carry it.
     typeof excerpt?.text === "string" && excerpt.text.length > 0
       ? stripControlChars(excerpt.text)
-      : "(no assistant message)",
+      : textSource === "screen-unavailable"
+        ? "(screen text unavailable)"
+        : "(no assistant message)",
   ].join("\n");
 }
 

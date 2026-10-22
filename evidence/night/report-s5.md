@@ -43,6 +43,14 @@ Identity: s5; branch `night/s5`; base `50ca705`; candidate = the commit containi
 3. Line 65: harness list should say the pull surface needs no reader, and that readers exist for Claude, Codex, Gemini, Hermes, OpenCode, Pi.
 `skills/orchi/SKILL.md:96-98` (in this repo): "no registered model-callable claim tool" is stale; the `shepy_profile` tool claims, releases and reports status. Replace with that sentence and drop "ask the user to enter it once".
 
+## Correction 1 (review `f861c4d`, ACCEPT WITH FIXES)
+1. `shepy inbox get` (`src/cli/shepy.ts` `formatInboxGet`): a screen excerpt now prints under `screen text (not an assistant answer):`, and a failed read prints `(screen text unavailable)` under the same label; history text still prints under `excerpt:`. Test: three cases in `test/unit/cli.test.ts`; with the label disabled, the two screen cases fail.
+2. README (line 59): I chose to correct the sentence, not to publish each completion as it finishes. It now says that on the event path a slow pane delays only its own notice, and that completions found together in one snapshot refresh are published together, so a hung read holds the others back by up to 1.75 s. Reason: bounded, rare (watcher start or restart), and publishing early would change the refresh contract that S1 relies on.
+3. Timeouts: the deadline test, the slow-read test and the done-then-idle test now have an explicit 15 s timeout.
+4. Seat decision taken: the screen-tail suppression now applies only to done to idle (`profile-delivery-service.ts`, `#sameSettledOutcomeAsPrior(event, from)`). New test: working to idle to done gives one notice at idle and exactly one more at done (a new unseen completion), two in total; with the old rule it gives one. If you meant one in total, tell me; that is the opposite behaviour.
+Side effect left as is: working, done, idle, done gives a fourth-step notice with no text, as the reviewer noted.
+Checks (env -i, fresh HOME, short TMPDIR `/private/tmp/s5c.*`): `tsc --noEmit` exit 0; Biome clean on touched files; 9 files, 536 tests pass (screen-text-notice, cli, screen-text unit, profile-delivery, notice-correctness, outcome-context unit and rpc, agent-index-service, claude-hook). No full suite run by me; the reviewer's full-suite reds (35 stale pins in the strict demand fixture, 2 Codex date fixtures, load timeouts) are not touched by this correction.
+
 ## Open for you
 1. Redaction (recommended: no rule now, keep the mark). Option: add one redaction rule for secret-shaped strings and home paths to both reader text and screen text; it changes every notice, so it is its own slice.
 

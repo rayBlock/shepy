@@ -367,7 +367,7 @@ export class ProfileDeliveryService {
     if (
       (event.type === "agent.done" || event.type === "agent.idle") &&
       (from === "done" || from === "idle") &&
-      this.#sameSettledOutcomeAsPrior(event)
+      this.#sameSettledOutcomeAsPrior(event, from)
     )
       return [];
     // Short-circuit only: an event whose agent is absent from the live
@@ -649,7 +649,7 @@ export class ProfileDeliveryService {
    * the caller delivers. The comparison reads persisted events: a daemon
    * restart re-derives it from the same rows, no in-memory dedup.
    */
-  #sameSettledOutcomeAsPrior(event: AgentEventRecord): boolean {
+  #sameSettledOutcomeAsPrior(event: AgentEventRecord, from: unknown): boolean {
     if (!this.#agentEvents || !event.agentId) return false;
     const prior = this.#agentEvents.findPriorSettledEvent(event.agentId, event.id);
     const currentRef = event.compactHistory?.lastAssistantMessage?.ref ?? null;
@@ -659,8 +659,12 @@ export class ProfileDeliveryService {
     // completion carried a screen tail; a later done/idle change with no text
     // of its own is Herdr marking the same turn seen. Screen text has no turn
     // identity to compare (a clock line would make it look new), so the
-    // working phase is the evidence of a new turn, not the screen.
+    // working phase is the evidence of a new turn, not the screen. Only
+    // done to idle is that "seen" change: idle to done is a new unseen
+    // completion and delivers.
     return (
+      from === "done" &&
+      event.type === "agent.idle" &&
       currentRef === null &&
       !event.compactHistory?.lastAssistantMessage?.text &&
       prior?.compactHistory?.screenTail != null

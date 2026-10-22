@@ -500,6 +500,37 @@ describe("shepy CLI", () => {
     expect(missing.join("\n")).toContain("Obligation not found.");
   });
 
+  test.each([
+    ["screen", { text: "prompt chrome and screen words", truncated: false }],
+    ["screen-unavailable", null],
+    ["history", { text: "assistant words", truncated: false }],
+  ] as const)("inbox get marks a %s excerpt", async (textSource, excerpt) => {
+    const output: string[] = [];
+    await runCliCommand(
+      { command: "inbox-get", id: "ob-1", json: false },
+      {
+        connect: async () => ({
+          close: () => {},
+          request: async () => ({
+            obligation: { id: "ob-1", outcome: { excerpt, textSource }, state: "pending" },
+          }),
+        }),
+        output: (line) => output.push(line),
+        socketPath: "/tmp/s.sock",
+      },
+    );
+    const text = output.join("\n");
+    const screenLabel = "screen text (not an assistant answer):";
+    if (textSource === "screen") {
+      expect(text).toContain(`${screenLabel}\nprompt chrome and screen words`);
+    } else if (textSource === "screen-unavailable") {
+      expect(text).toContain(`${screenLabel}\n(screen text unavailable)`);
+    } else {
+      expect(text).toContain("excerpt:\nassistant words");
+      expect(text).not.toContain(screenLabel);
+    }
+  });
+
   test("inbox get tolerates a partial obligation without inventing a known count", async () => {
     const output: string[] = [];
     await runCliCommand(
