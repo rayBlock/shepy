@@ -321,12 +321,62 @@ export class OrchestratorProfileStore {
       pending.value !== bound.value
     )
       return false;
-    const result = this.#sqlite
-      .prepare(
-        "update profile_subscriptions set agent_selector_json = ?, updated_at = ? where id = ? and agent_selector_json = ?",
-      )
-      .run(input.boundSelectorJson, Date.now(), input.id, input.expectedSelectorJson);
-    return result.changes > 0;
+    this.#sqlite.exec("savepoint shepy_subscription_bind");
+    try {
+      const source = this.#sqlite
+        .prepare("select * from profile_subscriptions where id = ? and agent_selector_json = ?")
+        .get(input.id, input.expectedSelectorJson) as SubscriptionRow | undefined;
+      let changed = false;
+      if (source) {
+        const duplicate = this.#sqlite
+          .prepare(
+            `select * from profile_subscriptions where profile_id = ? and herdr_session_name = ?
+           and workspace_selector_json = ? and agent_selector_json = ? and id != ?`,
+          )
+          .get(
+            source.profile_id,
+            source.herdr_session_name,
+            source.workspace_selector_json,
+            input.boundSelectorJson,
+            source.id,
+          ) as SubscriptionRow | undefined;
+        if (duplicate) {
+          // A move can bring a bound row next to a pending row for the same
+          // terminal. First bind must merge that identical destination, not
+          // wedge every future refresh on the selector uniqueness constraint.
+          this.#sqlite
+            .prepare(
+              "update delivery_obligations set subscription_id = ? where profile_id = ? and subscription_id = ?",
+            )
+            .run(duplicate.id, source.profile_id, source.id);
+          this.#sqlite
+            .prepare(
+              "update profile_subscriptions set enabled = ?, legacy = ?, created_at = ?, updated_at = ? where id = ?",
+            )
+            .run(
+              Number(Boolean(source.enabled || duplicate.enabled)),
+              Number(Boolean(source.legacy && duplicate.legacy)),
+              Math.min(source.created_at, duplicate.created_at),
+              Math.max(Date.now(), source.updated_at, duplicate.updated_at),
+              duplicate.id,
+            );
+          this.#sqlite.prepare("delete from profile_subscriptions where id = ?").run(source.id);
+          changed = true;
+        } else {
+          const result = this.#sqlite
+            .prepare(
+              "update profile_subscriptions set agent_selector_json = ?, updated_at = ? where id = ? and agent_selector_json = ?",
+            )
+            .run(input.boundSelectorJson, Date.now(), input.id, input.expectedSelectorJson);
+          changed = result.changes > 0;
+        }
+      }
+      this.#sqlite.exec("release shepy_subscription_bind");
+      return changed;
+    } catch (error) {
+      this.#sqlite.exec("rollback to shepy_subscription_bind; release shepy_subscription_bind");
+      throw error;
+    }
   }
 
   listSubscriptions(profileId: string): ProfileSubscriptionRecord[] {

@@ -112,7 +112,9 @@ async function fixture(initial: ReturnType<typeof worker>[] = [worker()]) {
                   panes: rows,
                   agents: rows.filter((row) => row.agent !== null),
                   tabs: [],
-                  workspaces: [{ workspace_id: "wA", focused: true }],
+                  workspaces: [...new Set(rows.map((row) => row.workspace_id))].map(
+                    (workspace_id) => ({ workspace_id, focused: workspace_id === "wA" }),
+                  ),
                 },
               },
             }),
@@ -167,6 +169,10 @@ async function fixture(initial: ReturnType<typeof worker>[] = [worker()]) {
     const index = new AgentIndexService({
       context,
       onAgentsObserved: (observed) => service.observeAgents(observed),
+      onAgentGone: (departure) => {
+        delivery.projectGoneAgent(departure);
+      },
+      onAgentsMoved: (moves) => delivery.moveSubscriptions(moves),
       stores: { agents, agentEvents, herdrSessions, herdrWorkspaces },
     });
     const server = new ObservabilityRpcServer({
@@ -917,6 +923,118 @@ describe("pane subscription through CLI, daemon, Herdr socket and durable store"
     expect((await f.inbox()).obligations).toHaveLength(0);
     expect(f.daemon.delivery.projectAgentEvent(append(firstSession))).toEqual(["seat"]);
     expect((await f.inbox()).obligations).toHaveLength(1);
+  });
+
+  test.each([
+    "pi",
+    "opencode",
+  ])("P9 integrated: close before native publication delivers one gone per profile (%s)", async (agent) => {
+    const f = await fixture([worker({ agent, agent_session: null })]);
+    await f.refresh();
+    await f.subscribe();
+    f.daemon.service.ensureProfile({
+      profileId: "second",
+      displayName: "second",
+      projectRoots: [],
+    });
+    await f.rpc("profile.subscribe", {
+      profileId: "second",
+      herdrSessionName: "default",
+      workspaceId: "wA",
+      agentSelector: { kind: "terminalId", value: "term_1" },
+    });
+    f.setRows([]);
+    await f.refresh();
+    const notices = (await f.inbox()).obligations;
+    expect(notices).toHaveLength(1);
+    expect(f.daemon.agentEvents.get(notices[0].agentEventId)).toMatchObject({
+      type: "agent.gone",
+      terminalId: "term_1",
+    });
+    expect((await f.show()).subscriptions).toHaveLength(0);
+    expect((await f.cli(["inbox", "list", "second"])).obligations).toHaveLength(1);
+    expect(f.daemon.profiles.listSubscriptions("second")).toHaveLength(0);
+    await f.refresh();
+    await f.restart();
+    await f.refresh();
+    expect((await f.inbox()).obligations).toHaveLength(1);
+    expect((await f.cli(["inbox", "list", "second"])).obligations).toHaveLength(1);
+  });
+
+  test("P8 integrated: closing a bound worker delivers gone and removes the guarded row", async () => {
+    const f = await fixture();
+    await f.refresh();
+    await f.subscribe();
+    f.setRows([]);
+    await f.refresh();
+    const notices = (await f.inbox()).obligations;
+    expect(notices).toHaveLength(1);
+    expect(f.daemon.agentEvents.get(notices[0].agentEventId)).toMatchObject({
+      type: "agent.gone",
+      payload: { agentSession: firstSession },
+    });
+    expect((await f.show()).subscriptions).toHaveLength(0);
+  });
+
+  test("guarded subscriptions follow a terminal across workspaces without changing its session", async () => {
+    const f = await fixture();
+    await f.refresh();
+    await f.subscribe();
+    f.setRows([worker({ pane_id: "wB:p2", workspace_id: "wB" })]);
+    await f.refresh();
+    expect((await f.show()).resolutions[0]).toMatchObject({
+      kind: "matched",
+      agent: { paneId: "wB:p2", terminalId: "term_1", workspaceId: "wB" },
+    });
+    f.finish("wB:p2");
+    expect((await f.inbox()).obligations).toHaveLength(1);
+  });
+
+  test.each([
+    false,
+    true,
+  ])("moving a bound terminal into its pending destination row binds without a uniqueness failure (raw source %s)", async (rawSource) => {
+    const f = await fixture();
+    await f.refresh();
+    if (rawSource)
+      await f.rpc("profile.subscribe", {
+        profileId: "seat",
+        herdrSessionName: "default",
+        workspaceId: "wA",
+        agentSelector: { value: "term_1", kind: "terminalId" },
+      });
+    else await f.subscribe();
+    f.finish();
+    await f.cli(["profile", "subscribe", "seat", "--workspace", "wB", "--terminal", "term_1"]);
+    expect((await f.show()).subscriptions).toHaveLength(2);
+    f.setRows([worker({ pane_id: "wB:p2", workspace_id: "wB" })]);
+    await f.refresh();
+    await f.refresh();
+    const show = await f.show();
+    expect(show.subscriptions).toHaveLength(1);
+    expect(JSON.parse(show.subscriptions[0]?.agentSelectorJson ?? "null").agentSession).toEqual(
+      firstSession,
+    );
+    expect(show.resolutions[0]?.kind).toBe("matched");
+    f.finish("wB:p2");
+    expect((await f.inbox()).obligations).toHaveLength(2);
+  });
+
+  test("re-subscribing a legacy terminal clears S2's legacy flag while adding its native guard", async () => {
+    const f = await fixture();
+    await f.refresh();
+    const old = f.daemon.profiles.addSubscription({
+      profileId: "seat",
+      herdrSessionName: "default",
+      workspaceSelectorJson: JSON.stringify({ herdrSession: "default", workspaceId: "wA" }),
+      agentSelectorJson: JSON.stringify({ kind: "terminalId", value: "term_1" }),
+    });
+    f.daemon.sqlite.prepare("update profile_subscriptions set legacy = 1 where id = ?").run(old.id);
+    await f.subscribe(["--terminal", "term_1"]);
+    const stored = (await f.show()).subscriptions;
+    expect(stored).toHaveLength(1);
+    expect(stored[0]).toMatchObject({ id: old.id, legacy: false });
+    expect(JSON.parse(stored[0]?.agentSelectorJson ?? "null").agentSession).toEqual(firstSession);
   });
 
   test("a detected agent without native identity stays pending and cannot be pruned as dead", async () => {

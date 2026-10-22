@@ -879,7 +879,8 @@ export class ObservabilityRpcServer {
     }
     if (!subscribe) return selector;
     return {
-      ...selector,
+      kind: "terminalId",
+      value: selector.value,
       agentSession: resolution.kind === "matched" ? resolution.record.agentSession : null,
     };
   }
