@@ -90,8 +90,7 @@ export class ClaudeIdleWakeService {
       // strand older unattempted rows behind that readback limit.
       .list({ profileId: owner.profileId, state: "pending", limit: -1 })
       .filter((row) => {
-        if (row.kind !== "agent" || row.agentEventId === null || attempted.has(row.id))
-          return false;
+        if (row.agentEventId === null || attempted.has(row.id)) return false;
         try {
           const event = this.#options.events.get(row.agentEventId);
           // Unresolved hook claims carry no socket capability. For admitted

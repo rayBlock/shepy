@@ -54,7 +54,7 @@ linked and failed every fresh clone.
 SHEPY_HOME, TMPDIR, XDG, socket and tool paths, under TMPDIR when the test
 sockets still fit the platform's socket path limit in UTF-8 bytes, otherwise
 under the physical `/tmp`. The suite's environment is built from scratch:
-those paths, the isolated demand-validation fixture admission, a PATH of only
+those paths, a PATH of only
 this node, the npm shipped with it and a system git, plus terminal, locale and CI
 settings. No other caller variable is passed on: no PATH entries, credentials,
 SDK, cloud or Git configuration, shell startup or loader overrides

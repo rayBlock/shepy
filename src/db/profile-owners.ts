@@ -36,7 +36,6 @@ export function isLeaseAlive(
 
 export type OwnerRow = {
   claude_messaging_socket_json: string | null;
-  accepted_source_kinds_json: string;
   claimed_at: number;
   harness_kind: string;
   harness_session_ref_json: string;
@@ -53,7 +52,6 @@ export type OwnerRow = {
 
 export type ProfileOwner = {
   claudeMessagingSocket: RegisteredClaudeMessagingSocket | null;
-  acceptedSourceKinds: ("agent" | "profile-demand")[];
   claimedAt: number;
   harnessKind: string;
   harnessSessionRefJson: string;
@@ -132,7 +130,6 @@ export class ProfileOwnerStore {
     /** Daemon-only CAS proof: Herdr confirmed this generation's terminal gone.
      * Never accepted from the public claim schema. */
     goneOwnerLeaseToken?: string;
-    acceptedSourceKinds?: ("agent" | "profile-demand")[];
     graceMs?: number;
     harnessKind: string;
     harnessSessionRefJson: string;
@@ -188,15 +185,14 @@ export class ProfileOwnerStore {
     this.#sqlite
       .prepare(
         `insert into profile_owners (profile_id, subscriber_id, harness_kind, harness_session_ref_json,
-					herdr_session_name, workspace_id, pane_id, terminal_id, lease_token, lease_expires_at, last_seen_at, claimed_at, accepted_source_kinds_json, claude_messaging_socket_json)
-				 values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+					herdr_session_name, workspace_id, pane_id, terminal_id, lease_token, lease_expires_at, last_seen_at, claimed_at, claude_messaging_socket_json)
+				 values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 				 on conflict(profile_id) do update set subscriber_id = excluded.subscriber_id,
 					harness_kind = excluded.harness_kind, harness_session_ref_json = excluded.harness_session_ref_json,
 					herdr_session_name = excluded.herdr_session_name, workspace_id = excluded.workspace_id,
 					pane_id = excluded.pane_id, terminal_id = excluded.terminal_id,
 					lease_token = excluded.lease_token, lease_expires_at = excluded.lease_expires_at,
 					last_seen_at = excluded.last_seen_at, claimed_at = excluded.claimed_at,
-                    accepted_source_kinds_json = excluded.accepted_source_kinds_json,
                     claude_messaging_socket_json = excluded.claude_messaging_socket_json`,
       )
       .run(
@@ -212,7 +208,6 @@ export class ProfileOwnerStore {
         now + leaseMs,
         now,
         now,
-        JSON.stringify(input.acceptedSourceKinds ?? ["agent"]),
         socket ? JSON.stringify(socket) : null,
       );
     const owner = this.get(input.profileId);
@@ -260,17 +255,10 @@ export class ProfileOwnerStore {
 }
 
 function toOwner(row: OwnerRow): ProfileOwner {
-  const kinds: unknown = JSON.parse(row.accepted_source_kinds_json);
-  if (
-    !Array.isArray(kinds) ||
-    !kinds.every((kind) => kind === "agent" || kind === "profile-demand")
-  )
-    throw new Error("owner:invalid-source-capability");
   return {
     claudeMessagingSocket: row.claude_messaging_socket_json
       ? parseRegisteredClaudeMessagingSocket(JSON.parse(row.claude_messaging_socket_json))
       : null,
-    acceptedSourceKinds: kinds,
     claimedAt: row.claimed_at,
     harnessKind: row.harness_kind,
     harnessSessionRefJson: row.harness_session_ref_json,

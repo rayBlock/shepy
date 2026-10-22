@@ -29,21 +29,14 @@ describe("claude-hook lapsed-recovery contention warning", () => {
 });
 
 describe("claude-hook no-subscription warning", () => {
-  test("agent-only wording is unchanged; a demand-capable pane is not told nothing can arrive", () => {
-    const agentOnly = noSubscriptionWarning({ demandCapable: false, profileId: "driffs" });
+  test("warns with the unchanged wording, within budget and on one line", () => {
+    const agentOnly = noSubscriptionWarning({ profileId: "driffs" });
     expect(agentOnly).toBe(
       "shepy: profile driffs has no enabled subscriptions; nothing can be delivered to this pane",
     );
-    const capable = noSubscriptionWarning({ demandCapable: true, profileId: "driffs" });
-    expect(capable).toContain("no enabled subscriptions");
-    expect(capable).toContain("no worker outcomes can be delivered");
-    expect(capable).toContain("profile demands still can");
-    expect(capable).not.toContain("nothing can be delivered");
-    for (const warning of [agentOnly, capable]) {
-      expect(warning.length).toBeLessThanOrEqual(SYSTEM_MESSAGE_MAX_CHARS);
-      expect(warning.split("\n")).toHaveLength(1);
-    }
-    const hostile = noSubscriptionWarning({ demandCapable: true, profileId: "driffs\nEVIL" });
+    expect(agentOnly.length).toBeLessThanOrEqual(SYSTEM_MESSAGE_MAX_CHARS);
+    expect(agentOnly.split("\n")).toHaveLength(1);
+    const hostile = noSubscriptionWarning({ profileId: "driffs\nEVIL" });
     expect(hostile.split("\n")).toHaveLength(1);
   });
 });

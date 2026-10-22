@@ -166,7 +166,6 @@ describe("pnpm test entry", () => {
       HERDR_BIN_PATH: "/tmp/herdr",
       HERDR_PANE_ID: "w1:p1",
       SHEPY_HOME: "/Users/someone/.shepy",
-      SHEPY_DEMAND_FIXTURE_ROOT: "/",
       XDG_RUNTIME_DIR: "/tmp/xdg-runtime",
       npm_config_userconfig: join(owned, "npmrc"),
       GITHUB_TOKEN: "synthetic",
@@ -185,9 +184,6 @@ describe("pnpm test entry", () => {
       "XDG_STATE_HOME",
       "PATH",
       "HERDR_SOCKET_PATH",
-      "SHEPY_DEMAND_FIXTURE_ROOT",
-      "SHEPY_DEMAND_FIXTURE_ADMISSION",
-      "SHEPY_DEMAND_FIXTURE_CLI_MODE",
     ];
     const passed = PASSTHROUGH.filter((key) => inherited[key] !== undefined);
     expect(passed.sort()).toEqual(["CI", "LANG", "TERM", "TZ"]);
@@ -195,12 +191,9 @@ describe("pnpm test entry", () => {
     expect(env.PATH).toBe(`${runtime.bin}:/usr/bin:/bin`);
     expect(env).toMatchObject({
       TERM: "xterm-256color",
-      SHEPY_DEMAND_FIXTURE_ROOT: runtime.root,
-      SHEPY_DEMAND_FIXTURE_ADMISSION: "isolated-fixture",
-      SHEPY_DEMAND_FIXTURE_CLI_MODE: "source",
       HERDR_SOCKET_PATH: runtime.socket,
     });
-    for (const key of fixed.filter((key) => key !== "PATH" && !key.startsWith("SHEPY_DEMAND"))) {
+    for (const key of fixed.filter((key) => key !== "PATH")) {
       expect(inside(env[key] ?? "/", runtime.root)).toBe(true);
     }
   });
@@ -415,15 +408,12 @@ describe("pnpm test entry", () => {
       [
         'import { appendFileSync } from "node:fs";',
         "const args = process.argv.slice(2);",
-        `appendFileSync(${JSON.stringify(record)}, JSON.stringify({ args, nodePath: process.env.NODE_PATH ?? null, admission: process.env.SHEPY_DEMAND_FIXTURE_ADMISSION ?? null, cwd: process.cwd() }) + "\\n");`,
+        `appendFileSync(${JSON.stringify(record)}, JSON.stringify({ args, nodePath: process.env.NODE_PATH ?? null, cwd: process.cwd() }) + "\\n");`,
         'if (args.includes("--die")) process.kill(process.pid, "SIGTERM");',
         'process.exit(Number(args.find((a) => a.startsWith("--exit="))?.slice(7) ?? 0));',
       ].join("\n"),
     );
-    const env = {
-      PATH: process.env.PATH ?? "",
-      SHEPY_DEMAND_FIXTURE_ADMISSION: "isolated-fixture",
-    };
+    const env = { PATH: process.env.PATH ?? "" };
     const forwarded = ["test/unit/a.test.ts", "-t", "a name with spaces", "--reporter=verbose"];
     expect(await runVitest([...forwarded, "--exit=0"], env, { entry: child, cwd: dir })).toBe(0);
     expect(await runVitest(["--exit=3"], env, { entry: child, cwd: dir })).toBe(3);
@@ -438,10 +428,5 @@ describe("pnpm test entry", () => {
       ["run", "--die"],
     ]);
     expect(runs.every((run) => run.nodePath === null && realpathSync(run.cwd) === dir)).toBe(true);
-    expect(runs.map((run) => (run as { admission?: string }).admission)).toEqual([
-      "isolated-fixture",
-      "isolated-fixture",
-      "isolated-fixture",
-    ]);
   });
 });

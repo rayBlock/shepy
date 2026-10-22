@@ -315,40 +315,8 @@ export type ProfileObligationOutcome = {
   type: string | null;
 };
 
-export type DemandSnapshot = {
-  schema: "factory.demand.v1";
-  episodeId: string;
-  activationRevision: number;
-  kind: "queue-claimable" | "continuation-missing" | "successor-escalation" | "promise-breach";
-  reasonCode: string;
-  snapshotRef: { path: string; sha256: string; selector: string };
-  markerRef: { path: string; sha256: string; selector: string };
-  dutyRef: { path: string; sha256: string; selector: string };
-  grantRef: { path: string; sha256: string; selector: string };
-};
-
-export function isDemandSnapshot(value: unknown): value is DemandSnapshot {
-  if (!value || typeof value !== "object") return false;
-  const item = value as Record<string, unknown>;
-  const ref = (value: unknown): boolean => {
-    if (!value || typeof value !== "object") return false;
-    const pointer = value as Record<string, unknown>;
-    return typeof pointer.path === "string" && typeof pointer.sha256 === "string" &&
-      /^[0-9a-f]{64}$/.test(pointer.sha256) && typeof pointer.selector === "string";
-  };
-  return item.schema === "factory.demand.v1" && typeof item.episodeId === "string" &&
-    /^[0-9a-f]{64}$/.test(item.episodeId) && Number.isSafeInteger(item.activationRevision) &&
-    typeof item.activationRevision === "number" && item.activationRevision > 0 &&
-    typeof item.kind === "string" &&
-    ["queue-claimable", "continuation-missing", "successor-escalation", "promise-breach"].includes(item.kind) &&
-    typeof item.reasonCode === "string" && ref(item.snapshotRef) && ref(item.markerRef) &&
-    ref(item.dutyRef) && ref(item.grantRef);
-}
-
-export type DemandObligationUpdate = { obligationId: string; demandEventId: string; demand: DemandSnapshot };
-
 /**
- * Consumption witness for a profile-demand wake batch, matched by obligation
+ * Consumption witness for a profile wake batch, matched by obligation
  * ids. Extracted verbatim from the owner pump's context hook: a batch is
  * witnessed only when the run's context contains the shepy-wake-context
  * message carrying exactly this batch's obligation ids — that is the only
@@ -369,15 +337,6 @@ export function wakeContextWitnessed(
       ids.length === obligationIds.length && obligationIds.every((id) => ids.includes(id))
     );
   });
-}
-
-/** Demand citations are pointers to untrusted evidence, not instructions or agent excerpts. */
-export function formatDemandObligationUpdates(updates: DemandObligationUpdate[]): string {
-  const lines = updates.map(({ obligationId, demandEventId, demand }) => {
-    const cite = (ref: DemandSnapshot["snapshotRef"]) => `${JSON.stringify(ref.path)}#sha256=${ref.sha256} (selector ${JSON.stringify(ref.selector)})`;
-    return `- ${demand.kind} · episode ${demand.episodeId} · revision ${demand.activationRevision}\n  obligation: ${obligationId} · demand event: ${demandEventId} · reason: ${demand.reasonCode}\n  snapshot: ${cite(demand.snapshotRef)}\n  marker: ${cite(demand.markerRef)}\n  duty: ${cite(demand.dutyRef)} · grant: ${cite(demand.grantRef)}`;
-  }).join("\n");
-  return `${WAKE_POLICY}\n\n[SHEPY DUTY DEMANDS]\n${lines}`;
 }
 
 export type ProfileObligationUpdate = {

@@ -20,7 +20,6 @@ export type ObligationState = "pending" | "leased" | "delivered" | "acked" | "de
 export type ObligationRow = {
   acked_at: number | null;
   agent_event_id: number | null;
-  profile_demand_event_id: string | null;
   delivery_seq: number;
   attempt_count: number;
   created_at: number;
@@ -28,7 +27,6 @@ export type ObligationRow = {
   delivered_harness_turn_id: string | null;
   delivered_owner_session_ref_json: string | null;
   id: string;
-  kind: "agent" | "demand";
   last_error_code: string | null;
   last_error_summary: string | null;
   lease_expires_at: number | null;
@@ -41,14 +39,12 @@ export type ObligationRow = {
 export type Obligation = {
   ackedAt: number | null;
   agentEventId: number | null;
-  profileDemandEventId: string | null;
   deliverySeq: number;
   attemptCount: number;
   createdAt: number;
   deliveredAt: number | null;
   deliveredHarnessTurnId: string | null;
   id: string;
-  kind: "agent" | "demand";
   lastErrorCode: string | null;
   lastErrorSummary: string | null;
   leaseExpiresAt: number | null;
@@ -183,24 +179,12 @@ export class DeliveryObligationStore {
   }
 
   /** Deliverable batch: pending rows plus expired leases, oldest first (§6.2.4/§9.3). */
-  pendingBatch(input: {
-    limit?: number;
-    now?: number;
-    profileId: string;
-    sourceKinds?: readonly ("agent" | "profile-demand")[];
-  }): Obligation[] {
+  pendingBatch(input: { limit?: number; now?: number; profileId: string }): Obligation[] {
     const now = input.now ?? Date.now();
-    const sources = input.sourceKinds ?? ["agent"];
-    if (sources.length === 0) return [];
-    const kindFilter = sources.includes("profile-demand")
-      ? sources.includes("agent")
-        ? ""
-        : "and profile_demand_event_id is not null"
-      : "and agent_event_id is not null";
     const rows = this.#sqlite
       .prepare(
         `select * from delivery_obligations
-				 where profile_id = ? ${kindFilter}
+				 where profile_id = ? and agent_event_id is not null
 				   and (state = 'pending' or ((state = 'leased' or state = 'delivered') and lease_expires_at is not null and lease_expires_at < ?))
 				 order by delivery_seq asc
 				 limit ?`,
@@ -570,14 +554,12 @@ function toObligation(row: ObligationRow): Obligation {
   return {
     ackedAt: row.acked_at,
     agentEventId: row.agent_event_id,
-    profileDemandEventId: row.profile_demand_event_id,
     deliverySeq: row.delivery_seq,
     attemptCount: row.attempt_count,
     createdAt: row.created_at,
     deliveredAt: row.delivered_at,
     deliveredHarnessTurnId: row.delivered_harness_turn_id,
     id: row.id,
-    kind: row.kind,
     lastErrorCode: row.last_error_code,
     lastErrorSummary: row.last_error_summary,
     leaseExpiresAt: row.lease_expires_at,

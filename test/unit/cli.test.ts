@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import {
   daemonStatusPayload,
   formatCliError,
@@ -1302,37 +1302,37 @@ function createFakeClient(overrides: { name?: string | null } = {}): FakeClient 
   };
 }
 
-describe("claude-hook --profile-demand opt-in parsing", () => {
-  test("without the flag the command keeps the exact agent-only shape", () => {
-    const parsed = parseCliArgs(["claude-hook", "--profile", "driffs"]);
-    expect(parsed).toEqual({ command: "claude-hook", profileId: "driffs" });
-    expect(parsed).not.toHaveProperty("profileDemand");
-  });
-
-  test("the flag opts in, in either position", () => {
-    expect(parseCliArgs(["claude-hook", "--profile", "driffs", "--profile-demand"])).toEqual({
-      command: "claude-hook",
-      profileDemand: true,
-      profileId: "driffs",
-    });
-    expect(parseCliArgs(["claude-hook", "--profile-demand", "--profile", "driffs"])).toEqual({
-      command: "claude-hook",
-      profileDemand: true,
-      profileId: "driffs",
-    });
-  });
-
-  test("the flag takes no value and never replaces the required profile", () => {
-    expect(() =>
-      parseCliArgs(["claude-hook", "--profile", "driffs", "--profile-demand", "yes"]),
-    ).toThrow("Invalid argument: yes");
-    expect(() => parseCliArgs(["claude-hook", "--profile-demand"])).toThrow("--profile");
-  });
-
-  test("help documents the flag and its agent-only fallback", () => {
-    const help = helpText("claude-hook");
-    expect(help).toContain("--profile-demand");
-    expect(help).toContain("profile-demand-v1");
-    expect(help).toContain("agent-only");
-  });
+test("claude-hook accepts and ignores the deprecated --profile-demand flag with one stderr note", () => {
+  const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+  const stdout = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+  try {
+    const control = parseCliArgs(["claude-hook", "--profile", "driffs"], {});
+    expect(control).toEqual({ command: "claude-hook", profileId: "driffs" });
+    expect(stderr).not.toHaveBeenCalled();
+    for (const args of [
+      ["--profile", "driffs", "--profile-demand"],
+      ["--profile-demand", "--profile", "driffs"],
+      ["--profile-demand", "--profile", "driffs", "--profile-demand"],
+      ["--profile-demand", "--profile-demand"],
+    ]) {
+      stderr.mockClear();
+      expect(parseCliArgs(["claude-hook", ...args], { SHEPY_PROFILE: "driffs" })).toEqual(control);
+      expect(stderr).toHaveBeenCalledExactlyOnceWith(
+        "shepy: --profile-demand is deprecated and ignored.\n",
+      );
+      expect(stdout).not.toHaveBeenCalled();
+    }
+    stderr.mockClear();
+    for (const flag of ["--profile-demandx", "--bogus", "yes"]) {
+      expect(() =>
+        parseCliArgs(["claude-hook", "--profile", "driffs", "--profile-demand", flag], {}),
+      ).toThrow(`Invalid argument: ${flag}`);
+    }
+    expect(() => parseCliArgs(["claude-hook", "--profile-demand"], {})).toThrow("--profile");
+    expect(stderr).not.toHaveBeenCalled();
+    expect(helpText("claude-hook")).not.toContain("--profile-demand");
+  } finally {
+    stderr.mockRestore();
+    stdout.mockRestore();
+  }
 });

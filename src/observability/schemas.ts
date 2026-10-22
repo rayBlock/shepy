@@ -1,20 +1,4 @@
 import { Type } from "@sinclair/typebox";
-import { demandRequestSchema } from "./profile-demand-ingress.js";
-
-export const demandLookupInputSchema = Type.Object(
-  {
-    schema: Type.Literal("factory.demand.lookup.v1"),
-    profileId: Type.String({ minLength: 1 }),
-    sourceId: Type.String({ minLength: 1 }),
-    idempotencyKey: Type.String({ minLength: 1, maxLength: 192 }),
-  },
-  { additionalProperties: false },
-);
-export const demandPublishInputSchema = demandRequestSchema;
-export const acceptedSourceKindsSchema = Type.Array(
-  Type.Union([Type.Literal("agent"), Type.Literal("profile-demand")]),
-  { minItems: 1, uniqueItems: true },
-);
 
 export const agentSessionRefSchema = Type.Object(
   {
@@ -218,7 +202,6 @@ export const profileClaimInputSchema = Type.Object(
     // waits out the lease. Identity fields are public by design and
     // authenticate nothing.
     currentLeaseToken: Type.Optional(Type.String({ minLength: 1 })),
-    acceptedSourceKinds: Type.Optional(acceptedSourceKindsSchema),
     harnessKind: Type.String({ minLength: 1 }),
     harnessSessionRefJson: Type.String({ minLength: 1 }),
     // Host location is optional ALL-OR-NONE: a standalone owner carries none
@@ -265,7 +248,6 @@ export const inboxListInputSchema = Type.Object(
 export const inboxLeaseInputSchema = Type.Object(
   {
     leaseToken: Type.String({ minLength: 1 }),
-    sourceKinds: Type.Optional(acceptedSourceKindsSchema),
     maxBatch: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
     profileId: Type.String({ minLength: 1 }),
   },

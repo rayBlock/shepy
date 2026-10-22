@@ -19,7 +19,6 @@ import {
   sameAgentSessionRef,
 } from "./contracts.js";
 import { type OutcomeContext, projectOutcomeContext } from "./outcome-context.js";
-import type { ProfileDemandService } from "./profile-demand-service.js";
 import { resolveSelectorInWorkspaceScope } from "./profile-selector-scope.js";
 import { parseAgentSelector, parseWorkspaceSelector } from "./profile-selectors.js";
 import { RpcRefusedError } from "./rpc-refused-error.js";
@@ -222,7 +221,6 @@ function outcomeTextSource(
  */
 export class ProfileDeliveryService {
   readonly #agents: AgentStore;
-  readonly #demands: ProfileDemandService | undefined;
   readonly #agentEvents: AgentEventStore | undefined;
   readonly #now: () => number;
   readonly #obligations: DeliveryObligationStore;
@@ -231,7 +229,6 @@ export class ProfileDeliveryService {
 
   constructor(options: {
     agentEvents?: AgentEventStore;
-    demands?: ProfileDemandService;
     agents: AgentStore;
     /** The clock the lease-admission fence reads when a call does not pass
      * `now` explicitly. Must be the same clock the owners store was built
@@ -242,7 +239,6 @@ export class ProfileDeliveryService {
     profiles: OrchestratorProfileStore;
   }) {
     this.#agents = options.agents;
-    this.#demands = options.demands;
     this.#agentEvents = options.agentEvents;
     this.#now = options.now ?? Date.now;
     this.#obligations = options.obligations;
@@ -544,13 +540,7 @@ export class ProfileDeliveryService {
    * is the stamp, not live ownership (inboxAck documents the
    * superseded-token decision).
    */
-  inboxLease(input: {
-    leaseToken: string;
-    maxBatch?: number;
-    now?: number;
-    profileId: string;
-    sourceKinds?: ("agent" | "profile-demand")[];
-  }) {
+  inboxLease(input: { leaseToken: string; maxBatch?: number; now?: number; profileId: string }) {
     const owner = this.#owners.get(input.profileId);
     if (!owner || owner.leaseToken !== input.leaseToken) {
       throw new InboxRefusedError(
@@ -568,44 +558,11 @@ export class ProfileDeliveryService {
       ...(input.now !== undefined ? { now: input.now } : {}),
       profileId: input.profileId,
     });
-    const kinds = input.sourceKinds ?? ["agent"];
-    if (kinds.some((kind) => !owner.acceptedSourceKinds.includes(kind)))
-      throw new InboxRefusedError(
-        "not_owner",
-        "inbox.lease refused: source capability not claimed",
-      );
-    const agentBatch = kinds.includes("agent")
-      ? this.#obligations.pendingBatch({
-          limit: input.maxBatch ?? 20,
-          ...(input.now !== undefined ? { now: input.now } : {}),
-          profileId: input.profileId,
-        })
-      : [];
-    const demandBatch: Obligation[] = [];
-    if (kinds.includes("profile-demand") && this.#demands) {
-      const active = this.#demands.events.hasActiveDemand(input.profileId);
-      for (const row of this.#obligations.pendingBatch({
-        limit: input.maxBatch ?? 20,
-        sourceKinds: ["profile-demand"],
-        ...(input.now !== undefined ? { now: input.now } : {}),
-        profileId: input.profileId,
-      })) {
-        if (active || demandBatch.length > 0) {
-          this.#demands.events.withhold(row.id, "demand:single-wake-capacity");
-        } else if (
-          row.profileDemandEventId !== null &&
-          this.#demands.evaluateLease({
-            demandEventId: row.profileDemandEventId,
-            obligationId: row.id,
-            profileId: input.profileId,
-          }).eligible
-        )
-          demandBatch.push(row);
-      }
-    }
-    const batch = [...agentBatch, ...demandBatch]
-      .sort((a, b) => a.deliverySeq - b.deliverySeq)
-      .slice(0, input.maxBatch ?? 20);
+    const batch = this.#obligations.pendingBatch({
+      limit: input.maxBatch ?? 20,
+      ...(input.now !== undefined ? { now: input.now } : {}),
+      profileId: input.profileId,
+    });
     if (batch.length === 0) return { expired: sweep.expired + sweep.deadLettered, obligations: [] };
     this.#obligations.leaseBatch({
       expiresAt: (input.now ?? Date.now()) + 2 * 60_000,
@@ -625,19 +582,10 @@ export class ProfileDeliveryService {
     // Lease fencing is untouched: enrichment is a read-only join onto the
     // already-leased rows. A missing historical event stays honest — the
     // obligation still leases, with a null snapshot and no invented source.
-    const obligations = leased.map((obligation) =>
-      obligation.profileDemandEventId !== null
-        ? {
-            ...obligation,
-            sourceKind: "profile-demand" as const,
-            outcome: null,
-            demand: this.#demands?.snapshot(obligation.profileDemandEventId) ?? null,
-          }
-        : {
-            ...this.#agentWire(obligation),
-            outcome: this.#outcomeSnapshotFor(obligation.agentEventId),
-          },
-    );
+    const obligations = leased.map((obligation) => ({
+      ...this.#agentWire(obligation),
+      outcome: this.#outcomeSnapshotFor(obligation.agentEventId),
+    }));
     return { expired: sweep.expired + sweep.deadLettered, obligations };
   }
 
@@ -719,23 +667,11 @@ export class ProfileDeliveryService {
     profileId: string;
     state?: Obligation["state"];
   }) {
-    return this.#obligations.list(input).map((obligation) =>
-      obligation.kind === "demand"
-        ? {
-            ...obligation,
-            sourceKind: "profile-demand" as const,
-            demand: obligation.profileDemandEventId
-              ? (this.#demands?.snapshot(obligation.profileDemandEventId) ?? null)
-              : null,
-            deliveredHarnessTurnId: null as null,
-            leaseToken: null as null,
-          }
-        : {
-            ...this.#agentWire(obligation),
-            deliveredHarnessTurnId: null as null,
-            leaseToken: null as null,
-          },
-    );
+    return this.#obligations.list(input).map((obligation) => ({
+      ...this.#agentWire(obligation),
+      deliveredHarnessTurnId: null as null,
+      leaseToken: null as null,
+    }));
   }
 
   /**
@@ -749,29 +685,17 @@ export class ProfileDeliveryService {
     const obligation = this.#obligations.byId(obligationId);
     if (!obligation) return null;
     return {
-      ...(obligation.kind === "demand" ? obligation : this.#agentWire(obligation)),
+      ...this.#agentWire(obligation),
       deliveredHarnessTurnId: null as null,
       leaseToken: null as null,
-      ...(obligation.profileDemandEventId !== null
-        ? {
-            sourceKind: "profile-demand" as const,
-            demand: this.#demands?.snapshot(obligation.profileDemandEventId) ?? null,
-            outcome: null,
-          }
-        : { outcome: this.#outcomeSnapshotFor(obligation.agentEventId) }),
+      outcome: this.#outcomeSnapshotFor(obligation.agentEventId),
     };
   }
 
   #agentWire(obligation: Obligation) {
-    const {
-      kind: _kind,
-      profileDemandEventId: _demandId,
-      deliverySeq: _seq,
-      ...legacy
-    } = obligation;
-    if (obligation.kind !== "agent" || obligation.agentEventId === null)
-      throw new Error("inbox:invalid-agent-obligation");
-    return { ...legacy, agentEventId: obligation.agentEventId };
+    // Legacy non-agent rows remain inspectable, but pendingBatch never leases them.
+    const { deliverySeq: _seq, ...legacy } = obligation;
+    return legacy;
   }
 
   /** Operator retire — see DeliveryObligationStore.retire. */

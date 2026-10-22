@@ -2,11 +2,9 @@
 /**
  * The supported `pnpm test` entry.
  *
- * test/integration/claude-profile-demand-validation.test.ts runs only inside an
- * explicitly admitted, physically owned runtime root, and it refuses inherited
- * loader overrides such as NODE_PATH. pnpm's generated node_modules/.bin/vitest
- * shim exports NODE_PATH, so a bare `vitest run` can never execute those strict
- * cases. This entry builds that admission instead of weakening the fixture:
+ * Tests run inside a fresh private runtime with no inherited credentials or
+ * loader overrides. Start Vitest directly, not through the pnpm shim, which
+ * exports NODE_PATH:
  *
  *  1. create a fresh physical runtime root, disjoint from the repository, with
  *     owned private HOME, SHEPY_HOME, TMPDIR, XDG, socket and tool paths.
@@ -14,8 +12,8 @@
  *     caller's physical TMPDIR only when the generated TMPDIR plus the longest
  *     test socket suffix fits the platform's socket path limit in UTF-8 bytes;
  *     otherwise under the physical /tmp, which must fit as well;
- *  2. build the child environment from scratch: the private paths, the fixture
- *     admission in source CLI mode, a PATH of exactly the trusted tools the
+ *  2. build the child environment from scratch: the private paths and a PATH
+ *     of exactly the trusted tools the
  *     suite runs (this node, the npm shipped with it, a system git) followed
  *     by /usr/bin:/bin, and a short allowlist of terminal/locale/CI controls.
  *     Nothing else is inherited: no caller PATH, credential, SDK/cloud/Git
@@ -24,9 +22,7 @@
  *  3. start the locked Vitest entry directly with node (no shim), forwarding
  *     every argument after `vitest run` unchanged and propagating its exit.
  *
- * The runtime root is retained after the run; the fixture keeps its captures.
- * The fixture itself is unchanged and still fails closed when started any
- * other way without admission or with an inherited override.
+ * The runtime root is retained after the run for inspection.
  */
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync } from "node:fs";
@@ -163,9 +159,6 @@ export function testEnvironment(inherited, runtime) {
     ...runtime.paths,
     PATH: [runtime.bin, ...SYSTEM_PATH].join(":"),
     HERDR_SOCKET_PATH: runtime.socket,
-    SHEPY_DEMAND_FIXTURE_ROOT: runtime.root,
-    SHEPY_DEMAND_FIXTURE_ADMISSION: "isolated-fixture",
-    SHEPY_DEMAND_FIXTURE_CLI_MODE: "source",
   };
 }
 

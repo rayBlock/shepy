@@ -3,8 +3,6 @@ import type { AgentEventWireRecord } from "../../packages/shepy-pi/src/daemon-cl
 import {
   AGENT_UPDATE_EXCERPT_CHARS,
   formatAgentOutcomeUpdates,
-  formatDemandObligationUpdates,
-  isDemandSnapshot,
   projectAgentOutcomes,
   WAKE_SETTLE_MS,
   wakeContextWitnessed,
@@ -158,62 +156,7 @@ describe("Pi agent wake projection", () => {
   });
 });
 
-test("demand wake renders episode and cited pointers without an invented agent excerpt", () => {
-  const ref = { path: "/private/tmp/snapshot\nspoof", sha256: "a".repeat(64), selector: "row-1" };
-  const rendered = formatDemandObligationUpdates([
-    {
-      obligationId: "obligation-1",
-      demandEventId: "demand-1",
-      demand: {
-        schema: "factory.demand.v1",
-        episodeId: "b".repeat(64),
-        activationRevision: 1,
-        kind: "queue-claimable",
-        reasonCode: "owned-ready-capacity",
-        snapshotRef: ref,
-        markerRef: ref,
-        dutyRef: ref,
-        grantRef: ref,
-      },
-    },
-  ]);
-  expect(rendered).toContain("[SHEPY DUTY DEMANDS]");
-  expect(rendered).toContain("obligation-1");
-  expect(rendered).not.toContain("shepy agent read unknown");
-  expect(rendered).not.toContain("snapshot\nspoof");
-  expect(isDemandSnapshot({ schema: "factory.demand.v1", episodeId: "b".repeat(64) })).toBe(false);
-});
-
-describe("promise-breach consumer wiring", () => {
-  const ref = { path: "/private/tmp/receipt.json", sha256: "a".repeat(64), selector: "root" };
-  const breachSnapshot = {
-    schema: "factory.demand.v1" as const,
-    episodeId: "c".repeat(64),
-    activationRevision: 1,
-    kind: "promise-breach" as const,
-    reasonCode: "expired-immutable-deadline",
-    snapshotRef: ref,
-    markerRef: ref,
-    dutyRef: ref,
-    grantRef: ref,
-  };
-
-  test("leases a promise-breach snapshot through the demand gate", () => {
-    expect(isDemandSnapshot(breachSnapshot)).toBe(true);
-    expect(isDemandSnapshot({ ...breachSnapshot, kind: "driver-dead" })).toBe(false);
-    expect(isDemandSnapshot({ ...breachSnapshot, episodeId: "short" })).toBe(false);
-  });
-
-  test("renders the breach kind, reason and cited receipts without agent excerpts", () => {
-    const rendered = formatDemandObligationUpdates([
-      { obligationId: "obligation-2", demandEventId: "demand-2", demand: breachSnapshot },
-    ]);
-    expect(rendered).toContain("promise-breach");
-    expect(rendered).toContain("expired-immutable-deadline");
-    expect(rendered).toContain("receipt.json");
-    expect(rendered).not.toContain("shepy agent read unknown");
-  });
-
+describe("profile wake consumption witness", () => {
   test("witnesses only the exact obligation-id batch in the run context", () => {
     const ids = ["obligation-2"];
     const wakeMessage = {

@@ -18,19 +18,16 @@ import { HerdrSessionStore } from "@/db/herdr-sessions.js";
 import { HerdrWorkspaceStore } from "@/db/herdr-workspaces.js";
 import { OperationStore } from "@/db/operations.js";
 import { OrchestratorProfileStore } from "@/db/orchestrator-profiles.js";
-import { DemandEventStore } from "@/db/profile-demand-events.js";
 import { ProfileOwnerStore } from "@/db/profile-owners.js";
 import { SessionAwareOrchestrationTransport } from "@/herdr/session-aware-transport.js";
 import { createHerdrSessionListRunner } from "@/herdr/session-list.js";
 import { AgentContextService } from "@/observability/agent-context-service.js";
 import { AgentIndexService } from "@/observability/agent-index-service.js";
 import { AgentOrchestratorService } from "@/observability/agent-orchestrator-service.js";
-import { DemandEligibilityProvider } from "@/observability/demand-eligibility.js";
 import { OperationDispatchService } from "@/observability/operation-dispatch-service.js";
 import { resolveDispatchTarget } from "@/observability/operation-target-resolver.js";
 import { OperationWaitService } from "@/observability/operation-wait-service.js";
 import { ProfileDeliveryService } from "@/observability/profile-delivery-service.js";
-import { ProfileDemandService } from "@/observability/profile-demand-service.js";
 import { ProfileDiagnoseService } from "@/observability/profile-diagnose-service.js";
 import { ProfileService } from "@/observability/profile-service.js";
 import { ClaudeIdleWakeService } from "./claude-idle-wake-service.js";
@@ -96,11 +93,6 @@ export async function runObservabilityDaemonService(
     profiles: orchestratorProfiles,
     wakes: new ClaudeIdleWakeStore(sqlite),
   });
-  const demandService = new ProfileDemandService(
-    new DemandEventStore(sqlite),
-    profileOwners,
-    new DemandEligibilityProvider(),
-  );
   // Upgrade fence (review F3-2): any lease stamp made by the pre-fence,
   // unfenced inbox.lease dies here, once, before the RPC surface exists —
   // rows return to pending and are re-delivered, never dropped.
@@ -108,7 +100,6 @@ export async function runObservabilityDaemonService(
   const deliveryService = new ProfileDeliveryService({
     agentEvents,
     agents,
-    demands: demandService,
     obligations,
     owners: profileOwners,
     profiles: orchestratorProfiles,
@@ -144,7 +135,6 @@ export async function runObservabilityDaemonService(
     context: daemonServices.context,
     daemonInfo,
     delivery: deliveryService,
-    demands: demandService,
     profileDiagnose: diagnoseService,
     profiles: profileService,
     operationDispatch,
