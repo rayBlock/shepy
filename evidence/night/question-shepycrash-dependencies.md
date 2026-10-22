@@ -1,6 +1,6 @@
 # SHEPYCRASH dependency prerequisite
 
-Resolved: the seat explicitly authorized removing only this worktree's symlink and running `cp -cR /Users/ray/dev/shepy-wt/socket-test-flake-20261020/node_modules ./node_modules`. Applied without download, package-manager install or mutation of the shared target. Full checks now use `/private/tmp/shepy-full-suite.lock` below load 30.
+Resolved: the seat explicitly authorized removing only this worktree's symlink and running `cp -cR /Users/ray/dev/shepy-wt/socket-test-flake-20261020/node_modules ./node_modules`. Applied without download, package-manager install or mutation of the shared target. The subsequent correction uses `/private/tmp/shepy-full-suite.lock` with full-suite starts below load 15.
 
 The implementation, targeted behaviour tests, built-CLI fixture proof, typecheck, build and root package check pass. The supported test runner refuses the reused `node_modules` symlink because Vitest resolves outside this worktree (`scripts/run-tests.mjs: resolveVitest`). Normal commit hooks call that runner, so committing without resolving this prerequisite would fail; no hook bypass is proposed.
 
