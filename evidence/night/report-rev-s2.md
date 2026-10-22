@@ -34,3 +34,41 @@ Next owner: S2 builder for F1 to F4, then a recheck. Seat for F5.
 ## Noticed beyond my task
 - The socket fixture's `until()` has a fixed 2 s deadline (`agent-lifecycle.test.ts`), and testTimeout does not cover it. It will flake in the shared gate under load. Owner: S2 builder.
 - `agent_events` has no index on `agent_id`, so each gone scans the whole table inside the transaction (`agent-events.ts:151`). The builder noted this too. Owner: seat, for a retention decision.
+
+## Recheck of correction dd879f2 (2026-10-22)
+Directed recheck of my own findings, not blind discovery. Candidate: `night/s2` at `dd879f2` (one commit on `d3e5169`, 17 files, diff read in full). Seat rulings checked: gone gets its own line, and F5 prunes only legacy rows or rows whose pane is absent from a complete healthy snapshot.
+
+**ACCEPT.** All five findings and the fixture deadline are fixed. My original probes now pass, and the new failures in the full suite are not caused by S2.
+
+- F1 fixed: a Claude seat now reads `- builder gone (pi, w1:p1)`, without "done" and without an excerpt (P6).
+- F2 fixed: the duplicate destination now merges into one row, and repeated refreshes succeed (P7b, 4 of 4).
+- F3 fixed: an `agent: null` launch-pending entry no longer blocks a real close in the same snapshot (P1 gives one gone).
+- F4 fixed: in a pane-id shift and in a swap, each subscription keeps its own terminal (P2, P2b).
+- F5 fixed as ruled. A new terminal row whose shell pane exists but has no agent yet is kept past 2 minutes, and its later done is delivered (P4a). A new row whose terminal is absent from a healthy snapshot is pruned, while a new name row is kept (P4b). A new row is never pruned without presence data, and a legacy row is pruned (P4c).
+- Fixture deadline fixed: `until()` now waits on Vitest's test signal (`agent-lifecycle.test.ts:691`), so the test timeout governs it and there is no separate 2 s limit. The lifecycle file passed 30 of 30 in each of 3 runs (4 to 6 s).
+- P3 and P5 behave as before (both were notes, not defects).
+- Note, not a defect (P8): after the F2 merge, the profile's single `name builder` row in w2 matches two workers, so it follows neither until one leaves. The base behaves the same (that workspace's name is ambiguous), so this is not a regression.
+
+### Checks (load 4 to 10, same environment as above)
+- Typecheck: exit 0. My probe file has its own type errors, so I ran it outside the candidate's tree.
+- Touched files plus S1/S4 files, 15 files: 398 of 398 passed, 21 s.
+- Full suite under `lockf`, at load 5.1 (62 s): 1171 passed and 41 failed. None of the 41 is S2's:
+  - 35 are `claude-profile-demand-validation` NOTRUN, because it needs `run-tests.mjs` admission.
+  - 1 is `run-tests.test`, which refuses the linked dependencies.
+  - 2 are Codex history tests, which also fail on the base.
+  - 1 is the `herdr-plugin-package` `npm pack` 5 s timeout. The base also failed it in 2 of 5 control runs.
+  - 2 are notice-correctness wall-clock limits (463 and 533 ms against 450).
+- Notice-correctness timing: run alone, the retry test passed 6 of 6 on both versions. Whole-file runs, alternating: base failed 2 of 5, candidate 4 of 5. A different test failed each run, including a 4.9 s stall on the base. Other heavy processes were running on the host (a node at 160% CPU, fseventsd at 100%). I count this as load, not a slowdown. The candidate failed more often in my samples, but I found no S2 code on these tests' status-event path that would add time. Owner: seat, for the gate's timing budget, as rev-s1 already recommended.
+
+### Cherry-picks onto dd879f2 (conflicts only)
+- S5 (`night/s5` tip is now `bbb080c`, not `a5bc4f9`; all 3 commits): no conflicts, `claude-hook.ts` included.
+- S3 (`night/s3` tip `f698a61`): `f13ec10` conflicts in 4 files, one hunk each.
+  - `README.md` (30 lines): both slices add a section.
+  - `src/db/orchestrator-profiles.ts` (86 lines): S2's `moveSubscriptions` and S3's new store code sit at the same place.
+  - `src/observability/agent-index-service.ts` (6 lines): `onAgentsMoved` against `onAgentsObserved`.
+  - `src/observability/profile-delivery-service.ts` (10 lines): imports.
+  - The other S3 commits apply. S3 adds no migration, so there is no clash with `0013`.
+- S5 then S3: the same 3 code conflicts. README resolves itself.
+- I did not judge the semantics of these conflicts. Whoever merges S3 needs to decide how S2's move and prune treat S3's new terminal-session selector.
+
+Probes: `recheck-probes.test.ts` (sha256 c48d8d53…) in the scratch folder named above. Scratch worktrees are removed.
