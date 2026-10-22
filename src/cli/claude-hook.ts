@@ -313,21 +313,18 @@ function clampSystemMessage(warnings: string[]): string | undefined {
 
 const execFileAsync = promisify(execFile);
 
-/** Herdr session metadata is hook-reported, so a nested Claude can overwrite
- * it. Inspect our real ancestors, not inherited environment or reported ids.
- * Unknown ancestry refuses too: neither a failed ps nor a depth/time bound
- * may turn into permission to take the live seat's profile. */
+/** The recorded real hook chain is hook Node directly under Claude. Only
+ * shell layers may intervene; an arbitrary runtime may itself be a renamed
+ * nested Claude. Stop at our Claude: its own ancestors do not identify us. */
 async function claudeAncestry(): Promise<
-  { kind: "clear"; claudePid?: number } | { kind: "nested" | "unknown" }
+  { kind: "clear"; claudePid: number } | { kind: "unknown" }
 > {
   const deadline = performance.now() + 1_000;
   const seen = new Set<number>();
   let pid = process.ppid;
-  let claudePid: number | undefined;
   for (let depth = 0; depth < 64; depth++) {
-    if (pid === 1) return { kind: "clear", ...(claudePid ? { claudePid } : {}) };
     const remaining = deadline - performance.now();
-    if (pid < 1 || seen.has(pid) || remaining <= 0) return { kind: "unknown" };
+    if (pid < 2 || seen.has(pid) || remaining <= 0) return { kind: "unknown" };
     seen.add(pid);
     try {
       const { stdout } = await execFileAsync("/bin/ps", ["-p", String(pid), "-o", "ppid=,comm="], {
@@ -336,12 +333,12 @@ async function claudeAncestry(): Promise<
         timeout: Math.max(1, Math.floor(remaining)),
       });
       const row = /^\s*(\d+)\s+([^\r\n]+?)\s*$/.exec(stdout);
-      if (!row?.[1] || !row[2]) return { kind: "unknown" };
+      if (!row?.[1] || !row[2] || performance.now() >= deadline) return { kind: "unknown" };
       const command = row[2];
       if (basename(command) === "claude" || /\/claude\/versions\/[^/]+$/.test(command)) {
-        if (claudePid !== undefined) return { kind: "nested" };
-        claudePid = pid;
+        return { kind: "clear", claudePid: pid };
       }
+      if (!["sh", "bash", "zsh"].includes(basename(command))) return { kind: "unknown" };
       pid = Number(row[1]);
       if (!Number.isSafeInteger(pid)) return { kind: "unknown" };
     } catch {
@@ -357,11 +354,7 @@ async function runHook(input: ClaudeHookInput, warnings: string[]): Promise<Hook
   if (payload.hook_event_name === "UserPromptSubmit" || payload.hook_event_name === "Stop") {
     const ancestry = await claudeAncestry();
     if (ancestry.kind !== "clear") {
-      process.stderr.write(
-        ancestry.kind === "nested"
-          ? "shepy: nested Claude session; profile claim skipped\n"
-          : "shepy: cannot verify Claude ancestry; profile claim skipped\n",
-      );
+      process.stderr.write("shepy: cannot verify Claude ancestry; profile claim skipped\n");
       return null;
     }
     claudePid = ancestry.claudePid;

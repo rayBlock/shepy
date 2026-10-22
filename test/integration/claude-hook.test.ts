@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
@@ -58,6 +58,26 @@ import {
   validateClaudeMessagingSocket,
 } from "@/shared/claude-messaging-socket.js";
 
+// In-process hook fixtures have no Claude parent. Supply that process-boundary
+// input here only; all real CLI subprocesses use the unmodified OS ps boundary.
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  const { promisify } = await import("node:util");
+  const realExec = promisify(actual.execFile);
+  const wrapped = (...args: Parameters<typeof actual.execFile>) => actual.execFile(...args);
+  Object.defineProperty(wrapped, promisify.custom, {
+    value: async (
+      file: string,
+      args: string[],
+      options: import("node:child_process").ExecFileOptions,
+    ) =>
+      file === "/bin/ps"
+        ? { stdout: "1 /fixture/claude\n", stderr: "" }
+        : realExec(file, args, options),
+  });
+  return { ...actual, execFile: wrapped };
+});
+
 async function crashableClaudeSession(f: Fixture, filename = "crashed.sock") {
   const directory = join(f.dir, "cc-socks");
   mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -85,10 +105,14 @@ async function crashableClaudeSession(f: Fixture, filename = "crashed.sock") {
           const message=JSON.parse(line);
           if (message.type === 'crash') { process.kill(process.pid,'SIGKILL'); return; }
           if (message.type !== 'hook') continue;
-          const args=message.nested ? ['--input-type=module','--eval',nested] : cli;
-          const hook=spawn(process.execPath,args, {
+          const wrapper=message.mode === 'renamed' ? nested.replace("process.title='claude'", "process.title='agent-x'") : nested;
+          const args=message.mode === 'nested' || message.mode === 'renamed' ? ['--input-type=module','--eval',wrapper] :
+            [...(message.preload ? ['--import',message.preload] : []), ...cli];
+          const shell=message.mode === 'shell';
+          const hook=spawn(shell ? '/bin/sh' : process.execPath,
+            shell ? ['-c','"$@"; exit $?','sh',process.execPath,...args] : args, {
             cwd:message.cwd,
-            env:{...process.env,SHEPY_HOME:message.homeDir,HERDR_PANE_ID:'w1:p1',HERDR_WORKSPACE_ID:'w1',
+            env:{...process.env,...message.environment,SHEPY_HOME:message.homeDir,HERDR_PANE_ID:'w1:p1',HERDR_WORKSPACE_ID:'w1',
               CLAUDE_CODE_MESSAGING_SOCKET:process.argv[1],CLAUDE_CODE_MESSAGING_TOKEN:'fixture-crashed-token'},
             stdio:['pipe','pipe','pipe'],
           });
@@ -150,10 +174,11 @@ async function crashableClaudeSession(f: Fixture, filename = "crashed.sock") {
     pid,
     async hook(
       payload: unknown,
-      nested = false,
+      mode: "plain" | "nested" | "renamed" | "shell" = "plain",
+      options: { preload?: string; environment?: NodeJS.ProcessEnv } = {},
     ): Promise<{ code: number; stdout: string; stderr: string }> {
       return JSON.parse(
-        await request({ type: "hook", payload, nested, cwd: repoRoot, homeDir: f.dir }),
+        await request({ type: "hook", payload, mode, ...options, cwd: repoRoot, homeDir: f.dir }),
       );
     },
     environment: {
@@ -168,6 +193,28 @@ async function crashableClaudeSession(f: Fixture, filename = "crashed.sock") {
   };
   claudeFixtures.push(fixture);
   return fixture;
+}
+
+function spawnClaudeHook(args: string[], options: { cwd?: string; env: NodeJS.ProcessEnv }) {
+  // A real immediate Claude-named fixture parent, matching the recorded hook
+  // chain. The hook subprocess itself is unmodified (unless a test preloads it).
+  return spawn(
+    process.execPath,
+    [
+      "--input-type=module",
+      "--eval",
+      `
+    import {spawn} from 'node:child_process';
+    process.title='claude';
+    const hook=spawn(process.execPath,JSON.parse(process.argv[1]),{stdio:['pipe','inherit','inherit']});
+    process.stdin.pipe(hook.stdin);
+    hook.once('close',code=>process.exit(code ?? 1));
+    hook.once('error',()=>process.exit(1));
+  `,
+      JSON.stringify(args),
+    ],
+    { ...options, detached: true, stdio: ["pipe", "pipe", "pipe"] },
+  );
 }
 
 async function fakeClaudeSocket(f: Fixture, filename = "owner.sock") {
@@ -2980,8 +3027,7 @@ describe("claude-hook owner-file cross-process durability", () => {
   ): { exit: Promise<HookChildExit>; kill: (signal: NodeJS.Signals) => boolean } {
     const stdout: string[] = [];
     const stderr: string[] = [];
-    const child = spawn(
-      process.execPath,
+    const child = spawnClaudeHook(
       [
         "--import",
         "tsx",
@@ -3004,7 +3050,6 @@ describe("claude-hook owner-file cross-process durability", () => {
           SHEPY_HOOK_TEST_WRITE_PAUSE: "",
           ...extraEnv,
         },
-        stdio: ["pipe", "pipe", "pipe"],
       },
     );
     child.stdout.setEncoding("utf8");
@@ -3015,7 +3060,7 @@ describe("claude-hook owner-file cross-process durability", () => {
     child.stdin.end();
     const exit = new Promise<HookChildExit>((resolve, reject) => {
       const timer = setTimeout(() => {
-        child.kill("SIGKILL");
+        if (child.pid) process.kill(-child.pid, "SIGKILL");
         reject(new Error(`hook child did not exit in 60s; stderr: ${stderr.join("")}`));
       }, 60_000);
       child.on("exit", (code, signal) => {
@@ -3027,7 +3072,18 @@ describe("claude-hook owner-file cross-process durability", () => {
         reject(error);
       });
     });
-    return { exit, kill: (signal) => child.kill(signal) };
+    return {
+      exit,
+      kill: (signal) => {
+        if (!child.pid || child.exitCode !== null || child.signalCode !== null) return false;
+        try {
+          process.kill(-child.pid, signal);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+    };
   }
 
   async function pollUntil(what: string, timeoutMs: number, condition: () => boolean) {
@@ -3526,56 +3582,150 @@ describe("Claude profile handover", () => {
     return requests;
   }
 
-  test("a nested Claude cannot claim, steal a live seat's pending outcome or emit model context", {
+  test.each([
+    "nested",
+    "renamed",
+    "orphan",
+  ] as const)("nested attack %s cannot steal a live seat's pending outcome", {
     timeout: 15_000,
-  }, async () => {
+  }, async (variant) => {
     const f = await openHookServer();
-    // ps observes actual parent links and OS-visible claude comm values.
-    // The same outer fixture stays alive while it launches the nested Claude.
     const seat = await crashableClaudeSession(f);
-    const invoke = (nested = false) =>
-      seat.hook(promptPayload(nested ? { session_id: "nested" } : {}), nested);
+    const orphan =
+      variant === "orphan" ? await crashableClaudeSession(f, "orphan.sock") : undefined;
+    if (orphan) {
+      const parent = spawnSync("/bin/ps", ["-p", String(orphan.pid), "-o", "ppid="], {
+        encoding: "utf8",
+        timeout: 1_000,
+      });
+      expect(parent.status).toBe(0);
+      expect(parent.stdout.trim()).toBe("1");
+    }
+    const invoke = () => seat.hook(promptPayload());
     try {
       expect(await invoke()).toMatchObject({ code: 0, stdout: "", stderr: "" });
       const owner = f.owners.get("driffs");
       if (!owner) throw new Error("fixture seat did not claim");
       const id = projectOutcome(f, "nested-attack", "only the live seat may receive this");
-      await herdrPeer(f, {
-        result: {
-          type: "pane_info",
-          pane: {
-            ...pane("t1"),
-            agent: "claude",
-            agent_session: { agent: "claude", kind: "id", source: "herdr:claude", value: "nested" },
-          },
-        },
-      });
-      const nested = await invoke(true);
-      expect(nested).toMatchObject({ code: 0, stdout: "" });
-      expect(nested.stderr.trim().split("\n")).toEqual([
-        "shepy: nested Claude session; profile claim skipped",
-      ]);
+      await herdrPeer(f, (method: string) => ({
+        result:
+          method === "pane.process_info"
+            ? foreground(seat.pid)
+            : {
+                type: "pane_info",
+                pane: {
+                  ...pane("t1"),
+                  agent: "claude",
+                  agent_session: {
+                    agent: "claude",
+                    kind: "id",
+                    source: "herdr:claude",
+                    value: "nested",
+                  },
+                },
+              },
+      }));
+      const nested = orphan
+        ? await orphan.hook(promptPayload({ session_id: "nested" }))
+        : await seat.hook(
+            promptPayload({ session_id: "nested" }),
+            variant === "renamed" ? "renamed" : "nested",
+          );
+      expect(nested.code).toBe(0);
+      if (variant === "renamed") {
+        expect(nested.stdout).toBe("");
+        expect(nested.stderr.trim()).toBe(
+          "shepy: cannot verify Claude ancestry; profile claim skipped",
+        );
+      } else expect(nested.stdout).toContain("owned by pane w1:p1");
+      expect(nested.stdout).not.toContain("only the live seat may receive this");
       expect(f.owners.get("driffs")?.leaseToken).toBe(owner.leaseToken);
       expect(f.obligations.list({ profileId: "driffs", state: "pending" })).toMatchObject([
         { agentEventId: id, attemptCount: 0 },
       ]);
-      const client = new ObservabilityRpcClient({ socketPath: f.socketPath });
-      try {
-        expect(
-          await client.request("profile.claim", {
-            ...hookClaimParams(),
-            terminalId: "t1",
-            subscriberId: "nested",
-            nestedClaude: true,
-            currentLeaseToken: owner.leaseToken,
-          }),
-        ).toMatchObject({ result: { kind: "rejected", reason: "nested_session" } });
-      } finally {
-        client.close();
+      if (variant === "nested") {
+        const client = new ObservabilityRpcClient({ socketPath: f.socketPath });
+        try {
+          expect(
+            await client.request("profile.claim", {
+              ...hookClaimParams(),
+              terminalId: "t1",
+              subscriberId: "nested",
+              nestedClaude: true,
+              currentLeaseToken: owner.leaseToken,
+            }),
+          ).toMatchObject({ result: { kind: "rejected", reason: "nested_session" } });
+        } finally {
+          client.close();
+        }
       }
       expect(f.owners.get("driffs")?.leaseToken).toBe(owner.leaseToken);
       expect((await invoke()).stdout).toContain("only the live seat may receive this");
       expect((await invoke()).stdout).toBe("");
+      expect(f.obligations.list({ profileId: "driffs", state: "acked" })).toMatchObject([
+        { agentEventId: id, attemptCount: 1 },
+      ]);
+    } finally {
+      await seat.crash();
+      await orphan?.crash();
+    }
+  });
+
+  test.each([
+    "failure",
+    "timeout",
+  ] as const)("cannot verify ancestry after ps %s leaves prompt and Stop delivery pending", {
+    timeout: 15_000,
+  }, async (mode) => {
+    const f = await openHookServer();
+    const seat = await crashableClaudeSession(f);
+    try {
+      expect(await seat.hook(promptPayload())).toMatchObject({ code: 0, stdout: "", stderr: "" });
+      const owner = f.owners.get("driffs");
+      const record = readFileSync(ownerFilePath(f), "utf8");
+      const id = projectOutcome(f, `ps-${mode}`, "waiting for verifiable parent");
+      const claims = vi.spyOn(f.delivery, "claimWithOwnerCheck");
+      const trace = join(f.dir, "ps-trace.jsonl");
+      const options = {
+        preload: join(repoRoot, "test/support/claude-ancestry-injected.mjs"),
+        environment: {
+          SHEPY_TEST_PS_MODE: mode,
+          SHEPY_TEST_PS_TRACE: trace,
+        },
+      };
+      for (const payload of [promptPayload(), stopPayload()]) {
+        const refused = await seat.hook(payload, "plain", options);
+        expect(refused).toEqual({
+          code: 0,
+          stdout: "",
+          stderr: "shepy: cannot verify Claude ancestry; profile claim skipped\n",
+        });
+      }
+      expect(claims).not.toHaveBeenCalled();
+      claims.mockRestore();
+      expect(f.owners.get("driffs")?.leaseToken).toBe(owner?.leaseToken);
+      expect(readFileSync(ownerFilePath(f), "utf8")).toBe(record);
+      expect(f.obligations.list({ profileId: "driffs", state: "pending" })).toMatchObject([
+        { agentEventId: id, attemptCount: 0 },
+      ]);
+      const attempts = readFileSync(trace, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(attempts).toHaveLength(2);
+      for (const attempt of attempts) {
+        expect(attempt.timeoutMs).toBeGreaterThan(0);
+        expect(attempt.timeoutMs).toBeLessThanOrEqual(1_000);
+        expect(attempt.killed).toBe(mode === "timeout");
+        if (mode === "timeout") expect(attempt.elapsedMs).toBeGreaterThanOrEqual(900);
+      }
+      // These environment names alone do nothing without the explicit test preload.
+      expect(
+        (await seat.hook(promptPayload(), "plain", { environment: options.environment })).stdout,
+      ).toContain("waiting for verifiable parent");
+      expect((await seat.hook(promptPayload())).stdout).not.toContain(
+        "waiting for verifiable parent",
+      );
       expect(f.obligations.list({ profileId: "driffs", state: "acked" })).toMatchObject([
         { agentEventId: id, attemptCount: 1 },
       ]);
@@ -3614,7 +3764,7 @@ describe("Claude profile handover", () => {
                 },
               },
       }));
-      const second = await replacement.hook(promptPayload({ session_id: "replacement" }));
+      const second = await replacement.hook(promptPayload({ session_id: "replacement" }), "shell");
       expect(second.stdout).toContain("pending after crash");
       expect(f.owners.get("driffs")?.subscriberId).toBe("replacement");
       expect(f.owners.get("driffs")?.leaseToken).not.toBe(old?.leaseToken);
@@ -3899,7 +4049,7 @@ describe("Claude profile handover", () => {
     messagingServers.push(server);
     f.sqlite.prepare("update herdr_sessions set socket_path = ?").run(path);
     async function cli(args: string[], sessionId = SESSION_ID, paneId = "w1:p1") {
-      const child = spawn(process.execPath, ["--import", "tsx", "src/cli/shepy.ts", ...args], {
+      const child = spawnClaudeHook(["--import", "tsx", "src/cli/shepy.ts", ...args], {
         env: {
           ...process.env,
           SHEPY_HOME: f.dir,
@@ -3908,7 +4058,6 @@ describe("Claude profile handover", () => {
           HERDR_PANE_ID: paneId,
           HERDR_WORKSPACE_ID: "w1",
         },
-        stdio: ["pipe", "pipe", "pipe"],
       });
       let stdout = "";
       let stderr = "";
@@ -4091,73 +4240,71 @@ describe("Claude profile handover", () => {
     expect(f.obligations.list({ profileId: "driffs", state: "delivered" })).toHaveLength(1);
   });
 
-  test.each([
-    "cli-error",
-    "process-events",
-    "null-exception",
-  ])("daemon %s output in the real entrypoint has ISO timestamps", {
-    timeout: 15_000,
-  }, async (mode) => {
-    const dir = mkdtempSync(join(tmpdir(), "shepy-daemon-log-"));
-    tempDirs.push(dir);
-    const bin = join(dir, "bin");
-    mkdirSync(bin);
-    writeFileSync(join(bin, "herdr"), "#!/bin/sh\nprintf '{\"sessions\":[]}\\n'\n", {
-      mode: 0o700,
-    });
-    const loader = join(dir, "process-events.mjs");
-    writeFileSync(
-      loader,
-      `process.once('message', mode => {
+  test("daemon log table timestamps CLI errors, warnings and fatal values", {
+    timeout: 30_000,
+  }, async () => {
+    for (const mode of ["cli-error", "process-events", "null-exception"] as const) {
+      const dir = mkdtempSync(join(tmpdir(), "shepy-daemon-log-"));
+      tempDirs.push(dir);
+      const bin = join(dir, "bin");
+      mkdirSync(bin);
+      writeFileSync(join(bin, "herdr"), "#!/bin/sh\nprintf '{\"sessions\":[]}\\n'\n", {
+        mode: 0o700,
+      });
+      const loader = join(dir, "process-events.mjs");
+      writeFileSync(
+        loader,
+        `process.once('message', mode => {
       process.emitWarning('fixture warning first\\nfixture warning second', {type:'FixtureWarning'});
       setImmediate(() => { if (mode === 'null-exception') throw null; throw new Error('fixture fatal first\\nfixture fatal second'); });
     });`,
-    );
-    const child = spawn(
-      process.execPath,
-      [
-        "--import",
-        "tsx",
-        ...(mode !== "cli-error" ? ["--import", loader] : []),
-        "src/cli/shepy-daemon.ts",
-        ...(mode === "cli-error" ? ["invalid-argument"] : []),
-      ],
-      {
-        env: { ...process.env, SHEPY_HOME: dir, PATH: `${bin}:${process.env.PATH}` },
-        stdio: ["ignore", "pipe", "pipe", "ipc"],
-      },
-    );
-    let stdout = "",
-      stderr = "",
-      triggered = false;
-    if (!child.stdout || !child.stderr) throw new Error("fixture daemon pipes missing");
-    child.stdout.on("data", (data) => {
-      stdout += data.toString();
-      if (mode !== "cli-error" && !triggered && stdout.includes("Shepy daemon listening")) {
-        triggered = true;
-        child.send(mode);
-      }
-    });
-    child.stderr.on("data", (data) => {
-      stderr += data.toString();
-    });
-    const code = await new Promise<number | null>((resolve, reject) => {
-      child.once("error", reject);
-      child.once("close", resolve);
-    });
-    expect(code).toBe(1);
-    const lines = (stdout + stderr).trim().split("\n");
-    for (const line of lines) expect(line).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z /);
-    if (mode === "cli-error")
-      expect(stderr).toContain("shepy-daemon does not accept CLI arguments");
-    else {
-      expect(triggered).toBe(true);
-      expect(stderr.match(/FixtureWarning: fixture warning first/g)).toHaveLength(1);
-      expect(stderr).toContain("fixture warning second");
-      if (mode === "null-exception") expect(stderr).toMatch(/Z null\n/);
+      );
+      const child = spawn(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          ...(mode !== "cli-error" ? ["--import", loader] : []),
+          "src/cli/shepy-daemon.ts",
+          ...(mode === "cli-error" ? ["invalid-argument"] : []),
+        ],
+        {
+          env: { ...process.env, SHEPY_HOME: dir, PATH: `${bin}:${process.env.PATH}` },
+          stdio: ["ignore", "pipe", "pipe", "ipc"],
+        },
+      );
+      let stdout = "",
+        stderr = "",
+        triggered = false;
+      if (!child.stdout || !child.stderr) throw new Error("fixture daemon pipes missing");
+      child.stdout.on("data", (data) => {
+        stdout += data.toString();
+        if (mode !== "cli-error" && !triggered && stdout.includes("Shepy daemon listening")) {
+          triggered = true;
+          child.send(mode);
+        }
+      });
+      child.stderr.on("data", (data) => {
+        stderr += data.toString();
+      });
+      const code = await new Promise<number | null>((resolve, reject) => {
+        child.once("error", reject);
+        child.once("close", resolve);
+      });
+      expect(code).toBe(1);
+      const lines = (stdout + stderr).trim().split("\n");
+      for (const line of lines) expect(line).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z /);
+      if (mode === "cli-error")
+        expect(stderr).toContain("shepy-daemon does not accept CLI arguments");
       else {
-        expect(stderr).toContain("Error: fixture fatal first");
-        expect(stderr).toContain("fixture fatal second");
+        expect(triggered).toBe(true);
+        expect(stderr.match(/FixtureWarning: fixture warning first/g)).toHaveLength(1);
+        expect(stderr).toContain("fixture warning second");
+        if (mode === "null-exception") expect(stderr).toMatch(/Z null\n/);
+        else {
+          expect(stderr).toContain("Error: fixture fatal first");
+          expect(stderr).toContain("fixture fatal second");
+        }
       }
     }
   });
