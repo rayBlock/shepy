@@ -592,6 +592,8 @@ export class ObservabilityRpcServer {
         const input = params as {
           claudeMessagingSocket?: { path: string; token: string };
           currentLeaseToken?: string;
+          nestedClaude?: boolean;
+          claudePid?: number;
           harnessKind: string;
           harnessSessionRefJson: string;
           herdrSessionName?: string;
@@ -601,6 +603,9 @@ export class ObservabilityRpcServer {
           terminalId?: string;
           workspaceId?: string;
         };
+        if (input.nestedClaude === true) {
+          return { result: { kind: "rejected", reason: "nested_session" } };
+        }
         const result = await this.#requireDelivery().claimWithOwnerCheck(input, async (owner) => {
           if (!owner.herdrSessionName || !owner.terminalId || !owner.paneId) return false;
           const session = this.#stores.herdrSessions.findRunningByName(owner.herdrSessionName);
@@ -617,6 +622,7 @@ export class ObservabilityRpcServer {
                   claudeReplacement: {
                     previousSessionRefJson: owner.harnessSessionRefJson,
                     subscriberId: input.subscriberId,
+                    ...(input.claudePid ? { claudePid: input.claudePid } : {}),
                   },
                 }
               : {}),

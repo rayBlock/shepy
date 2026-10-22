@@ -13,7 +13,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { createServer, type Server } from "node:net";
+import { createConnection, createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
@@ -62,42 +62,112 @@ async function crashableClaudeSession(f: Fixture, filename = "crashed.sock") {
   const directory = join(f.dir, "cc-socks");
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const path = join(directory, filename);
-  const child = spawn(
+  // The short launcher exits before any hook runs. Reparenting isolates this
+  // fixture from a reviewer who is itself Claude; detached alone would not.
+  // Control uses this private socket, and crash asks only the fixture to kill itself.
+  const source = `
+    import {createServer} from 'node:net';
+    import {chmodSync} from 'node:fs';
+    import {spawn} from 'node:child_process';
+    process.title = 'claude';
+    const cli = ['--import','tsx','src/cli/shepy.ts','claude-hook','--profile','driffs'];
+    const nested = "import {spawn} from 'node:child_process';process.title='claude';" +
+      'const hook=spawn(process.execPath,' + JSON.stringify(cli) + ",{stdio:['pipe','pipe','pipe']});" +
+      'process.stdin.pipe(hook.stdin);hook.stdout.pipe(process.stdout);hook.stderr.pipe(process.stderr);' +
+      'hook.once(\\"close\\",code=>process.exit(code ?? 1));';
+    const server = createServer(socket => {
+      socket.on('error', () => {});
+      let buffer='';
+      socket.on('data', data => {
+        buffer += data;
+        const lines=buffer.split('\\n'); buffer=lines.pop();
+        for (const line of lines) {
+          const message=JSON.parse(line);
+          if (message.type === 'crash') { process.kill(process.pid,'SIGKILL'); return; }
+          if (message.type !== 'hook') continue;
+          const args=message.nested ? ['--input-type=module','--eval',nested] : cli;
+          const hook=spawn(process.execPath,args, {
+            cwd:message.cwd,
+            env:{...process.env,SHEPY_HOME:message.homeDir,HERDR_PANE_ID:'w1:p1',HERDR_WORKSPACE_ID:'w1',
+              CLAUDE_CODE_MESSAGING_SOCKET:process.argv[1],CLAUDE_CODE_MESSAGING_TOKEN:'fixture-crashed-token'},
+            stdio:['pipe','pipe','pipe'],
+          });
+          let stdout='',stderr='';
+          hook.stdout.on('data', data => {stdout += data;});
+          hook.stderr.on('data', data => {stderr += data;});
+          hook.stdin.end(JSON.stringify(message.payload));
+          hook.once('close', code => socket.end(JSON.stringify({code,stdout,stderr})+'\\n'));
+        }
+      });
+    });
+    server.listen(process.argv[1], () => {
+      chmodSync(process.argv[1],0o600);
+      process.send(process.pid, () => process.disconnect());
+    });
+  `;
+  const launcher = spawn(
     process.execPath,
     [
       "--input-type=module",
       "--eval",
       `
-    import {createServer} from 'node:net';
-    import {chmodSync} from 'node:fs';
-    createServer().listen(process.argv[1], () => {
-      chmodSync(process.argv[1], 0o600);
-      process.send('ready');
-    });
+    import {spawn} from 'node:child_process';
+    const child=spawn(process.execPath,['--input-type=module','--eval',process.argv[1],process.argv[2]],
+      {detached:true,stdio:['ignore','ignore','ignore','ipc']});
+    child.once('message',pid=>process.stdout.write(String(pid),()=>process.exit(0)));
+    child.once('error',()=>process.exit(1));
+    child.once('exit',()=>process.exit(1));
   `,
+      source,
       path,
     ],
-    { stdio: ["ignore", "ignore", "pipe", "ipc"] },
+    { stdio: ["ignore", "pipe", "pipe"] },
   );
-  await new Promise<void>((resolve, reject) => {
-    child.once("message", () => resolve());
-    child.once("error", reject);
-    child.once("exit", () => reject(new Error("fixture Claude exited before ready")));
+  let pidText = "";
+  launcher.stdout.on("data", (data) => {
+    pidText += data;
   });
-  return {
+  const code = await new Promise<number | null>((resolve, reject) => {
+    launcher.once("error", reject);
+    launcher.once("close", resolve);
+  });
+  const pid = Number(pidText);
+  if (code !== 0 || !Number.isSafeInteger(pid) || pid < 2)
+    throw new Error("fixture Claude did not start");
+  let alive = true;
+  const request = (message: object) =>
+    new Promise<string>((resolve, reject) => {
+      let response = "";
+      const socket = createConnection(path, () => socket.write(`${JSON.stringify(message)}\n`));
+      socket.on("data", (data) => {
+        response += data;
+      });
+      socket.once("error", reject);
+      socket.once("close", () => resolve(response));
+    });
+  const fixture = {
     path,
+    pid,
+    async hook(
+      payload: unknown,
+      nested = false,
+    ): Promise<{ code: number; stdout: string; stderr: string }> {
+      return JSON.parse(
+        await request({ type: "hook", payload, nested, cwd: repoRoot, homeDir: f.dir }),
+      );
+    },
     environment: {
       CLAUDE_CODE_MESSAGING_SOCKET: path,
       CLAUDE_CODE_MESSAGING_TOKEN: "fixture-crashed-token",
     },
     async crash() {
-      if (child.signalCode || child.exitCode !== null) return;
-      await new Promise<void>((resolve) => {
-        child.once("exit", () => resolve());
-        child.kill("SIGKILL");
-      });
+      if (!alive) return;
+      await request({ type: "crash" });
+      alive = false;
     },
   };
+  claudeFixtures.push(fixture);
+  return fixture;
 }
 
 async function fakeClaudeSocket(f: Fixture, filename = "owner.sock") {
@@ -795,9 +865,11 @@ const servers: ObservabilityRpcServer[] = [];
 const openDbs: { close(): void }[] = [];
 const messagingServers: Server[] = [];
 const wakeServices: ClaudeIdleWakeService[] = [];
+const claudeFixtures: { crash(): Promise<void> }[] = [];
 
 afterEach(async () => {
   for (const service of wakeServices.splice(0)) service.close();
+  for (const fixture of claudeFixtures.splice(0)) await fixture.crash();
   await Promise.all(
     messagingServers.splice(0).map(
       (server) =>
@@ -3400,6 +3472,17 @@ describe("claude-hook owner-file cross-process durability", () => {
 
 // S4: actual hook entry, SQLite store and JSON Lines daemon boundary.
 describe("Claude profile handover", () => {
+  function foreground(pid: number) {
+    return {
+      type: "pane_process_info",
+      process_info: {
+        pane_id: "w1:p1",
+        foreground_process_group_id: pid,
+        foreground_processes: [{ pid, argv0: "claude", name: "2.1.308", argv: ["claude"] }],
+      },
+    };
+  }
+
   function pane(terminal_id: string, pane_id = "w1:p1") {
     return {
       pane_id,
@@ -3443,58 +3526,107 @@ describe("Claude profile handover", () => {
     return requests;
   }
 
-  test.each([
-    true,
-    false,
-  ])("a crashed Claude's replacement in the same pane requires reachable Herdr (%s) and consumes pending details once", async (reachable) => {
+  test("a nested Claude cannot claim, steal a live seat's pending outcome or emit model context", {
+    timeout: 15_000,
+  }, async () => {
+    const f = await openHookServer();
+    // ps observes actual parent links and OS-visible claude comm values.
+    // The same outer fixture stays alive while it launches the nested Claude.
+    const seat = await crashableClaudeSession(f);
+    const invoke = (nested = false) =>
+      seat.hook(promptPayload(nested ? { session_id: "nested" } : {}), nested);
+    try {
+      expect(await invoke()).toMatchObject({ code: 0, stdout: "", stderr: "" });
+      const owner = f.owners.get("driffs");
+      if (!owner) throw new Error("fixture seat did not claim");
+      const id = projectOutcome(f, "nested-attack", "only the live seat may receive this");
+      await herdrPeer(f, {
+        result: {
+          type: "pane_info",
+          pane: {
+            ...pane("t1"),
+            agent: "claude",
+            agent_session: { agent: "claude", kind: "id", source: "herdr:claude", value: "nested" },
+          },
+        },
+      });
+      const nested = await invoke(true);
+      expect(nested).toMatchObject({ code: 0, stdout: "" });
+      expect(nested.stderr.trim().split("\n")).toEqual([
+        "shepy: nested Claude session; profile claim skipped",
+      ]);
+      expect(f.owners.get("driffs")?.leaseToken).toBe(owner.leaseToken);
+      expect(f.obligations.list({ profileId: "driffs", state: "pending" })).toMatchObject([
+        { agentEventId: id, attemptCount: 0 },
+      ]);
+      const client = new ObservabilityRpcClient({ socketPath: f.socketPath });
+      try {
+        expect(
+          await client.request("profile.claim", {
+            ...hookClaimParams(),
+            terminalId: "t1",
+            subscriberId: "nested",
+            nestedClaude: true,
+            currentLeaseToken: owner.leaseToken,
+          }),
+        ).toMatchObject({ result: { kind: "rejected", reason: "nested_session" } });
+      } finally {
+        client.close();
+      }
+      expect(f.owners.get("driffs")?.leaseToken).toBe(owner.leaseToken);
+      expect((await invoke()).stdout).toContain("only the live seat may receive this");
+      expect((await invoke()).stdout).toBe("");
+      expect(f.obligations.list({ profileId: "driffs", state: "acked" })).toMatchObject([
+        { agentEventId: id, attemptCount: 1 },
+      ]);
+    } finally {
+      await seat.crash();
+    }
+  });
+
+  test("a crashed Claude's replacement in the same pane takes over immediately and consumes pending details once", {
+    timeout: 15_000,
+  }, async () => {
     const f = await openHookServer();
     const first = await crashableClaudeSession(f);
     const replacement = await crashableClaudeSession(f, "replacement.sock");
     try {
-      await runHook(f, promptPayload(), { environment: first.environment });
+      expect(await first.hook(promptPayload())).toMatchObject({ code: 0 });
       const old = f.owners.get("driffs");
       expect(old?.leaseExpiresAt).toBeGreaterThan(Date.now());
       await first.crash(); // No SessionEnd: owner and private socket remain recorded.
       const eventId = projectOutcome(f, "same-pane-crash", "pending after crash");
-      const requests = reachable
-        ? await herdrPeer(f, {
-            result: {
-              type: "pane_info",
-              pane: {
-                ...pane("t1"),
-                agent: "claude",
-                agent_session: {
+      const requests = await herdrPeer(f, (method: string) => ({
+        result:
+          method === "pane.process_info"
+            ? foreground(replacement.pid)
+            : {
+                type: "pane_info",
+                pane: {
+                  ...pane("t1"),
                   agent: "claude",
-                  kind: "id",
-                  source: "herdr:claude",
-                  value: "replacement",
+                  agent_session: {
+                    agent: "claude",
+                    kind: "id",
+                    source: "herdr:claude",
+                    value: "replacement",
+                  },
                 },
               },
-            },
-          })
-        : [];
-      const second = await runHook(f, promptPayload({ session_id: "replacement" }), {
-        environment: replacement.environment,
-      });
-      if (!reachable) {
-        expect(f.owners.get("driffs")?.leaseToken).toBe(old?.leaseToken);
-        expect(second.stdout).toContain("owned by pane w1:p1");
-        expect(f.obligations.list({ profileId: "driffs", state: "pending" })[0]?.attemptCount).toBe(
-          0,
-        );
-        return;
-      }
+      }));
+      const second = await replacement.hook(promptPayload({ session_id: "replacement" }));
       expect(second.stdout).toContain("pending after crash");
       expect(f.owners.get("driffs")?.subscriberId).toBe("replacement");
       expect(f.owners.get("driffs")?.leaseToken).not.toBe(old?.leaseToken);
-      expect(requests).toMatchObject([{ method: "pane.get", params: { pane_id: "w1:p1" } }]);
+      expect(requests).toMatchObject([
+        { method: "pane.get", params: { pane_id: "w1:p1" } },
+        { method: "pane.process_info", params: { pane_id: "w1:p1" } },
+      ]);
       await runHook(f, { hook_event_name: "SessionEnd", session_id: SESSION_ID });
       const oldPrompt = await runHook(f, promptPayload());
       expect(oldPrompt.stdout).not.toContain("pending after crash");
       expect(f.owners.get("driffs")?.subscriberId).toBe("replacement");
-      const again = await runHook(f, promptPayload({ session_id: "replacement" }), {
-        environment: replacement.environment,
-      });
+      const again = await replacement.hook(promptPayload({ session_id: "replacement" }));
       expect(again.stdout).not.toContain("pending after crash");
       expect(f.obligations.list({ profileId: "driffs", state: "acked" })).toMatchObject([
         { agentEventId: eventId, attemptCount: 1 },
@@ -3505,31 +3637,27 @@ describe("Claude profile handover", () => {
     }
   });
 
-  test("same-pane takeover trusts only Herdr's exact new Claude session, never claimant metadata", async () => {
-    const session = { agent: "claude", kind: "id", source: "herdr:claude", value: "replacement" };
-    const valid = { ...pane("t1"), agent: "claude", agent_session: session };
-    for (const invalid of [
-      { ...valid, terminal_id: "different" },
-      { ...valid, pane_id: "w1:other" },
-      { ...valid, agent_session: undefined },
-      { ...valid, agent_session: { ...session, value: SESSION_ID } },
-      { ...valid, agent_session: { ...session, value: "not-the-claimant" } },
-      { ...valid, agent_session: { ...session, source: "herdr:pi" } },
-      { ...valid, agent_session: { ...session, kind: "path" } },
-      { ...valid, agent: "pi" },
-    ]) {
-      const f = await openHookServer();
-      await runHook(f, promptPayload());
-      const old = f.owners.get("driffs");
-      projectOutcome(f, `invalid-${f.dir}`, "still pending");
-      await herdrPeer(f, { result: { type: "pane_info", pane: invalid } });
-      const result = await runHook(f, promptPayload({ session_id: "replacement" }));
-      expect(f.owners.get("driffs")?.leaseToken, JSON.stringify(invalid)).toBe(old?.leaseToken);
-      expect(result.stdout).not.toContain("still pending");
-      expect(f.obligations.list({ profileId: "driffs", state: "pending" })[0]?.attemptCount).toBe(
-        0,
-      );
-    }
+  const session = { agent: "claude", kind: "id", source: "herdr:claude", value: "replacement" };
+  const valid = { ...pane("t1"), agent: "claude", agent_session: session };
+  test.each([
+    ["terminal", { ...valid, terminal_id: "different" }],
+    ["pane", { ...valid, pane_id: "w1:other" }],
+    ["missing session", { ...valid, agent_session: undefined }],
+    ["old session", { ...valid, agent_session: { ...session, value: SESSION_ID } }],
+    ["another session", { ...valid, agent_session: { ...session, value: "not-the-claimant" } }],
+    ["source", { ...valid, agent_session: { ...session, source: "herdr:pi" } }],
+    ["kind", { ...valid, agent_session: { ...session, kind: "path" } }],
+    ["agent", { ...valid, agent: "pi" }],
+  ])("same-pane takeover refuses a mismatched %s from Herdr", async (_mode, invalid) => {
+    const f = await openHookServer();
+    await runHook(f, promptPayload());
+    const old = f.owners.get("driffs");
+    projectOutcome(f, `invalid-${f.dir}`, "still pending");
+    await herdrPeer(f, { result: { type: "pane_info", pane: invalid } });
+    const result = await runHook(f, promptPayload({ session_id: "replacement" }));
+    expect(f.owners.get("driffs")?.leaseToken).toBe(old?.leaseToken);
+    expect(result.stdout).not.toContain("still pending");
+    expect(f.obligations.list({ profileId: "driffs", state: "pending" })[0]?.attemptCount).toBe(0);
   });
 
   test("a refused prompt tells the model who owns it and both times, but a refused Stop never continues", async () => {
@@ -3568,7 +3696,6 @@ describe("Claude profile handover", () => {
     ["alive", { result: { type: "pane_list", panes: [pane("t1")] } }, false],
     ["gone", { result: { type: "pane_list", panes: [pane("other", "w1:other")] } }, true],
     ["owner-pane-still-live", { result: { type: "pane_list", panes: [pane("other")] } }, false],
-    ["error", { error: { code: "unavailable", message: "fixture error" } }, false],
     ["malformed", { result: {} }, false],
     ["missing-type", { result: { panes: [] } }, false],
     ["wrong-type", { result: { type: "agent_list", panes: [] } }, false],
@@ -3620,26 +3747,62 @@ describe("Claude profile handover", () => {
     "malformed-owner-session",
     "same-pane-error",
     "same-pane-timeout",
+    "foreground-mismatch",
+    "foreground-missing-pid",
+    "foreground-error",
+    "foreground-malformed",
+    "foreground-timeout",
+    "foreground-pane",
+    "foreground-ambiguous",
+    "foreground-wrapper-only",
   ])("takeover fails closed for %s", async (mode) => {
     const f = await openHookServer();
-    await runHook(f, promptPayload());
-    const token = f.owners.get("driffs")?.leaseToken;
-    if (mode === "null-terminal")
-      f.sqlite.prepare("update profile_owners set terminal_id = null").run();
-    if (mode === "other-session")
-      f.sqlite.prepare("update profile_owners set herdr_session_name = 'other-session'").run();
-    if (mode === "legacy-same-pane")
-      f.sqlite.prepare("update profile_owners set terminal_id = pane_id").run();
-    if (mode === "malformed-owner-session")
-      f.sqlite.prepare("update profile_owners set harness_session_ref_json = 'not-json'").run();
-    const requests =
-      mode === "unreachable"
-        ? []
-        : await herdrPeer(
-            f,
-            mode === "same-pane-error"
-              ? { error: { code: "unavailable", message: "fixture error" } }
-              : {
+    const crashed = mode === "unreachable" ? await crashableClaudeSession(f) : undefined;
+    try {
+      if (crashed) {
+        await crashed.hook(promptPayload());
+        await crashed.crash();
+      } else await runHook(f, promptPayload());
+      const token = f.owners.get("driffs")?.leaseToken;
+      projectOutcome(f, `refused-${mode}`, "details must remain pending");
+      if (mode === "null-terminal")
+        f.sqlite.prepare("update profile_owners set terminal_id = null").run();
+      if (mode === "other-session")
+        f.sqlite.prepare("update profile_owners set herdr_session_name = 'other-session'").run();
+      if (mode === "legacy-same-pane")
+        f.sqlite.prepare("update profile_owners set terminal_id = pane_id").run();
+      if (mode === "malformed-owner-session")
+        f.sqlite.prepare("update profile_owners set harness_session_ref_json = 'not-json'").run();
+      const requests =
+        mode === "unreachable"
+          ? []
+          : await herdrPeer(
+              f,
+              (method: string) => {
+                if (
+                  mode === "same-pane-error" ||
+                  (method === "pane.process_info" && mode === "foreground-error")
+                )
+                  return { error: { code: "unavailable", message: "fixture error" } };
+                if (method === "pane.process_info") {
+                  if (mode === "foreground-timeout") return new Promise(() => {});
+                  if (mode === "foreground-malformed") return { result: {} };
+                  const info = foreground(999);
+                  if (mode === "foreground-pane") info.process_info.pane_id = "w1:other";
+                  if (mode === "foreground-ambiguous")
+                    info.process_info.foreground_processes.push({
+                      pid: 4242,
+                      argv0: "claude",
+                      name: "claude",
+                      argv: ["claude"],
+                    });
+                  if (mode === "foreground-wrapper-only")
+                    info.process_info.foreground_processes = [
+                      { pid: 4242, argv0: "wet", name: "wet", argv: ["wet", "claude"] },
+                    ];
+                  return { result: info };
+                }
+                return {
                   result: {
                     type: "pane_info",
                     pane: {
@@ -3653,15 +3816,36 @@ describe("Claude profile handover", () => {
                       },
                     },
                   },
-                },
-            mode === "same-pane-timeout",
-          );
-    const started = performance.now();
-    await runHook(f, promptPayload({ session_id: "rival" }));
-    expect(f.owners.get("driffs")?.leaseToken).toBe(token);
-    if (mode === "same-pane-timeout") expect(performance.now() - started).toBeLessThan(2_000);
-    if (["legacy-same-pane", "malformed-owner-session"].includes(mode))
-      expect(requests).toEqual([]);
+                };
+              },
+              mode === "same-pane-timeout",
+            );
+      const started = performance.now();
+      if (mode.startsWith("foreground-")) {
+        const client = new ObservabilityRpcClient({ socketPath: f.socketPath });
+        try {
+          expect(
+            await client.request("profile.claim", {
+              ...hookClaimParams(),
+              terminalId: "t1",
+              subscriberId: "rival",
+              ...(mode === "foreground-missing-pid" ? {} : { claudePid: 4242 }),
+            }),
+          ).toMatchObject({ result: { kind: "rejected", reason: "lease_active" } });
+        } finally {
+          client.close();
+        }
+      } else await runHook(f, promptPayload({ session_id: "rival" }));
+      expect(f.owners.get("driffs")?.leaseToken).toBe(token);
+      expect(f.obligations.list({ profileId: "driffs", state: "pending" })[0]?.attemptCount).toBe(
+        0,
+      );
+      if (mode.endsWith("timeout")) expect(performance.now() - started).toBeLessThan(2_000);
+      if (["legacy-same-pane", "malformed-owner-session"].includes(mode))
+        expect(requests).toEqual([]);
+    } finally {
+      await crashed?.crash();
+    }
   });
 
   test.each([
@@ -3907,26 +4091,71 @@ describe("Claude profile handover", () => {
     expect(f.obligations.list({ profileId: "driffs", state: "delivered" })).toHaveLength(1);
   });
 
-  test("daemon errors in the real entrypoint have ISO timestamps", async () => {
+  test.each([
+    "cli-error",
+    "process-events",
+  ])("daemon %s output in the real entrypoint has ISO timestamps", {
+    timeout: 15_000,
+  }, async (mode) => {
+    const dir = mkdtempSync(join(tmpdir(), "shepy-daemon-log-"));
+    tempDirs.push(dir);
+    const bin = join(dir, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "herdr"), "#!/bin/sh\nprintf '{\"sessions\":[]}\\n'\n", {
+      mode: 0o700,
+    });
+    const loader = join(dir, "process-events.mjs");
+    writeFileSync(
+      loader,
+      `process.once('message', () => {
+      process.emitWarning('fixture warning first\\nfixture warning second', {type:'FixtureWarning'});
+      setImmediate(() => { throw new Error('fixture fatal first\\nfixture fatal second'); });
+    });`,
+    );
     const child = spawn(
       process.execPath,
-      ["--import", "tsx", "src/cli/shepy-daemon.ts", "invalid-argument"],
+      [
+        "--import",
+        "tsx",
+        ...(mode === "process-events" ? ["--import", loader] : []),
+        "src/cli/shepy-daemon.ts",
+        ...(mode === "cli-error" ? ["invalid-argument"] : []),
+      ],
       {
-        stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, SHEPY_HOME: dir, PATH: `${bin}:${process.env.PATH}` },
+        stdio: ["ignore", "pipe", "pipe", "ipc"],
       },
     );
-    let stderr = "";
+    let stdout = "",
+      stderr = "",
+      triggered = false;
+    if (!child.stdout || !child.stderr) throw new Error("fixture daemon pipes missing");
+    child.stdout.on("data", (data) => {
+      stdout += data.toString();
+      if (mode === "process-events" && !triggered && stdout.includes("Shepy daemon listening")) {
+        triggered = true;
+        child.send("emit fixture events");
+      }
+    });
     child.stderr.on("data", (data) => {
       stderr += data.toString();
     });
     const code = await new Promise<number | null>((resolve, reject) => {
       child.once("error", reject);
-      child.once("exit", resolve);
+      child.once("close", resolve);
     });
     expect(code).toBe(1);
-    expect(stderr.trim()).toMatch(
-      /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z shepy-daemon does not accept CLI arguments$/,
-    );
+    const lines = (stdout + stderr).trim().split("\n");
+    for (const line of lines) expect(line).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z /);
+    if (mode === "cli-error")
+      expect(stderr).toContain("shepy-daemon does not accept CLI arguments");
+    else {
+      expect(triggered).toBe(true);
+      expect(stderr.match(/FixtureWarning: fixture warning first/g)).toHaveLength(1);
+      expect(stderr).toContain("fixture warning second");
+      expect(stderr).toContain("Error: fixture fatal first");
+      expect(stderr).toContain("fixture fatal second");
+    }
   });
 
   test("a current-token prompt makes no additional Herdr request", async () => {
@@ -3951,30 +4180,36 @@ describe("Claude profile handover", () => {
     const checking = new Promise<void>((resolve) => {
       entered = resolve;
     });
-    await herdrPeer(
-      f,
-      () =>
-        new Promise<unknown>((resolve) => {
-          finish = resolve;
-          entered();
-        }),
-    );
-    const claim = runHook(f, promptPayload({ session_id: "rival" }));
-    await checking;
-    await runHook(f, promptPayload());
-    const fresh = f.owners.get("driffs")?.leaseToken;
-    finish({
-      result: {
-        type: "pane_info",
-        pane: {
-          ...pane("t1"),
-          agent: "claude",
-          agent_session: { agent: "claude", kind: "id", source: "herdr:claude", value: "rival" },
+    const caller = await crashableClaudeSession(f);
+    try {
+      const requests = await herdrPeer(f, (method: string) =>
+        method === "pane.process_info"
+          ? { result: foreground(caller.pid) }
+          : new Promise<unknown>((resolve) => {
+              finish = resolve;
+              entered();
+            }),
+      );
+      const claim = caller.hook(promptPayload({ session_id: "rival" }));
+      await checking;
+      await runHook(f, promptPayload());
+      const fresh = f.owners.get("driffs")?.leaseToken;
+      finish({
+        result: {
+          type: "pane_info",
+          pane: {
+            ...pane("t1"),
+            agent: "claude",
+            agent_session: { agent: "claude", kind: "id", source: "herdr:claude", value: "rival" },
+          },
         },
-      },
-    });
-    expect((await claim).stdout).toContain("owned by pane");
-    expect(f.owners.get("driffs")?.leaseToken).toBe(fresh);
+      });
+      expect((await claim).stdout).toContain("owned by pane");
+      expect(requests).toMatchObject([{ method: "pane.get" }, { method: "pane.process_info" }]);
+      expect(f.owners.get("driffs")?.leaseToken).toBe(fresh);
+    } finally {
+      await caller.crash();
+    }
   });
 
   test("the wire cannot supply the daemon's internal gone-owner proof", async () => {

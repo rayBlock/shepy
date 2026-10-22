@@ -209,6 +209,10 @@ export const profileClaimInputSchema = Type.Object(
     // waits out the lease. Identity fields are public by design and
     // authenticate nothing.
     currentLeaseToken: Type.Optional(Type.String({ minLength: 1 })),
+    // A denial signal, never authentication: declared nested claims cannot
+    // claim even with a current token or a Herdr replacement proof.
+    nestedClaude: Type.Optional(Type.Boolean()),
+    claudePid: Type.Optional(Type.Integer({ minimum: 2, maximum: Number.MAX_SAFE_INTEGER })),
     acceptedSourceKinds: Type.Optional(legacySourceKindsSchema),
     harnessKind: Type.String({ minLength: 1 }),
     harnessSessionRefJson: Type.String({ minLength: 1 }),

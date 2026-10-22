@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import { Type } from "@sinclair/typebox";
 import { Value } from "@sinclair/typebox/value";
 import { HerdrSocketClient } from "@/herdr/socket-client.js";
@@ -35,6 +36,30 @@ const claudePaneSchema = Type.Object(
   { additionalProperties: true },
 );
 
+const processInfoSchema = Type.Object(
+  {
+    type: Type.Literal("pane_process_info"),
+    process_info: Type.Object(
+      {
+        pane_id: Type.String({ minLength: 1 }),
+        foreground_process_group_id: Type.Integer({ minimum: 1 }),
+        foreground_processes: Type.Array(
+          Type.Object(
+            {
+              pid: Type.Integer({ minimum: 2, maximum: Number.MAX_SAFE_INTEGER }),
+              argv0: Type.Optional(Type.String({ minLength: 1 })),
+              name: Type.Optional(Type.String({ minLength: 1 })),
+            },
+            { additionalProperties: true },
+          ),
+        ),
+      },
+      { additionalProperties: true },
+    ),
+  },
+  { additionalProperties: true },
+);
+
 /** A complete live pane list proves terminal absence. In the same pane,
  * only Herdr's exact new Claude session proves replacement. Caller-supplied
  * location alone never proves the old session gone. Errors stay unknown. */
@@ -42,8 +67,9 @@ export async function ownerTerminalGone(input: {
   socketPath: string;
   paneId: string;
   terminalId: string;
-  claudeReplacement?: { previousSessionRefJson: string; subscriberId: string };
+  claudeReplacement?: { previousSessionRefJson: string; subscriberId: string; claudePid?: number };
 }): Promise<boolean> {
+  const started = performance.now();
   const client = new HerdrSocketClient({
     requestTimeoutMs: OWNER_TERMINAL_CHECK_MS,
     socketPath: input.socketPath,
@@ -62,15 +88,40 @@ export async function ownerTerminalGone(input: {
       const result = await client.getPane({ pane_id: input.paneId });
       if (!Value.Check(claudePaneSchema, result)) return false;
       const current = parseAgentSessionRef(result.pane.agent_session);
-      return (
-        result.pane.pane_id === input.paneId &&
-        result.pane.terminal_id === input.terminalId &&
-        current?.agent === "claude" &&
-        current.kind === "id" &&
-        current.source === "herdr:claude" &&
-        current.value === input.claudeReplacement.subscriberId &&
-        current.value !== previous.value
-      );
+      if (
+        !(
+          result.pane.pane_id === input.paneId &&
+          result.pane.terminal_id === input.terminalId &&
+          current?.agent === "claude" &&
+          current.kind === "id" &&
+          current.source === "herdr:claude" &&
+          current.value === input.claudeReplacement.subscriberId &&
+          current.value !== previous.value
+        )
+      )
+        return false;
+      const pid = input.claudeReplacement.claudePid;
+      if (!pid || !Number.isSafeInteger(pid) || pid < 2) return false;
+      // SessionStart reports can be made by a child Claude. The claimant's
+      // nearest Claude ancestor must also be the pane's sole foreground Claude.
+      // Both Herdr calls share the original one-second deadline.
+      const remaining = OWNER_TERMINAL_CHECK_MS - (performance.now() - started);
+      if (remaining <= 0) return false;
+      const processes = await client.getPaneProcessInfo({ pane_id: input.paneId }, remaining);
+      if (
+        performance.now() - started > OWNER_TERMINAL_CHECK_MS ||
+        !Value.Check(processInfoSchema, processes) ||
+        processes.process_info.pane_id !== input.paneId
+      )
+        return false;
+      const claudes = processes.process_info.foreground_processes.filter((process) => {
+        const command = process.argv0 ?? process.name;
+        return (
+          command !== undefined &&
+          (basename(command) === "claude" || /\/claude\/versions\/[^/]+$/.test(command))
+        );
+      });
+      return claudes.length === 1 && claudes[0]?.pid === pid;
     }
     const result = await client.listPanes();
     if (!Value.Check(paneListSchema, result)) return false;

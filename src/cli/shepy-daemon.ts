@@ -16,6 +16,14 @@ async function main(): Promise<void> {
       for (const line of format(...args).split(/\r?\n/)) write(`${timestamp} ${line}`);
     };
   }
+  // This standalone daemon owns warning output. Replace Node's default
+  // warning listener, or it would also print an un-timestamped duplicate.
+  process.removeAllListeners("warning");
+  process.on("warning", (warning) => console.warn(warning.stack ?? warning));
+  process.on("uncaughtException", (error) => {
+    console.error(error.stack ?? error);
+    exit(1); // A fatal exception must not leave a partially failed daemon running.
+  });
   if (argv.length > 2) {
     throw new Error("shepy-daemon does not accept CLI arguments");
   }

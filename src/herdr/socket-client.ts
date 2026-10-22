@@ -171,6 +171,10 @@ export class HerdrSocketClient {
     return this.#request("pane.get", params);
   }
 
+  getPaneProcessInfo(params: { pane_id: string }, timeoutMs: number): Promise<unknown> {
+    return this.#request("pane.process_info", params, { timeoutMs });
+  }
+
   /**
    * Last unwrapped lines of one agent's pane. Returns the pane the text came
    * from so a caller can refuse a reply that names another pane.

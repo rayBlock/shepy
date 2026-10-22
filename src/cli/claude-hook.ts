@@ -1,3 +1,6 @@
+import { execFile } from "node:child_process";
+import { basename } from "node:path";
+import { promisify } from "node:util";
 import { Type } from "@sinclair/typebox";
 import { Value } from "@sinclair/typebox/value";
 import {
@@ -308,13 +311,66 @@ function clampSystemMessage(warnings: string[]): string | undefined {
   return `${text.slice(0, SYSTEM_MESSAGE_MAX_CHARS - 1)}…`;
 }
 
+const execFileAsync = promisify(execFile);
+
+/** Herdr session metadata is hook-reported, so a nested Claude can overwrite
+ * it. Inspect our real ancestors, not inherited environment or reported ids.
+ * Unknown ancestry refuses too: neither a failed ps nor a depth/time bound
+ * may turn into permission to take the live seat's profile. */
+async function claudeAncestry(): Promise<
+  { kind: "clear"; claudePid?: number } | { kind: "nested" | "unknown" }
+> {
+  const deadline = performance.now() + 1_000;
+  const seen = new Set<number>();
+  let pid = process.ppid;
+  let claudePid: number | undefined;
+  for (let depth = 0; depth < 64; depth++) {
+    if (pid === 1) return { kind: "clear", ...(claudePid ? { claudePid } : {}) };
+    const remaining = deadline - performance.now();
+    if (pid < 1 || seen.has(pid) || remaining <= 0) return { kind: "unknown" };
+    seen.add(pid);
+    try {
+      const { stdout } = await execFileAsync("/bin/ps", ["-p", String(pid), "-o", "ppid=,comm="], {
+        encoding: "utf8",
+        maxBuffer: 4_096,
+        timeout: Math.max(1, Math.floor(remaining)),
+      });
+      const row = /^\s*(\d+)\s+([^\r\n]+?)\s*$/.exec(stdout);
+      if (!row?.[1] || !row[2]) return { kind: "unknown" };
+      const command = row[2];
+      if (basename(command) === "claude" || /\/claude\/versions\/[^/]+$/.test(command)) {
+        if (claudePid !== undefined) return { kind: "nested" };
+        claudePid = pid;
+      }
+      pid = Number(row[1]);
+      if (!Number.isSafeInteger(pid)) return { kind: "unknown" };
+    } catch {
+      return { kind: "unknown" };
+    }
+  }
+  return { kind: "unknown" };
+}
+
 async function runHook(input: ClaudeHookInput, warnings: string[]): Promise<HookEmission> {
   const payload = await parseStdin(input.readStdin);
+  let claudePid: number | undefined;
+  if (payload.hook_event_name === "UserPromptSubmit" || payload.hook_event_name === "Stop") {
+    const ancestry = await claudeAncestry();
+    if (ancestry.kind !== "clear") {
+      process.stderr.write(
+        ancestry.kind === "nested"
+          ? "shepy: nested Claude session; profile claim skipped\n"
+          : "shepy: cannot verify Claude ancestry; profile claim skipped\n",
+      );
+      return null;
+    }
+    claudePid = ancestry.claudePid;
+  }
   if (payload.hook_event_name === "UserPromptSubmit") {
-    return handlePromptSubmit(payload, input, warnings);
+    return handlePromptSubmit(payload, input, warnings, claudePid);
   }
   if (payload.hook_event_name === "Stop") {
-    return handleStop(payload, input, warnings);
+    return handleStop(payload, input, warnings, claudePid);
   }
   if (payload.hook_event_name === "SessionEnd") {
     const proof = claudeReleaseProof(input.homeDir, input.profileId, payload.session_id);
@@ -451,6 +507,7 @@ async function handlePromptSubmit(
   payload: HookPayload,
   input: ClaudeHookInput,
   warnings: string[],
+  claudePid?: number,
 ): Promise<HookEmission> {
   const { paneId, workspaceId } = requireHerdrIdentity(input.environment, input.profileId);
   const client = new ObservabilityRpcClient({ socketPath: input.socketPath });
@@ -496,6 +553,7 @@ async function handlePromptSubmit(
       ...(previous?.leaseToken !== undefined && schemaAcceptsCurrentLeaseToken
         ? { currentLeaseToken: previous.leaseToken }
         : {}),
+      ...(claudePid ? { claudePid } : {}),
       ...(resolved ? claimMessagingSocket(input.environment) : {}),
       harnessKind: "claude",
       harnessSessionRefJson: ownerSessionRefJson,
@@ -738,6 +796,7 @@ async function handleStop(
   payload: HookPayload,
   input: ClaudeHookInput,
   warnings: string[],
+  claudePid?: number,
 ): Promise<HookEmission> {
   const client = new ObservabilityRpcClient({ socketPath: input.socketPath });
   try {
@@ -819,6 +878,7 @@ async function handleStop(
         };
       }>("profile.claim", {
         currentLeaseToken: file.leaseToken,
+        ...(claudePid ? { claudePid } : {}),
         ...(resolved ? claimMessagingSocket(input.environment) : {}),
         harnessKind: "claude",
         harnessSessionRefJson: file.ownerSessionRefJson,

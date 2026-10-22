@@ -1,6 +1,6 @@
 # SHEPYCRASH (15.367)
 
-PARTIAL: implementation is committed; full-gate acceptance remains open because the suite is not green.
+REVISION IN PROGRESS after independent review REVISE. The seat approved ancestry-based nested-Claude refusal, daemon-side refusal of declared nested claims and a foreground Claude PID match from Herdr process-info before same-pane takeover (no Claude session files), splitting the eight-fixture test, folding repeated refusals into the fails-closed table, and timestamping fatal errors and process warnings. After correction, carry by cherry-pick onto `7aa8adb` in fresh branch `night/shepycrash-2`, never rebase. Targeted tests and typecheck precede one full suite below load 15 under `/private/tmp/shepy-full-suite.lock`; deadline 15:30. Review: `/Users/ray/dev/shepy-wt/night-rev-shepycrash/evidence/night/review-SHEPYCRASH.md`.
 Builder: shepycrash. Branch: `night/shepycrash`. Base: `ef30d4e`. Code candidate: `3067443`; the following report-only commit does not change that candidate. Independent review is next. Nothing was installed into the live CLI or landed.
 
 ## Acceptance block (recorded before implementation)
