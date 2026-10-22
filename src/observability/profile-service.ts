@@ -170,6 +170,10 @@ export class ProfileService {
    * first prune past the age — the removed list is the receipt that makes
    * that visible, and re-subscribing restores the binding.
    *
+   * A pending terminal guard without an indexed agent resolves unmatched and
+   * uses this same age gate. An indexed agent awaiting its first native session
+   * remains matched (bindingState pending), so it is kept regardless of age.
+   *
    * Refusals (never guesses): an AMBIGUOUS selector (multiple live agents
    * matched) is alive-ish and is never removed; an INVALID selector or
    * workspace selector cannot be proved dead — its intent is unreadable —

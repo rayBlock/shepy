@@ -40,7 +40,9 @@ import { RpcRefusedError } from "./rpc-refused-error.js";
  * `working`. The remaining 127 were semantic and are unaffected.
  *
  * A healthy refresh that loses an indexed worker emits `agent.gone` using
- * the prior identity, not an `unknown` status guess.
+ * the frozen prior identity, not an `unknown` status guess, before removing
+ * the subscription. A terminal can close before its first native session;
+ * that pending guard must not suppress the terminal's gone notice.
  */
 export const NOTIFIABLE_EVENT_TYPES: ReadonlySet<AgentEventType> = new Set([
   "agent.blocked",
@@ -367,10 +369,14 @@ export class ProfileDeliveryService {
           const session = parseAgentSessionRef(payload.agentSession);
           // A delayed event can outlive its session while the terminal's index
           // row keeps the same id. Check event-time identity, not just live state.
-          if (
-            !selector.agentSession ||
+          if (event.terminalId !== selector.value) continue;
+          if (selector.agentSession === null) {
+            // A pending worker can die before any native session exists.
+            // Only its exact terminal's lifecycle outcome bypasses that wait;
+            // scoped resolution below still proves the event's prior agent.
+            if (event.type !== "agent.gone") continue;
+          } else if (
             !session ||
-            event.terminalId !== selector.value ||
             payload.agent !== selector.agentSession.agent ||
             !sameAgentSessionRef(selector.agentSession, session)
           )

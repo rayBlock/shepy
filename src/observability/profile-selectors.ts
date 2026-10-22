@@ -189,12 +189,6 @@ export function resolveAgentSelector(
   });
 
   if (matches.length === 0) {
-    if (selector.kind === "terminalId" && selector.agentSession === null) {
-      return {
-        kind: "pending",
-        detail: `pending: terminal ${selector.value} has no native session yet`,
-      };
-    }
     return {
       kind: "unmatched",
       detail: `no agent in scope matches ${describeSelector(selector)}`,
@@ -223,7 +217,7 @@ export function resolveAgentSelector(
     if (!agent.agentSession) {
       return {
         kind: "pending",
-        detail: `pending: terminal ${selector.value} is waiting for bound session ${selector.agentSession.value}; current native session unavailable`,
+        detail: `terminal ${selector.value} is waiting for bound session ${selector.agentSession.value}; current native session unavailable`,
       };
     }
     if (

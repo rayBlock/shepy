@@ -831,6 +831,9 @@ export class ObservabilityRpcServer {
     subscribe: boolean,
   ): Promise<AgentSelector> {
     const selector = input.agentSelector;
+    if (subscribe && selector.kind === "terminalId" && Object.hasOwn(selector, "agentSession")) {
+      throw new Error("Subscription session guards must come from an observation, not the caller");
+    }
     if (selector.kind === "paneId") {
       const session = this.#stores.herdrSessions.findRunningByName(input.herdrSessionName);
       if (!session) throw new Error(`No running Herdr session: ${input.herdrSessionName}`);
@@ -874,7 +877,7 @@ export class ObservabilityRpcServer {
         agentSession: resolution.record.agentSession,
       };
     }
-    if (!subscribe || selector.agentSession !== undefined) return selector;
+    if (!subscribe) return selector;
     return {
       ...selector,
       agentSession: resolution.kind === "matched" ? resolution.record.agentSession : null,

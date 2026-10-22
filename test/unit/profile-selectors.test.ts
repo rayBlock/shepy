@@ -192,7 +192,7 @@ describe("terminal native-session guards", () => {
 
   test("pending guards expose terminal readiness separately from session binding", () => {
     const pending = { ...bound, agentSession: null };
-    expect(resolveAgentSelector(pending, []).kind).toBe("pending");
+    expect(resolveAgentSelector(pending, []).kind).toBe("unmatched");
     expect(resolveAgentSelector(pending, [agent({ agentSessionId: null })])).toMatchObject({
       kind: "matched",
       bindingState: "pending",

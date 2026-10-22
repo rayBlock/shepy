@@ -234,6 +234,14 @@ async function fixture(initial: ReturnType<typeof worker>[] = [worker()]) {
       );
       return JSON.parse(stdout) as unknown;
     },
+    async rpc(method: string, params: unknown) {
+      const client = new ObservabilityRpcClient({ socketPath: rpcPath });
+      try {
+        return await client.request(method, params);
+      } finally {
+        client.close();
+      }
+    },
     async registerPi(sessionRef: AgentSessionRef) {
       const client = new ObservabilityRpcClient({ socketPath: rpcPath });
       try {
@@ -348,11 +356,11 @@ describe("pane subscription through CLI, daemon, Herdr socket and durable store"
       value: "term_1",
       agentSession: null,
     });
-    expect(show.resolutions[0]?.kind).toBe("pending");
+    expect(show.resolutions[0]?.kind).toBe("unmatched");
     await f.subscribe();
     expect((await f.show()).subscriptions).toHaveLength(1);
     await f.restart();
-    expect((await f.show()).resolutions[0]?.kind).toBe("pending");
+    expect((await f.show()).resolutions[0]?.kind).toBe("unmatched");
     f.setRows([worker()]);
     await f.refresh();
     // Bind before a finish or a profile inspection can trigger it.
@@ -742,6 +750,173 @@ describe("pane subscription through CLI, daemon, Herdr socket and durable store"
     expect(show.resolutions[0]?.bindingState).toBe("pending");
     f.finish();
     expect((await f.inbox()).obligations).toHaveLength(0);
+  });
+
+  test("P4: pending row whose pane closes before detection is pruned only after its age gate", async () => {
+    const f = await fixture([worker({ agent: null, agent_session: null })]);
+    await f.subscribe();
+    const row = (await f.show()).subscriptions[0];
+    if (!row) throw new Error("fixture subscription missing");
+    f.setRows([]);
+    await f.refresh();
+    const young = f.daemon.service.pruneSubscriptions({
+      profileId: "seat",
+      ageMs: 120_000,
+      now: row.updatedAt + 119_999,
+    });
+    expect(young.removed).toHaveLength(0);
+    expect(young.refused[0]?.detail).not.toContain("pending: pending:");
+    expect(
+      f.daemon.service
+        .pruneSubscriptions({ profileId: "seat", ageMs: 120_000, now: row.updatedAt + 180_000 })
+        .removed.map((r) => r.id),
+    ).toEqual([row.id]);
+    expect((await f.show()).subscriptions).toHaveLength(0);
+    // Control: a detected agent with no native session remains protected.
+    f.setRows([worker({ agent_session: null })]);
+    await f.refresh();
+    await f.subscribe();
+    expect(
+      f.daemon.service.pruneSubscriptions({
+        profileId: "seat",
+        ageMs: 0,
+        now: row.updatedAt + 300_000,
+      }).removed,
+    ).toHaveLength(0);
+  });
+
+  test("P7: wrong-workspace and never-indexed terminal subscriptions can age out", async () => {
+    const f = await fixture();
+    await f.refresh();
+    await f.cli(["profile", "subscribe", "seat", "--workspace", "wrong", "--terminal", "term_1"]);
+    await f.subscribe(["--terminal", "never-indexed"]);
+    const rows = (await f.show()).subscriptions;
+    const now = Math.max(...rows.map((r) => r.updatedAt)) + 180_000;
+    expect(
+      f.daemon.service.pruneSubscriptions({ profileId: "seat", ageMs: 120_000, now }).removed,
+    ).toHaveLength(2);
+    await f.subscribe(["--terminal", "term_1"]);
+    expect((await f.show()).resolutions[0]?.kind).toBe("matched");
+    expect(
+      f.daemon.service.pruneSubscriptions({ profileId: "seat", ageMs: 0, now }).removed,
+    ).toHaveLength(0);
+  });
+
+  test("P5: subscribe refuses caller-supplied native guards, including null, without writes", async () => {
+    const f = await fixture();
+    await f.refresh();
+    for (const agentSession of [null, firstSession, nextSession]) {
+      await expect(
+        f.rpc("profile.subscribe", {
+          profileId: "seat",
+          herdrSessionName: "default",
+          workspaceId: "wA",
+          agentSelector: { kind: "terminalId", value: "term_1", agentSession },
+        }),
+      ).rejects.toThrow();
+      expect((await f.show()).subscriptions).toHaveLength(0);
+    }
+    // Control: a bare selector is admitted and the observed native identity binds.
+    await f.subscribe(["--terminal", "term_1"]);
+    const original = (await f.show()).subscriptions;
+    expect(JSON.parse(original[0]?.agentSelectorJson ?? "null").agentSession).toEqual(firstSession);
+    await expect(
+      f.rpc("profile.subscribe", {
+        profileId: "seat",
+        herdrSessionName: "default",
+        workspaceId: "wA",
+        agentSelector: { kind: "terminalId", value: "term_1", agentSession: nextSession },
+      }),
+    ).rejects.toThrow();
+    expect((await f.show()).subscriptions).toEqual(original);
+  });
+
+  test.each([
+    "pi",
+    "opencode",
+  ])("P9 S3 seam: pending terminal gets one gone obligation before its subscription is removed (%s)", async (agent) => {
+    const f = await fixture([worker({ agent, agent_session: null })]);
+    await f.refresh();
+    await f.subscribe();
+    f.finish();
+    expect((await f.inbox()).obligations).toHaveLength(0);
+    const row = f.daemon.agents.list({ herdrSessionName: "default" })[0];
+    if (!row) throw new Error("fixture worker missing");
+    // S2 calls its gone projection with frozen prior agents, before removing
+    // the subscription. On this base, exercise the same still-indexed boundary.
+    const gone = f.daemon.agentEvents.append({
+      agentId: row.id,
+      herdrSessionName: row.herdrSessionName,
+      paneId: row.paneId,
+      terminalId: row.terminalId,
+      workspaceId: row.workspaceId,
+      type: "agent.gone",
+      payload: { agent: row.agent, agentSession: null, from: row.agentStatus, to: "gone" },
+      compactHistory:
+        agent === "opencode"
+          ? {
+              contextHealth: null,
+              historyRef: null,
+              lastAssistantMessage: null,
+              lastToolResult: null,
+              lastUserMessage: null,
+              messageCount: 0,
+              source: "opencode-sqlite",
+              updatedAt: null,
+            }
+          : null,
+    });
+    const wrongTerminal = f.daemon.agentEvents.append({ ...gone, terminalId: "another-terminal" });
+    const wrongWorkspace = f.daemon.agentEvents.append({
+      ...gone,
+      workspaceId: "another-workspace",
+    });
+    expect(f.daemon.delivery.projectAgentEvent(wrongTerminal)).toEqual([]);
+    expect(f.daemon.delivery.projectAgentEvent(wrongWorkspace)).toEqual([]);
+    expect((await f.inbox()).obligations).toHaveLength(0);
+    expect(f.daemon.delivery.projectAgentEvent(gone)).toEqual(["seat"]);
+    f.daemon.delivery.projectAgentEvent(gone);
+    expect((await f.inbox()).obligations).toHaveLength(1);
+    await f.cli(["profile", "unsubscribe", "seat", "--workspace", "wA", "--terminal", "term_1"]);
+    f.setRows([]);
+    await f.refresh();
+    f.daemon.delivery.projectAgentEvent(gone);
+    expect((await f.show()).subscriptions).toHaveLength(0);
+    expect((await f.inbox()).obligations).toHaveLength(1);
+  });
+
+  test("F1: an indexed bound worker with missing native metadata has one pending diagnostic prefix", async () => {
+    const f = await fixture();
+    await f.refresh();
+    await f.subscribe();
+    f.setRows([worker({ agent_session: null })]);
+    await f.refresh();
+    const result = f.daemon.service.pruneSubscriptions({ profileId: "seat", ageMs: 0 });
+    expect(result.removed).toHaveLength(0);
+    expect(result.refused[0]?.detail).toMatch(/^pending: terminal /);
+    expect(result.refused[0]?.detail).not.toContain("pending: pending:");
+  });
+
+  test("F3: a bound guard still refuses another session's gone event", async () => {
+    const f = await fixture();
+    await f.refresh();
+    await f.subscribe();
+    const row = f.daemon.agents.list({ herdrSessionName: "default" })[0];
+    if (!row) throw new Error("fixture worker missing");
+    const append = (native: AgentSessionRef) =>
+      f.daemon.agentEvents.append({
+        agentId: row.id,
+        herdrSessionName: row.herdrSessionName,
+        paneId: row.paneId,
+        terminalId: row.terminalId,
+        workspaceId: row.workspaceId,
+        type: "agent.gone",
+        payload: { agent: row.agent, agentSession: native, to: "gone" },
+      });
+    expect(f.daemon.delivery.projectAgentEvent(append(nextSession))).toEqual([]);
+    expect((await f.inbox()).obligations).toHaveLength(0);
+    expect(f.daemon.delivery.projectAgentEvent(append(firstSession))).toEqual(["seat"]);
+    expect((await f.inbox()).obligations).toHaveLength(1);
   });
 
   test("a detected agent without native identity stays pending and cannot be pruned as dead", async () => {
