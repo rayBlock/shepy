@@ -1,71 +1,47 @@
-# S3 builder report
+# S3 corrected delivery and main-based integration
 
-Worker: s3. Worktree: `/Users/ray/dev/shepy-wt/night-s3`. Branch: `night/s3`.
-**BUILT, corrected after review.** Not landed or self-accepted; correction recheck and combined S2 validation remain with the factory seat.
-Candidate: `d2d74c2445a7fa117710242118cb4a8d37f7129a`. Reviewed candidate: `f698a61`, original code `f13ec10`, base `50ca705`. The seat's correction decisions supersede the original pending-row cleanup policy.
+Worker: s3. Worktree: `/Users/ray/dev/shepy-wt/night-s3`.
+**BUILT.** The corrections and combined S2 and S3 lifecycle path are machine-verified. Not landed or self-accepted; independent recheck and batch validation remain with the factory seat.
+
+## Both branches
+
+- Preserved `night/s3` tip: `c3dac36511c1f5b2367eedf50b141dced7410819` (correction code `d2d74c2`, plus its report).
+- `night/s3-main` frozen code tip: `d21f85a86df9524fb2c72b7823608af2d8722f5f`, based on main `f8c108d838206e45d66dc027148e293905e9ac0c`. Its report-only successor is identified in the finish reply.
+- Created the requested new branch from main and cherry-picked all five S3 commits with `-x`. No rebase, source-branch rewrite, main landing or push. Original acceptance and correction history remain at `git show c3dac36:evidence/night/report-s3.md`.
 
 ## Correction after independent review `75008c2`
 
-- **F1 (pruning and diagnostics):** without an indexed agent in the subscription's scope, a pending terminal resolves `unmatched` and uses the normal age gate. With an indexed agent but no native session, it remains protected. P4 (closure before detection), P7 (wrong workspace or never indexed), young-row controls and the single-prefix diagnostic pass. The guard stays pending in storage; only resolution changed.
-- **F2 (caller-supplied guards):** the RPC schema refuses any supplied `agentSession`, including null, and admission no longer accepts that shortcut. P5 (guard injection) proves rejection without creating or changing a row; a bare selector still binds the observed native identity.
-- **F3 (pending-worker departure):** the S3 consumer admits an exact-terminal `agent.gone` even with a pending guard, while retaining workspace, prior-agent and bound-session fences. P9 (death before native publication) seam tests pass for Pi and OpenCode, including no transcript text, wrong-terminal refusal, wrong-workspace refusal, one durable obligation after subscription removal and replay deduplication. Bound guards still reject another session's gone event.
-- **Integration limit:** this base has no S2 lifecycle producer. The P9 tests append the S2-shaped departure while the prior agent is still indexed, then remove the subscription and agent. They prove the S3 consumer seam, not automatic close detection. No S2 lifecycle producer was imported, and no S2 worktree file changed.
-- **After both land:** retain this guard exception inside S2's private event projection, its frozen-prior `projectGoneAgent` path, projection-before-removal transaction and gone rendering. Run actual close-and-refresh P9 without manually appending an event or unsubscribing: one gone per subscribed profile, row removed, notice retained, no duplicate after another refresh or restart. Recheck P8 (bound-worker closure), replacement-session refusal, manual P4 and P7 age-out, and S2's healthy-snapshot automatic-prune protections.
-- **Correction checks:** 235 touched tests in 11 files passed, exit 0, 11.51 seconds; `tsc --noEmit` passed in 13.35 seconds; changed-file Biome passed in 0.59 seconds; `pnpm package:check`, including `pnpm build`, passed in 6.90 seconds with 328 allowed files. All used `env -i`, fresh HOME and short TMPDIR; all three Claude variables were absent. The four requested probes failed before the fixes; their red log is retained.
-- **Correction cost:** the existing 20-request fixture still leaves one 133-byte selector and one row; total worker CPU was 22.86 milliseconds and endpoint database size stayed 188,416 bytes. These are fixture readings, not production measurements. Full batch validation remains seat-owned; no new dependency installation, rebase, push or agent message occurred.
+- **F1 (pruning and diagnostics):** pending rows without an indexed scoped agent resolve `unmatched` and use the age gate. P4 (closure before detection) and P7 (wrong workspace or never indexed) now age out; younger rows and indexed agents awaiting native identity stay protected. The doubled pending prefix is gone. S2's healthy-presence protections still govern automatic cleanup.
+- **F2 (caller-supplied guards):** `profile.subscribe` rejects any supplied `agentSession`, including null, without creating or changing a row. Only daemon-observed metadata supplies the terminal guard. P5 (guard injection) and its bare-selector control pass.
+- **F3 (pending-worker departure):** an exact-terminal `agent.gone` can deliver before native identity exists. Workspace, prior-agent and bound-native-session checks remain enforced. P9 (closure before native publication) now runs through S2's actual gone path, not just the standalone seam.
 
-Private proof folder: `/private/tmp/s3-correction.diZhkB`. `correction.md` records commands and the integration handoff; `initial/` retains the original proof ledger. Current `touched.log` SHA-256: `c3edbf8990e4b8d9a4a5bb3c0aed236dcc8d60c556a83f165bec9b4dc5b975f0`.
+## Integration and conflict resolution
 
-## Revised acceptance block
+- Resolved the four implementation conflicts by retaining both README sections, both store operations, all three index callbacks, and frozen-source plus native-guard delivery imports. The correction pick's additional comment conflict was combined. Kept S2's projection-before-removal transaction, move batching, migration, presence-aware prune and gone rendering.
+- Preserved S2's legacy policy in S3's existing-terminal resubscribe fast path: explicit resubscribe clears `legacy` while adding the native guard. A regression verifies the same row id, guarded identity and cleared flag.
+- A new combined probe reproduced a persistent SQLite uniqueness failure when a bound terminal moved into its already-pending destination row. First binding now atomically merges that identical guarded destination and reparents notices. Raw terminal selector key order is normalized; differing native guards are not overwritten. Repeated refresh succeeds, one row remains and the prior notice survives.
 
-```acceptance
-{
-  "kind": "build",
-  "real_use": "Shepy subscribe --pane resolves one pane.get and stores one terminal selector with an optional native-session guard. Without a native session the row is pending, then binds the first observed session. Factory start is unchanged.",
-  "unhappy_paths": "Missing pane; no agent yet; wrong or missing workspace; changed native session; reused name in another pane.",
-  "attack_tests": [
-    {"probe": "Subscribe before detection or native publication: one pending terminal row, then first-session binding.", "good_input_control": "Already detected agent: same row shape, known native guard."},
-    {"probe": "Bound terminal restarts with another session: no replacement notice; profile show reports replacement refused with both ids.", "good_input_control": "Original session continues delivering after pane movement and daemon restart."},
-    {"probe": "A different terminal reuses the subscribed worker's name: its finish does not reach the profile.", "good_input_control": "The originally subscribed terminal's finish reaches the inbox."},
-    {"probe": "Pane subscribe with wrong or missing workspace, or a missing pane, refuses without a row; repeated pane, terminal and resolved-name subscriptions leave one row.", "good_input_control": "Correct workspace succeeds; distinct terminals keep distinct rows."},
-    {"probe": "Pending terminal rows with no indexed scoped agent, including a wrong workspace, age out.", "good_input_control": "Young rows and indexed agents awaiting native identity stay protected."},
-    {"probe": "Caller-supplied terminal native guards are rejected without writes.", "good_input_control": "Bare selectors use the daemon's observed native identity."},
-    {"probe": "A pending detected worker's gone event yields one durable notice before row removal; verify automatic production after S2 integration.", "good_input_control": "Wrong terminal, workspace or bound session cannot deliver the gone event."}
-  ],
-  "running_cost": {"time": "subscribe wall", "cpu": "subscribe fixture process", "memory": "fixture RSS; production null", "disk": "one row", "tokens": null, "expected": "one pane.get per pane subscribe"},
-  "ray_check": "none; internal"
-}
-```
+## Acceptance evidence
 
-Binding amendments: `/Users/ray/dev/agent-factory/evidence/night/acceptance-check-2.md:21-35`; factory timing is superseded by the seat's explicit no-op decision.
+- Integrated P9 tests cover Pi and OpenCode, each with two profiles. Removing the pane from the producer-shaped Herdr snapshot invokes the real index and `projectGoneAgent` callbacks: one gone per profile, both rows removed, notices retained, no duplicate after another refresh or database/server restart. No manual gone append or unsubscribe is used in these integrated cases.
+- P8 (bound-worker closure) still delivers gone and removes its row. Wrong terminal, workspace and bound session refuse delivery. Guarded subscriptions follow cross-workspace pane movement without changing the native session. Name reuse, initial binding, replacement refusal and caller-guard rejection remain green.
+- All 30 inherited S2 lifecycle tests pass, including done before gone, movement collisions and swaps, rollback, legacy and modern prune behavior, live empty-pane preservation and failed-session protections. Factory files remain unchanged; start already subscribes by terminal.
 
-## Original delivery proof (retained history)
+## Checks and provenance
 
-- Twenty new integration cases use the public CLI, real daemon RPC, migrated on-disk SQLite, the real agent index and a producer-shaped local Herdr socket. An actual source CLI subprocess also subscribes successfully. Indexed working-to-done events reach the CLI inbox for the bound session, never the replacement.
-- Pending and bound rows survive reopening the database. First binding happens before delayed history publication, including Pi presence before agent detection. Stale cached identities cannot bind through inspection or repeated terminal subscribe; delayed replacement events cannot deliver after the original session returns.
-- Pane movement, name reuse, malformed pane metadata, absent native identity, workspace refusal, repeat deduplication and legacy name consolidation all have passing controls. Legacy notices survive consolidation. Event-time terminal, harness and native identity fence delivery, not merely the live index row.
-- Factory is a no-op: `/Users/ray/dev/agent-factory/tools/seat/worker.ts:419` already subscribes by terminal. Its pre-prompt proof at line 423 still works: an indexed terminal may be `matched` with `bindingState: pending`, while its guard is pending and cannot deliver outcomes. No factory file changed.
+- Node 24.18.0, pnpm 11.9.0, locked TypeScript 6.0.3, Vitest 4.1.9 and Biome 2.5.1. Every runtime test, compiler, format and package invocation used `env -i`, fresh HOME and short TMPDIR; all three Claude variables were absent. No dependency installation or hook bypass.
+- Requested S2 and S3 files: **64 passed**, exit 0, 9.04 seconds. Broader touched coverage: **289 passed in 14 files**, exit 0, 4.12 seconds. Typecheck: exit 0, 8.79 seconds. Changed integration-file Biome: exit 0, 0.05 seconds.
+- `pnpm package:check`, including `pnpm build`: exit 0, 6.80 seconds, 330 allowed files. No migration beyond S2's existing migration was added. Frozen diffs and Git whitespace checks passed; normal Git commits used no bypass, but the configured `.husky/_` runner was absent, so no hook gate is claimed.
+- The uniqueness-failure red probe is retained alongside its passing CLI and raw-client controls. No assertion was relaxed or timeout raised. The full batch suite was not claimed; it remains seat-owned.
 
-## Original delivery checks and retained failures
+Private proof folder: `/private/tmp/s3-main-proof.SNRMXI`. `integration.md` records exact commands, cherry-pick mappings, conflict decisions and limits; `source/` retains the standalone correction and original delivery logs. `s2-s3.log` SHA-256: `43ca9cfe366c9fc40ddcba194a80e48fe5d609479f051d1b85610712ba269f36`. `touched.log` SHA-256: `9b8db95ea3a4bf1dabd7f8b40f8a7373ef4d88a73776f125392718738ae68a8c`.
 
-- Node 24.18.0; pnpm 11.9.0; locked TypeScript 6.0.3, Vitest 4.1.9 and Biome 2.5.1. Every invocation used `env -i`, a fresh HOME and short TMPDIR; all three Claude variables were absent.
-- Final touched tests: **228 passed in 11 files**, exit 0, 14.82 seconds. Direct installed `tsc --noEmit`: exit 0, 11.62 seconds. Changed-file Biome check: exit 0, 0.82 seconds. `git diff --check` passed.
-- Final `pnpm package:check`, including its `pnpm build` prepack: exit 0, 32.19 seconds, 328 allowed files. Built CLI import/help/version smoke: exit 0, 1.00 second. No database schema migration was needed.
-- Full `pnpm check` was attempted twice under the required shared lock: both admissions exited **75, already locked**. The full check did not run; no lock bypass. Normal Git invocation used no hook bypass; the configured `.husky/_` runner was absent, so no hook gate is claimed.
-- Red baseline, delayed-event, factory-proof, legacy-JSON and Pi-presence probes are retained. Initial fixture-decoder and TypeScript errors were corrected as harness/build failures, not labelled production failures. No assertions were weakened. The earlier dependency-install deviation was approved; dependencies and build outputs are not committed.
+## Cost, limits and next owner
 
-The original exact commands and red logs are under `initial/checks.md`; the original 228-test log remains `initial/final-touched.log`.
-
-## Cost and limits
-
-- One profile and worker, 20 repeat subscribes: exactly one Herdr call each, one row, 133-byte selector. Median in-process wall 1.58 milliseconds; CPU across 20 calls 33.89 milliseconds. One source CLI subprocess took 959 milliseconds including tsx startup; this is not installed-CLI latency.
-- Fixture-worker RSS rose 3.19 MiB; lifetime peak 107.64 MiB includes imports and test machinery, not daemon-only memory. Database plus extant sidecars stayed 188,416 bytes at the repeat-call endpoints; transient journal peak was not sampled. `initial/cost.log` SHA-256: `03f8dde49f74c6815f74eedcf1ea6a744761286975963ffaf5877f80ca485f2b`.
-- Production memory, live worker-start time, multi-worker scaling and idle waits are null or untested: no live worker/resource-control grant was supplied. Input, cache-write, cache-read, output and summary tokens are each null because task-scoped harness counters were unavailable. No application inference was invoked.
-- Existing selectors without guards remain legacy until re-subscribed; unresolved name callers retain their old name semantics. A new guarded subscription remains pending if its harness never publishes native identity. No live seat wake, installation, push, rebase, foreign edit, profile claim or agent message was performed.
+- The repeat workload still makes one Herdr call per subscribe, leaves one row and a 133-byte selector, and keeps endpoint database plus extant sidecars at 188,416 bytes. Twenty in-process requests used 21.23 milliseconds of fixture-worker CPU. RSS includes imports and fixtures, not daemon-only memory; detailed readings are in the proof ledger. Production memory, transient journal peak, live CLI latency, idle use and scaling remain unmeasured.
+- Input, cache-write, cache-read, output and summary tokens are each null because task-scoped counters were unavailable. No application inference was invoked. Not checked with live Herdr: physical close-event timing or a real seat wake. The combined proof uses controlled sockets, actual lifecycle code and migrated SQLite, not a shared daemon.
+- Next owner: factory seat for independent recheck and batch validation of `night/s3-main`, then landing. The standalone branch is preserved for comparison. No real profile, pane, shared daemon, foreign worktree or agent messaging was controlled.
 
 ## Noticed beyond my task
 
-- The original pending-prune finding is addressed by F1 above. S2's live-pane presence and failed-refresh protections must survive integration; the actual combined lifecycle check is still required.
-- `README.md:163-166` still says the Pi claim is slash-command-only, while `packages/shepy-pi/src/index.ts:1212` registers `shepy_profile`. Left for S5's documentation pass.
-
-Next owner: factory seat for independent review, full batch validation when the shared lock is available, and landing. No resources were closed outside the owned test fixtures.
+None newly noticed beyond the combined move/bind collision fixed above. The reviewed native-session-reset policy remains unchanged.
