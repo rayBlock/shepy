@@ -123,11 +123,12 @@ export class ClaudeIdleWakeService {
     const obligationIds = pending.map((row) => row.id).sort();
     const batchKey = createHash("sha256").update(JSON.stringify(obligationIds)).digest("hex");
     if (!this.#stillOwner(owner)) return;
-    // Reserve BEFORE connecting, including failed or ambiguous attempts. The
-    // individual ids also prevent a changed pending subset from re-sending.
+    // Reserve BEFORE connecting. Retain every post-connect or ambiguous
+    // attempt; release only a definite connect failure with zero frames.
+    // Individual ids prevent a changed pending subset from re-sending.
     if (!this.#options.wakes.recordAttempt({ batchKey, obligationIds, profileId: owner.profileId }))
       return;
-    await safeSocketPost(this.#post, socket.path, () => {
+    const outcome = await safeSocketPost(this.#post, socket.path, () => {
       // Connect is asynchronous. Fence again before the FIRST byte, not just
       // before connect; a replacement owner must never inherit this nudge.
       if (
@@ -137,5 +138,8 @@ export class ClaudeIdleWakeService {
         throw new Error("wake no longer admitted");
       return wakeFrames(socket.token, line);
     });
+    if (outcome.status === "not-connected") {
+      this.#options.wakes.releaseUnconnectedAttempt({ batchKey, profileId: owner.profileId });
+    }
   }
 }

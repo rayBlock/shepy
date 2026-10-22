@@ -95,6 +95,7 @@ test.each([
   "write-throws",
   "frames-throws",
   "connect-throws",
+  "connect-error",
 ])("%s is bounded and never exposes exception text", async (mode) => {
   const socket = new SyntheticSocket();
   if (mode === "connect-throws")
@@ -109,12 +110,13 @@ test.each([
     if (mode === "frames-throws") throw new Error("secret-path-token");
     return wakeFrames("secret", "line");
   });
-  socket.connected?.();
+  if (mode === "connect-error") socket.listeners.get("error")?.();
+  else socket.connected?.();
   if (mode === "write-error") socket.callbacks[0]?.(new Error("secret-path-token"));
   else socket.listeners.get(mode)?.();
   const result = await pending;
   expect(result).toEqual({
-    status: "ambiguous",
+    status: mode.startsWith("connect-") ? "not-connected" : "ambiguous",
     reason: ["close", "end"].includes(mode) ? "early-close" : "error",
   });
   expect(socket.destroyed).toBe(1);

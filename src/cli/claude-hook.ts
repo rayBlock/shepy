@@ -10,6 +10,7 @@ import {
 } from "@/cli/owner-file.js";
 import { claudeReleaseProof } from "@/cli/profile-release.js";
 import { ObservabilityRpcClient } from "@/daemon/client.js";
+import { DEFAULT_LEASE_GRACE_MS } from "@/db/profile-owners.js";
 import { SNAPSHOT_UNAVAILABLE_CONTEXT } from "@/observability/outcome-context.js";
 import { profileClaimInputSchema } from "@/observability/schemas.js";
 
@@ -220,11 +221,14 @@ class ExpectedHookError extends Error {
    */
   readonly code: string | undefined;
 
-  constructor(message: string, userWarning?: string, code?: string) {
+  readonly emission: HookEmission;
+
+  constructor(message: string, userWarning?: string, code?: string, emission: HookEmission = null) {
     super(message);
     this.name = "ExpectedHookError";
     this.userWarning = userWarning;
     this.code = code;
+    this.emission = emission;
   }
 }
 
@@ -246,7 +250,11 @@ export async function runClaudeHook(input: ClaudeHookInput): Promise<number> {
     return 0;
   } catch (error) {
     if (error instanceof ExpectedHookError) {
-      writeOutput(input, null, error.userWarning ? [...warnings, error.userWarning] : warnings);
+      writeOutput(
+        input,
+        error.emission,
+        error.userWarning ? [...warnings, error.userWarning] : warnings,
+      );
       return 0;
     }
     if (error instanceof OwnerFileStorageError) {
@@ -397,6 +405,28 @@ export function claimRejectionWarning(input: {
   return `shepy: profile ${plainText(input.profileId)} is owned by pane ${plainText(input.owner?.paneId)} (${plainText(input.owner?.harnessKind, 24)}); this pane will not receive worker outcomes`;
 }
 
+type ClaimOwner = {
+  harnessKind?: string;
+  paneId?: string;
+  claimedAt?: number;
+  leaseExpiresAt?: number;
+};
+
+/** Only prompt refusals become model context. Stop refusals must not buy
+ * another continuation. Old daemon replies without timestamps stay safe. */
+function claimRefusalContext(profileId: string, owner: ClaimOwner | undefined): HookEmission {
+  const iso = (value: number | undefined): string =>
+    typeof value === "number" && Number.isFinite(new Date(value).getTime())
+      ? new Date(value).toISOString()
+      : "unknown";
+  const claimable =
+    typeof owner?.leaseExpiresAt === "number"
+      ? owner.leaseExpiresAt + DEFAULT_LEASE_GRACE_MS
+      : undefined;
+  const context = `shepy: profile ${plainText(profileId)} is owned by pane ${plainText(owner?.paneId)} (${plainText(owner?.harnessKind, 24)}), claimed at ${iso(owner?.claimedAt)}; claimable at ${iso(claimable)} unless renewed; this session cannot receive worker outcomes until its claim succeeds`;
+  return { context: context.slice(0, CONTEXT_MAX_CHARS), event: "UserPromptSubmit" };
+}
+
 /**
  * The Stop-recovery contention line. A lapsed owner tried the one recovery
  * attempt — re-claim by proof of possession — and lost the race: a rival
@@ -448,7 +478,7 @@ async function handlePromptSubmit(
       result?: {
         kind?: string;
         leaseToken?: string;
-        owner?: { harnessKind?: string; paneId?: string };
+        owner?: ClaimOwner;
         reason?: string;
       };
     }>("profile.claim", {
@@ -500,7 +530,12 @@ async function handlePromptSubmit(
         });
         if (warning !== undefined) warnings.push(warning);
       }
-      throw new ExpectedHookError(`profile claim rejected (${result.kind ?? "unknown"})`);
+      throw new ExpectedHookError(
+        `profile claim rejected (${result.kind ?? "unknown"})`,
+        undefined,
+        undefined,
+        result.kind === "rejected" ? claimRefusalContext(input.profileId, result.owner) : null,
+      );
     }
     const leaseToken = result.leaseToken;
 

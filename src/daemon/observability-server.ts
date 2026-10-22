@@ -609,6 +609,17 @@ export class ObservabilityRpcServer {
             paneId: owner.paneId,
             socketPath: session.socketPath,
             terminalId: owner.terminalId,
+            ...(owner.harnessKind === "claude" &&
+            input.harnessKind === "claude" &&
+            input.paneId === owner.paneId &&
+            input.terminalId === owner.terminalId
+              ? {
+                  claudeReplacement: {
+                    previousSessionRefJson: owner.harnessSessionRefJson,
+                    subscriberId: input.subscriberId,
+                  },
+                }
+              : {}),
           });
         });
         // Even the claimant gets only presence, never the stored socket capability.

@@ -10,8 +10,8 @@ import {
 /**
  * Phase 3 — profile owner store (vault §8.2). One active logical owner per
  * profile. A brief reconnect grace preserves the current owner; an explicit
- * claim after release, lease expiry or confirmed terminal absence replaces
- * it and invalidates the old lease token.
+ * claim after release, lease expiry or confirmed owner absence or replacement
+ * invalidates the old lease token.
  */
 
 const DEFAULT_LEASE_MS = 5 * 60_000;
@@ -116,7 +116,7 @@ export class ProfileOwnerStore {
    *  - any claim without the current token waits out the lease: rejected
    *    while `lease_expires_at + grace` is in the future, allowed once it
    *    has lapsed, unless the daemon confirmed this exact owner generation's
-   *    terminal absent in Herdr. Identity equality (subscriberId, session ref) proves
+   *    terminal absent or its Claude session replaced in Herdr. Identity equality (subscriberId, session ref) proves
    *    NOTHING on its own — both halves are public or reconstructible from
    *    public RPC (the F3-1 takeover chain), so they authenticate nobody.
    *  - any successful claim invalidates the previous lease token.
@@ -127,7 +127,7 @@ export class ProfileOwnerStore {
      * live owner's token to take the fast path; omitted or stale means the
      * expiry rule applies. This is the re-claim proof of possession. */
     currentLeaseToken?: string;
-    /** Daemon-only CAS proof: Herdr confirmed this generation's terminal gone.
+    /** Daemon-only CAS proof: Herdr confirmed this generation gone or replaced.
      * Never accepted from the public claim schema. */
     goneOwnerLeaseToken?: string;
     graceMs?: number;

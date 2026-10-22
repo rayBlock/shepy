@@ -18,10 +18,17 @@ export class ClaudeIdleWakeStore {
     return new Set(rows.map((row) => row.id));
   }
 
+  /** Release only after a definite connect failure, never after an ambiguous send. */
+  releaseUnconnectedAttempt(input: { batchKey: string; profileId: string }): void {
+    this.#sqlite
+      .prepare("delete from claude_idle_wakes where profile_id = ? and batch_key = ?")
+      .run(input.profileId, input.batchKey);
+  }
+
   /**
-   * Records the send attempt before it crosses the Claude messaging socket boundary.
-   * A false result means this exact pending batch was attempted previously;
-   * ambiguous or failed sends are deliberately not retried.
+   * Reserve before crossing the messaging socket boundary. A false result
+   * means this exact pending batch was attempted previously. Only a definite
+   * pre-connect failure may release it; ambiguous sends are never retried.
    */
   recordAttempt(input: {
     batchKey: string;

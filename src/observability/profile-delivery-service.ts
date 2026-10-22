@@ -4,7 +4,7 @@ import type { AgentEventStore } from "@/db/agent-events.js";
 import type { AgentStore } from "@/db/agents.js";
 import type { DeliveryObligationStore, Obligation } from "@/db/delivery-obligations.js";
 import type { OrchestratorProfileStore } from "@/db/orchestrator-profiles.js";
-import type { ProfileOwnerStore } from "@/db/profile-owners.js";
+import type { ProfileOwner, ProfileOwnerStore } from "@/db/profile-owners.js";
 import {
   type ClaimResult,
   isLeaseAlive,
@@ -482,7 +482,12 @@ export class ProfileDeliveryService {
    * daemon-private generation synchronously in the store after the await. */
   async claimWithOwnerCheck(
     input: Omit<Parameters<ProfileOwnerStore["claim"]>[0], "goneOwnerLeaseToken">,
-    terminalGone: (owner: PublicProfileOwner) => Promise<boolean>,
+    ownerGone: (
+      owner: Pick<
+        ProfileOwner,
+        "harnessKind" | "harnessSessionRefJson" | "herdrSessionName" | "paneId" | "terminalId"
+      >,
+    ) => Promise<boolean>,
   ): Promise<ClaimResult> {
     const observed = this.#owners.get(input.profileId);
     const result = this.claim(input);
@@ -500,7 +505,16 @@ export class ProfileDeliveryService {
       observed.herdrSessionName !== input.herdrSessionName
     )
       return result;
-    if (!(await terminalGone(toPublicProfileOwner(observed)))) return result;
+    if (
+      !(await ownerGone({
+        harnessKind: observed.harnessKind,
+        harnessSessionRefJson: observed.harnessSessionRefJson,
+        herdrSessionName: observed.herdrSessionName,
+        paneId: observed.paneId,
+        terminalId: observed.terminalId,
+      }))
+    )
+      return result;
     return this.claim({ ...input, goneOwnerLeaseToken: observed.leaseToken });
   }
 

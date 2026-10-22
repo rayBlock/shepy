@@ -98,6 +98,7 @@ export function validateClaudeMessagingSocket(
 
 export type SocketOutcome =
   | { status: "posted-unacknowledged"; reason: "local-writes-complete" }
+  | { status: "not-connected"; reason: "error" | "early-close" }
   | { status: "ambiguous"; reason: "timeout" | "error" | "early-close" };
 export type SocketAdapter = (
   path: string,
@@ -113,7 +114,8 @@ export interface SocketConnection {
 /** Protocol copied from agent-factory tools/runner/socket.ts and wake.ts
  * (claude-2.1.257). Auth precedes the user frame. There is NO remote ack:
  * write callbacks prove only local flush, never confirmed delivery.
- * Shepy's stricter policy makes exactly one attempt, even on connect failure.
+ * A definite connect failure sends no frames and permits a later attempt.
+ * Once connected, every failure remains ambiguous and must never be retried.
  */
 export const wakeFrames = (token: string, line: string): readonly string[] => [
   `${JSON.stringify({ type: "auth", token })}\n`,
@@ -127,6 +129,7 @@ export function createSocketAdapter(
     new Promise((resolve) => {
       const socket = connect();
       let settled = false;
+      let connected = false;
       const finish = (outcome: SocketOutcome): void => {
         if (settled) return;
         settled = true;
@@ -135,12 +138,15 @@ export function createSocketAdapter(
         resolve(outcome);
       };
       const timer = setTimeout(() => finish({ status: "ambiguous", reason: "timeout" }), 1_000);
-      socket.on("error", () => finish({ status: "ambiguous", reason: "error" }));
-      socket.on("close", () => finish({ status: "ambiguous", reason: "early-close" }));
-      socket.on("end", () => finish({ status: "ambiguous", reason: "early-close" }));
+      const failed = (reason: "error" | "early-close"): void =>
+        finish({ status: connected ? "ambiguous" : "not-connected", reason });
+      socket.on("error", () => failed("error"));
+      socket.on("close", () => failed("early-close"));
+      socket.on("end", () => failed("early-close"));
       try {
         socket.connect(path, () => {
           if (settled) return;
+          connected = true;
           try {
             const lines = frames();
             const write = (index: number): void => {
@@ -166,7 +172,7 @@ export function createSocketAdapter(
           }
         });
       } catch {
-        finish({ status: "ambiguous", reason: "error" });
+        failed("error");
       }
     });
 }
@@ -181,6 +187,8 @@ export async function safeSocketPost(
     const outcome = await adapter(path, frames);
     if (outcome.status === "posted-unacknowledged" && outcome.reason === "local-writes-complete")
       return { status: "posted-unacknowledged", reason: "local-writes-complete" };
+    if (outcome.status === "not-connected" && ["error", "early-close"].includes(outcome.reason))
+      return { status: "not-connected", reason: outcome.reason };
     if (
       outcome.status === "ambiguous" &&
       ["timeout", "error", "early-close"].includes(outcome.reason)

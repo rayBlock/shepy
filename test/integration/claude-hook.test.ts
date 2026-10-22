@@ -52,7 +52,53 @@ import { AgentOrchestratorService } from "@/observability/agent-orchestrator-ser
 import { ProfileDeliveryService } from "@/observability/profile-delivery-service.js";
 import { ProfileService } from "@/observability/profile-service.js";
 import { profileClaimInputSchema } from "@/observability/schemas.js";
-import type { SocketAdapter } from "@/shared/claude-messaging-socket.js";
+import {
+  createSocketAdapter,
+  type SocketAdapter,
+  validateClaudeMessagingSocket,
+} from "@/shared/claude-messaging-socket.js";
+
+async function crashableClaudeSession(f: Fixture, filename = "crashed.sock") {
+  const directory = join(f.dir, "cc-socks");
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const path = join(directory, filename);
+  const child = spawn(
+    process.execPath,
+    [
+      "--input-type=module",
+      "--eval",
+      `
+    import {createServer} from 'node:net';
+    import {chmodSync} from 'node:fs';
+    createServer().listen(process.argv[1], () => {
+      chmodSync(process.argv[1], 0o600);
+      process.send('ready');
+    });
+  `,
+      path,
+    ],
+    { stdio: ["ignore", "ignore", "pipe", "ipc"] },
+  );
+  await new Promise<void>((resolve, reject) => {
+    child.once("message", () => resolve());
+    child.once("error", reject);
+    child.once("exit", () => reject(new Error("fixture Claude exited before ready")));
+  });
+  return {
+    path,
+    environment: {
+      CLAUDE_CODE_MESSAGING_SOCKET: path,
+      CLAUDE_CODE_MESSAGING_TOKEN: "fixture-crashed-token",
+    },
+    async crash() {
+      if (child.signalCode || child.exitCode !== null) return;
+      await new Promise<void>((resolve) => {
+        child.once("exit", () => resolve());
+        child.kill("SIGKILL");
+      });
+    },
+  };
+}
 
 async function fakeClaudeSocket(f: Fixture, filename = "owner.sock") {
   const directory = join(f.dir, "cc-socks");
@@ -643,8 +689,47 @@ describe("Claude socket wake through the real hook claim", () => {
     expect(posted).toEqual([]);
   });
 
+  test("a SIGKILL-stale socket releases its unconnected wake reservation, then pending details deliver once at the next claim", async () => {
+    const f = await openHookServer();
+    const session = await crashableClaudeSession(f);
+    try {
+      enableSocketWake(f);
+      await runHook(f, promptPayload(), { environment: session.environment });
+      await session.crash();
+      expect(lstatSync(session.path).isSocket()).toBe(true);
+      expect(
+        validateClaudeMessagingSocket(
+          f.owners.get("driffs")?.claudeMessagingSocket,
+          join(f.dir, "cc-socks"),
+        ),
+      ).not.toBeNull();
+      const id = projectOutcome(f, "dead-socket", "details after dead socket");
+      const transport = createSocketAdapter();
+      let outcome: Awaited<ReturnType<SocketAdapter>> | undefined;
+      const wake = socketWakeService(f, async (path, frames) => {
+        outcome = await transport(path, frames);
+        return outcome;
+      });
+      wake.schedule(["driffs"]);
+      await vi.waitFor(() => expect(outcome).toBeDefined());
+      expect(outcome).toMatchObject({ status: "not-connected" });
+      expect(new ClaudeIdleWakeStore(f.sqlite).attemptedObligationIds("driffs").size).toBe(0);
+      expect(f.obligations.list({ profileId: "driffs", state: "pending" })).toMatchObject([
+        { agentEventId: id, attemptCount: 0 },
+      ]);
+      wake.close();
+      const next = await runHook(f, promptPayload());
+      expect(next.stdout).toContain("details after dead socket");
+      expect((await runHook(f, promptPayload())).stdout).not.toContain("details after dead socket");
+      expect(f.obligations.list({ profileId: "driffs", state: "acked" })).toMatchObject([
+        { agentEventId: id, attemptCount: 1 },
+      ]);
+    } finally {
+      await session.crash();
+    }
+  });
+
   test.each([
-    "refused-connect",
     "ambiguous",
     "throws",
   ])("%s is never retried, even after reopening SQLite or a new pending subset", async (mode) => {
@@ -1318,7 +1403,7 @@ describe("claude-hook UserPromptSubmit", () => {
     expect(parsed.systemMessage).toContain("driffs");
     expect(parsed.systemMessage).toContain("w9:p9");
     expect(parsed.systemMessage).toContain("pi");
-    expect(parsed.hookSpecificOutput).toBeUndefined();
+    expect(parsed.hookSpecificOutput).toMatchObject({ hookEventName: "UserPromptSubmit" });
     expect(fixture.owners.get("driffs")?.subscriberId).toBe("other-subscriber");
   });
 
@@ -1519,7 +1604,7 @@ describe("claude-hook lease-token re-claim (proof of possession)", () => {
     const { code, stdout } = await runHook(fixture, promptPayload({ prompt_id: "sup-p2" }));
     expect(code).toBe(0);
     const parsed = JSON.parse(stdout) as { hookSpecificOutput?: unknown; systemMessage?: string };
-    expect(parsed.hookSpecificOutput).toBeUndefined();
+    expect(parsed.hookSpecificOutput).toMatchObject({ hookEventName: "UserPromptSubmit" });
     // The DISTINCT stale-token line: names the persisted token and the
     // self-recovery, NOT "owned by pane" — an operator must be able to
     // tell "wait for the lease to lapse" from "coordinate with the owner".
@@ -1538,64 +1623,6 @@ describe("claude-hook lease-token re-claim (proof of possession)", () => {
     expect(record.leaseToken).toBe(staleToken);
     expect(fixture.owners.get("driffs")?.subscriberId).toBe("other-subscriber");
   });
-
-  test.runIf(schemaAcceptsCurrentLeaseToken)(
-    "a stale persisted token is rejected while the lease is alive: exit 0, nothing leased, distinct warning",
-    async () => {
-      const fixture = await openHookServer();
-      // Turn 1: the hook claims and delivers; the owner file holds the
-      // token that is about to go stale.
-      projectOutcome(fixture, "stale-1", "delivered before the takeover");
-      const first = await runHook(fixture, promptPayload({ prompt_id: "stale-p1" }));
-      expect(first.code).toBe(0);
-      const staleToken = readOwnerFile(fixture).leaseToken;
-      expect(staleToken).toBeTruthy();
-
-      // The hook's lease lapses (lease 5 min + grace 30 s), and a different
-      // subscriber (a Pi lead pane) takes the profile: the hook's persisted
-      // token is now superseded and the NEW lease is alive.
-      const lapsed = openSqlite(join(fixture.dir, "test.sqlite"));
-      openDbs.push(lapsed.sqlite);
-      lapsed.sqlite
-        .prepare(
-          "update profile_owners set lease_expires_at = 0, last_seen_at = 0 where profile_id = ?",
-        )
-        .run("driffs");
-      const takeover = fixture.delivery.claim({
-        harnessKind: "pi",
-        harnessSessionRefJson: "{}",
-        herdrSessionName: "lane-b",
-        paneId: "w9:p9",
-        profileId: "driffs",
-        subscriberId: "other-subscriber",
-        terminalId: "w9:p9",
-        workspaceId: "w9",
-      });
-      expect(takeover.kind).toBe("reclaimed");
-
-      // An outcome lands while the stale bridge is locked out.
-      projectOutcome(fixture, "stale-2", "must stay pending, never leased");
-
-      const { code, stdout } = await runHook(fixture, promptPayload({ prompt_id: "stale-p2" }));
-      expect(code).toBe(0);
-      const parsed = JSON.parse(stdout) as { hookSpecificOutput?: unknown; systemMessage?: string };
-      expect(parsed.hookSpecificOutput).toBeUndefined();
-      // The DISTINCT stale-token line: names the persisted token and the
-      // self-recovery, NOT "owned by pane" — an operator must be able to
-      // tell "wait for the lease to lapse" from "coordinate with the owner".
-      expect(parsed.systemMessage).toContain("driffs");
-      expect(parsed.systemMessage).toContain("persisted lease token");
-      expect(parsed.systemMessage).toContain("recovers automatically");
-      expect(parsed.systemMessage).not.toContain("is owned by pane");
-      // Rejected before settling or leasing: the previous turn's delivered
-      // record is untouched, nothing new is leased, nothing is acked.
-      expect(fixture.delivery.inboxList({ profileId: "driffs", state: "leased" })).toHaveLength(0);
-      expect(fixture.delivery.inboxList({ profileId: "driffs", state: "pending" })).toHaveLength(1);
-      const record = readOwnerFile(fixture);
-      expect(record.leaseToken).toBe(staleToken);
-      expect(fixture.owners.get("driffs")?.subscriberId).toBe("other-subscriber");
-    },
-  );
 
   test.runIf(schemaAcceptsCurrentLeaseToken)(
     "a lapsed owner reclaims on the next prompt by proof of possession and is delivered",
@@ -3385,7 +3412,11 @@ describe("Claude profile handover", () => {
     };
   }
 
-  async function herdrPeer(f: Fixture, answer: unknown, silent = false) {
+  async function herdrPeer(
+    f: Fixture,
+    answer: unknown | ((method: string) => unknown),
+    silent = false,
+  ) {
     const path = join(f.dir, "herdr.sock");
     const requests: unknown[] = [];
     const server = createServer((socket) => {
@@ -3397,8 +3428,12 @@ describe("Claude profile handover", () => {
         for (const line of lines) {
           const request = JSON.parse(line);
           requests.push(request);
-          if (!silent)
-            socket.write(`${JSON.stringify({ id: request.id, ...(answer as object) })}\n`);
+          if (!silent) {
+            const response = typeof answer === "function" ? answer(request.method) : answer;
+            void Promise.resolve(response).then((value) => {
+              socket.write(`${JSON.stringify({ id: request.id, ...(value as object) })}\n`);
+            });
+          }
         }
       });
     });
@@ -3407,6 +3442,127 @@ describe("Claude profile handover", () => {
     f.sqlite.prepare("update herdr_sessions set socket_path = ? where name = 'lane-b'").run(path);
     return requests;
   }
+
+  test.each([
+    true,
+    false,
+  ])("a crashed Claude's replacement in the same pane requires reachable Herdr (%s) and consumes pending details once", async (reachable) => {
+    const f = await openHookServer();
+    const first = await crashableClaudeSession(f);
+    const replacement = await crashableClaudeSession(f, "replacement.sock");
+    try {
+      await runHook(f, promptPayload(), { environment: first.environment });
+      const old = f.owners.get("driffs");
+      expect(old?.leaseExpiresAt).toBeGreaterThan(Date.now());
+      await first.crash(); // No SessionEnd: owner and private socket remain recorded.
+      const eventId = projectOutcome(f, "same-pane-crash", "pending after crash");
+      const requests = reachable
+        ? await herdrPeer(f, {
+            result: {
+              type: "pane_info",
+              pane: {
+                ...pane("t1"),
+                agent: "claude",
+                agent_session: {
+                  agent: "claude",
+                  kind: "id",
+                  source: "herdr:claude",
+                  value: "replacement",
+                },
+              },
+            },
+          })
+        : [];
+      const second = await runHook(f, promptPayload({ session_id: "replacement" }), {
+        environment: replacement.environment,
+      });
+      if (!reachable) {
+        expect(f.owners.get("driffs")?.leaseToken).toBe(old?.leaseToken);
+        expect(second.stdout).toContain("owned by pane w1:p1");
+        expect(f.obligations.list({ profileId: "driffs", state: "pending" })[0]?.attemptCount).toBe(
+          0,
+        );
+        return;
+      }
+      expect(second.stdout).toContain("pending after crash");
+      expect(f.owners.get("driffs")?.subscriberId).toBe("replacement");
+      expect(f.owners.get("driffs")?.leaseToken).not.toBe(old?.leaseToken);
+      expect(requests).toMatchObject([{ method: "pane.get", params: { pane_id: "w1:p1" } }]);
+      await runHook(f, { hook_event_name: "SessionEnd", session_id: SESSION_ID });
+      const oldPrompt = await runHook(f, promptPayload());
+      expect(oldPrompt.stdout).not.toContain("pending after crash");
+      expect(f.owners.get("driffs")?.subscriberId).toBe("replacement");
+      const again = await runHook(f, promptPayload({ session_id: "replacement" }), {
+        environment: replacement.environment,
+      });
+      expect(again.stdout).not.toContain("pending after crash");
+      expect(f.obligations.list({ profileId: "driffs", state: "acked" })).toMatchObject([
+        { agentEventId: eventId, attemptCount: 1 },
+      ]);
+    } finally {
+      await first.crash();
+      await replacement.crash();
+    }
+  });
+
+  test("same-pane takeover trusts only Herdr's exact new Claude session, never claimant metadata", async () => {
+    const session = { agent: "claude", kind: "id", source: "herdr:claude", value: "replacement" };
+    const valid = { ...pane("t1"), agent: "claude", agent_session: session };
+    for (const invalid of [
+      { ...valid, terminal_id: "different" },
+      { ...valid, pane_id: "w1:other" },
+      { ...valid, agent_session: undefined },
+      { ...valid, agent_session: { ...session, value: SESSION_ID } },
+      { ...valid, agent_session: { ...session, value: "not-the-claimant" } },
+      { ...valid, agent_session: { ...session, source: "herdr:pi" } },
+      { ...valid, agent_session: { ...session, kind: "path" } },
+      { ...valid, agent: "pi" },
+    ]) {
+      const f = await openHookServer();
+      await runHook(f, promptPayload());
+      const old = f.owners.get("driffs");
+      projectOutcome(f, `invalid-${f.dir}`, "still pending");
+      await herdrPeer(f, { result: { type: "pane_info", pane: invalid } });
+      const result = await runHook(f, promptPayload({ session_id: "replacement" }));
+      expect(f.owners.get("driffs")?.leaseToken, JSON.stringify(invalid)).toBe(old?.leaseToken);
+      expect(result.stdout).not.toContain("still pending");
+      expect(f.obligations.list({ profileId: "driffs", state: "pending" })[0]?.attemptCount).toBe(
+        0,
+      );
+    }
+  });
+
+  test("a refused prompt tells the model who owns it and both times, but a refused Stop never continues", async () => {
+    const f = await openHookServer();
+    await runHook(f, promptPayload());
+    const owner = f.owners.get("driffs");
+    if (!owner) throw new Error("missing fixture owner");
+    projectOutcome(f, "refusal-context", "must remain pending");
+    const refused = await runHook(f, promptPayload({ session_id: "replacement" }));
+    const output = JSON.parse(refused.stdout);
+    expect(output.systemMessage).toContain("owned by pane w1:p1");
+    const context = output.hookSpecificOutput?.additionalContext;
+    expect(context).toContain("w1:p1");
+    expect(context).toContain("claude");
+    expect(context).toContain(new Date(owner.claimedAt).toISOString());
+    expect(context).toContain(new Date(owner.leaseExpiresAt + 30_000).toISOString());
+    expect(context.split("\n")).toHaveLength(1);
+    expect(context.length).toBeLessThanOrEqual(CONTEXT_MAX_CHARS);
+    expect(output.hookSpecificOutput.hookEventName).toBe("UserPromptSubmit");
+    // Preserve the old owner file, then lapse it and let a rival win before Stop.
+    lapseOwnerLease(f);
+    const lease = f.delivery.inboxLease.bind(f.delivery);
+    f.delivery.inboxLease = (input) => {
+      try {
+        return lease(input);
+      } finally {
+        f.delivery.claim({ ...hookClaimParams(), subscriberId: "rival", terminalId: "t1" });
+      }
+    };
+    const stop = await runHook(f, stopPayload());
+    expect(JSON.parse(stop.stdout).hookSpecificOutput).toBeUndefined();
+    expect(f.obligations.list({ profileId: "driffs", state: "pending" })[0]?.attemptCount).toBe(0);
+  });
 
   test.each([
     ["alive", { result: { type: "pane_list", panes: [pane("t1")] } }, false],
@@ -3423,10 +3579,16 @@ describe("Claude profile handover", () => {
     await runHook(f, promptPayload());
     const old = f.owners.get("driffs")?.leaseToken;
     projectOutcome(f, `takeover-${mode}`, "pending takeover notice");
+    f.agents.replaceForSession({
+      herdrSessionName: "lane-b",
+      agents: [...f.agents.list(), { ...pane("t-rival", "w1:p2"), agent: "claude" }],
+    });
     const requests = await herdrPeer(f, answer, mode === "timeout");
     const started = performance.now();
     const cpuStarted = process.cpuUsage();
-    const result = await runHook(f, promptPayload({ session_id: "rival" }));
+    const result = await runHook(f, promptPayload({ session_id: "rival" }), {
+      environment: { HERDR_PANE_ID: "w1:p2" },
+    });
     const elapsed = performance.now() - started;
     console.info(
       "S4 fixture claim cost",
@@ -3454,6 +3616,10 @@ describe("Claude profile handover", () => {
     "null-terminal",
     "other-session",
     "unreachable",
+    "legacy-same-pane",
+    "malformed-owner-session",
+    "same-pane-error",
+    "same-pane-timeout",
   ])("takeover fails closed for %s", async (mode) => {
     const f = await openHookServer();
     await runHook(f, promptPayload());
@@ -3462,8 +3628,40 @@ describe("Claude profile handover", () => {
       f.sqlite.prepare("update profile_owners set terminal_id = null").run();
     if (mode === "other-session")
       f.sqlite.prepare("update profile_owners set herdr_session_name = 'other-session'").run();
+    if (mode === "legacy-same-pane")
+      f.sqlite.prepare("update profile_owners set terminal_id = pane_id").run();
+    if (mode === "malformed-owner-session")
+      f.sqlite.prepare("update profile_owners set harness_session_ref_json = 'not-json'").run();
+    const requests =
+      mode === "unreachable"
+        ? []
+        : await herdrPeer(
+            f,
+            mode === "same-pane-error"
+              ? { error: { code: "unavailable", message: "fixture error" } }
+              : {
+                  result: {
+                    type: "pane_info",
+                    pane: {
+                      ...pane("t1"),
+                      agent: "claude",
+                      agent_session: {
+                        agent: "claude",
+                        kind: "id",
+                        source: "herdr:claude",
+                        value: "rival",
+                      },
+                    },
+                  },
+                },
+            mode === "same-pane-timeout",
+          );
+    const started = performance.now();
     await runHook(f, promptPayload({ session_id: "rival" }));
     expect(f.owners.get("driffs")?.leaseToken).toBe(token);
+    if (mode === "same-pane-timeout") expect(performance.now() - started).toBeLessThan(2_000);
+    if (["legacy-same-pane", "malformed-owner-session"].includes(mode))
+      expect(requests).toEqual([]);
   });
 
   test.each([
@@ -3709,6 +3907,28 @@ describe("Claude profile handover", () => {
     expect(f.obligations.list({ profileId: "driffs", state: "delivered" })).toHaveLength(1);
   });
 
+  test("daemon errors in the real entrypoint have ISO timestamps", async () => {
+    const child = spawn(
+      process.execPath,
+      ["--import", "tsx", "src/cli/shepy-daemon.ts", "invalid-argument"],
+      {
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let stderr = "";
+    child.stderr.on("data", (data) => {
+      stderr += data.toString();
+    });
+    const code = await new Promise<number | null>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("exit", resolve);
+    });
+    expect(code).toBe(1);
+    expect(stderr.trim()).toMatch(
+      /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z shepy-daemon does not accept CLI arguments$/,
+    );
+  });
+
   test("a current-token prompt makes no additional Herdr request", async () => {
     const f = await openHookServer();
     await runHook(f, promptPayload());
@@ -3719,24 +3939,41 @@ describe("Claude profile handover", () => {
     expect(requests).toEqual([]);
   });
 
-  test("a delayed gone result cannot evict a refreshed owner generation", async () => {
+  test("a delayed same-pane replacement proof cannot evict a refreshed owner generation", async () => {
     const f = await openHookServer();
     await runHook(f, promptPayload());
-    let finish: (gone: boolean) => void = () => {
+    let finish: (answer: unknown) => void = () => {
       throw new Error("check not entered");
     };
-    let entered = false;
-    const claim = f.delivery.claimWithOwnerCheck(hookClaimParams(), () => {
-      entered = true;
-      return new Promise<boolean>((resolve) => {
-        finish = resolve;
-      });
+    let entered: () => void = () => {
+      throw new Error("missing fixture gate");
+    };
+    const checking = new Promise<void>((resolve) => {
+      entered = resolve;
     });
-    expect(entered).toBe(true);
+    await herdrPeer(
+      f,
+      () =>
+        new Promise<unknown>((resolve) => {
+          finish = resolve;
+          entered();
+        }),
+    );
+    const claim = runHook(f, promptPayload({ session_id: "rival" }));
+    await checking;
     await runHook(f, promptPayload());
     const fresh = f.owners.get("driffs")?.leaseToken;
-    finish(true);
-    expect(await claim).toMatchObject({ kind: "rejected", reason: "lease_active" });
+    finish({
+      result: {
+        type: "pane_info",
+        pane: {
+          ...pane("t1"),
+          agent: "claude",
+          agent_session: { agent: "claude", kind: "id", source: "herdr:claude", value: "rival" },
+        },
+      },
+    });
+    expect((await claim).stdout).toContain("owned by pane");
     expect(f.owners.get("driffs")?.leaseToken).toBe(fresh);
   });
 
