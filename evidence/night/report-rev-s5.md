@@ -52,3 +52,22 @@ All runs used `env -i` with a fresh HOME and TMPDIR under `/private/tmp/rs5.*`. 
 - `discovery.ts:149` maps any session `source` containing "pi" to the Pi reader (for example "copilot"). Owner: seat.
 
 Private scratch: `/private/tmp/claude-501/-Users-ray-dev-shepy-wt-night-rev-s5/22039f5d-09a2-4f1b-a755-6f8fae88d6b4/scratchpad/` (logs, probes, `cand` and `base` worktrees).
+
+## Recheck of correction `bbb080c` (night/s5)
+**ACCEPT.** Candidate `bbb080c` was rechecked detached in the same scratch worktree. All three findings are fixed, and the seat's ruling (suppress only done to idle) is implemented as ruled.
+1. Fixed. Probe P-G now prints `screen text (not an assistant answer):` before the screen words, and `(screen text unavailable)` under the same label (`src/cli/shepy.ts:1928-1938`). History text still prints under `excerpt:`. Control: with the label reverted, the 2 screen cases in `test/unit/cli.test.ts` fail.
+2. Fixed by rewording. `README.md:59` now names the snapshot-batch hold-back of up to 1.75 s. Probe P-B is unchanged: 2,265 ms in a batch, 503 ms on the event path. The README now matches that.
+3. Fixed. The three timing tests have a 15 s timeout. `screen-text-notice.test.ts` passed 5 times out of 5 (13 tests, load 6 to 10, slow-read test 2.27 to 2.31 s). The full suite had no timeout.
+4. Seat ruling, done to idle only (`profile-delivery-service.ts:552-553`).
+   - Probe P-D gives 1 notice for working, done, idle and 2 for working, idle, done; the second is new and has no text.
+   - A new turn through working still notifies with its screen text.
+   - Control: with the `from`/`type` guard removed, the new test "idle then done … notifies" fails.
+   - New side effect, Low, not blocking: working, idle, done, idle now gives 3 notices. The done-to-idle change after the empty idle-to-done notice is not recognized as the same turn, because that event carries no screen tail. The extra notice is empty; nothing is lost. If the seat wants it gone, a reader-less kind could drop every done to idle change. That is a one-line rule and its own decision.
+
+Recheck runs used `env -i`, a fresh HOME and TMPDIR under `/private/tmp/rs5.*`, CLAUDECODE and the messaging variables absent, and Node 24.18.0 with a real install.
+- `tsc --noEmit` exited 0. Biome is clean on the 10 changed `.ts` files.
+- 18 focused files (S5, S1, S4, `cli`): 680 of 680 passed in 58 s at load 6.
+- Full suite with `lockf -k /private/tmp/agent-factory-full-gate.lock` and `node scripts/run-tests.mjs`, started at load 9: 1,177 passed and 37 failed in 96 s.
+  - 35 are in the strict demand fixture ("fixture source pairing mismatch: src/cli/claude-hook.ts"). These pins already failed on base `50ca705`, and the correction changes another pinned file, `src/cli/shepy.ts`.
+  - 2 are the Codex history tests, the same failure as on the base.
+  - No timeouts and no S5, S1 or S4 test failed.
