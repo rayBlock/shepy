@@ -36,17 +36,23 @@ const emptyCounts = (): RetentionCounts => ({
 
 // All obligations (including acknowledged audit rows) remain references. Owned
 // cursors protect both their anchor and unread events in that exact scope.
-// Keep the latest settled event per agent for restart/seen-turn deduplication.
-const eligibleEvent = `e.created_at < ? and e.compact_history_json is not null
+// Indexed agents still need their outcome ledger: departure recovery replays
+// unprojected outcomes and walks prior settled events to reject seen-turn flaps.
+// Keep the latest status observation too, including a deferred settlement journal.
+// These references cease to protect rows when the agent leaves the index.
+const eligibleEvent = `e.created_at < ?
   and not exists (select 1 from delivery_obligations o where o.agent_event_id = e.id)
   and not exists (select 1 from source_entry_deliveries d where d.agent_event_id = e.id)
   and not exists (select 1 from agent_orchestrator_scopes s
     where s.herdr_session_name = e.herdr_session_name and s.workspace_id = e.workspace_id
       and (s.owner_terminal_id is not null or s.owner_pane_id is not null)
       and e.id >= s.acked_event_id)
-  and not (e.agent_id is not null and e.type in ('agent.done', 'agent.idle')
-    and e.id = (select p.id from agent_events p where p.agent_id = e.agent_id
-      and p.type in ('agent.done', 'agent.idle') order by p.id desc limit 1))`;
+  and not (e.agent_id is not null and (
+    e.type in ('agent.done', 'agent.idle', 'agent.blocked', 'agent.tool.failed')
+    or (e.type = 'agent.status.changed' and e.id = (
+      select p.id from agent_events p where p.agent_id = e.agent_id
+        and p.type in ('agent.status.changed', 'agent.done', 'agent.idle', 'agent.blocked')
+      order by p.id desc limit 1))))`;
 
 type Candidate = { bytes: number; id: number };
 
@@ -112,7 +118,8 @@ export class RetentionStore {
         counts.scannedRows = ids.length;
         const candidates = events
           ? (this.sqlite
-              .prepare(`select e.id, length(cast(e.compact_history_json as blob)) as bytes
+              .prepare(`select e.id, coalesce(length(cast(e.compact_history_json as blob)), 0)
+                + length(cast(e.payload_json as blob)) as bytes
               from agent_events e where e.id > ? and e.id <= ? and ${eligibleEvent}`)
               .all(after, end, cursor.cutoff) as Candidate[])
           : (this.sqlite
@@ -124,7 +131,7 @@ export class RetentionStore {
           ? null
           : this.sqlite.prepare(
               events
-                ? "update agent_events set compact_history_json = null where id = ?"
+                ? "delete from agent_events where id = ?"
                 : "delete from agent_history_cache where id = ?",
             );
         for (const candidate of candidates) {

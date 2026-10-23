@@ -45,7 +45,8 @@ test("daemon retention runs at startup and daily, avoids duplicate starts, logs 
     await vi.advanceTimersByTimeAsync(0);
     expect(logs).toHaveLength(1);
     expect(logs[0]).toContain('"eventRows":1');
-    expect(logs[0]).toContain('"estimatedBytesFreed":2');
+    // Both the snapshot and payload JSON leave with the event row.
+    expect(logs[0]).toContain('"estimatedBytesFreed":4');
     append();
     await vi.advanceTimersByTimeAsync(RETENTION_INTERVAL_MS - 1);
     expect(logs).toHaveLength(1);
@@ -70,7 +71,7 @@ test("daemon retention runs at startup and daily, avoids duplicate starts, logs 
     // No timer is needed once an abort is already visible at the batch boundary.
     const resumed = runRetention(sqlite, { batchSize: 2, pauseMs: 0 });
     await vi.runAllTimersAsync();
-    expect((await resumed).eventRows).toBe(5);
+    expect((await resumed).eventRows).toBe(3);
   } finally {
     await service.stop();
     sqlite.close();

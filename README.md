@@ -46,20 +46,23 @@ shepy daemon start
 
 ## Database history retention
 
-At daemon startup and once a day, Shepy expires event context snapshots older than
-seven days and deletes history-cache rows from obsolete formatter versions. Event
-rows, ids, payloads and the timeline remain. Every delivery obligation reference
-(including acknowledged and dead-letter rows), OpenCode projection reference,
-owned workspace cursor anchor and unread event, and each agent's latest done or
-idle outcome keeps its context. Profile owners have no separate event cursor.
-Retention never changes obligations, owners or subscriptions.
+At daemon startup and once a day, Shepy deletes expendable `agent_events` rows
+older than seven days and history-cache rows from obsolete formatter versions.
+Every delivery obligation reference (including acknowledged and dead-letter rows),
+OpenCode projection reference, owned workspace cursor anchor and unread event
+keeps its entire event. Indexed agents also keep their done, idle, blocked and
+tool-failed outcome ledger and latest status observation: departure recovery
+replays unprojected outcomes and compares prior settled turns, and the agent index
+recovers deferred settlements from that observation. Once an agent leaves the
+index, only the other references and seven-day history protect its events.
+Profile owners have no separate event cursor. Retention never changes obligations,
+owners or subscriptions. Event ids are not renumbered; timeline readers may see gaps.
 
 Runs scan at most 100 rows per transaction, yield between batches, and log rows
-scanned, event snapshots nulled, cache rows deleted, estimated JSON bytes released
+scanned, event rows deleted, cache rows deleted, estimated JSON bytes released
 and elapsed time. These byte estimates are not file-size savings. Busy writers
 abort a run promptly; committed batches remain valid and the next run starts a
-fresh scan. Stopping the daemon cancels between batches. Old events without
-context report context unavailable; history-cache misses re-read the transcript.
+fresh scan. Stopping the daemon cancels between batches. Deleted events no longer appear in the timeline; history-cache misses re-read the transcript.
 
 For a one-shot run against the existing database selected by `SHEPY_HOME`:
 
@@ -79,12 +82,21 @@ writers, make a SQLite `.backup`, then run the explicit maintenance command in a
 quiet minute (allow temporary free space about the database's current size):
 
 ```bash
-shepy db retain --vacuum
+shepy maintenance compact
 ```
 
-VACUUM locks the database and cannot be combined with `--dry-run`. Restart the
-daemon after maintenance. Retention bounds expendable snapshots, not the whole
-database: the timeline and referenced context still grow.
+This runs retention, then VACUUM. The daemon holds a database-specific SQLite
+lifetime lock; compact refuses while that daemon or another compact command owns
+it. The lock follows the database's real path, including symlink aliases, and
+releases automatically after a crash. Its `.daemon-lock` sidecar must not be
+removed, even when idle. After upgrading from a version without this lock, stop
+the old daemon before using compact. Other database writers must also be stopped;
+SQLite's own locking may refuse VACUUM if they are active.
+
+`shepy db retain --vacuum` remains an alias for the same locked maintenance.
+VACUUM cannot be combined with `--dry-run`. Restart the daemon after maintenance.
+Retention bounds expendable history, not the whole database: delivery references,
+owned unread events and indexed-agent recovery ledgers can outlive seven days.
 
 ## Main commands
 

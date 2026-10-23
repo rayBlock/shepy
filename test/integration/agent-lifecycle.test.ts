@@ -12,6 +12,7 @@ import {
 import { DeliveryObligationStore } from "@/db/delivery-obligations.js";
 import { OrchestratorProfileStore } from "@/db/orchestrator-profiles.js";
 import { ProfileOwnerStore } from "@/db/profile-owners.js";
+import { RETENTION_AGE_MS, runRetention } from "@/db/retention.js";
 import { HerdrSocketClient } from "@/herdr/socket-client.js";
 import { AgentIndexService } from "@/observability/agent-index-service.js";
 import { ProfileDeliveryService } from "@/observability/profile-delivery-service.js";
@@ -239,6 +240,12 @@ describe("subscribed worker lifecycle", () => {
           },
         }),
     );
+    // Even after the history window, retention must not erase the unpublished
+    // outcome needed when this indexed worker next disappears.
+    f.sqlite
+      .prepare("update agent_events set created_at = ? where id = ?")
+      .run(Date.now() - RETENTION_AGE_MS - 1, done.id);
+    await runRetention(f.sqlite, { pauseMs: 0 });
     // Simulate a crash between the durable status/outcome commit and publication.
     // Close must recover the final before deleting its only matching subscription.
     f.restart();

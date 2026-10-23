@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { env, exit } from "node:process";
+import { env } from "node:process";
 import { fileURLToPath } from "node:url";
 import { createAgentHistoryService } from "@/agent-history/service.js";
 import { resolveRuntime } from "@/config/runtime.js";
@@ -13,6 +13,7 @@ import { AgentStore } from "@/db/agents.js";
 import { applyMigrations } from "@/db/apply-migrations.js";
 import { ClaudeIdleWakeStore } from "@/db/claude-idle-wakes.js";
 import { openSqlite } from "@/db/client.js";
+import { acquireDaemonDatabaseLock } from "@/db/daemon-lock.js";
 import { DeliveryObligationStore } from "@/db/delivery-obligations.js";
 import { HerdrSessionStore } from "@/db/herdr-sessions.js";
 import { HerdrWorkspaceStore } from "@/db/herdr-workspaces.js";
@@ -57,142 +58,154 @@ export async function runObservabilityDaemonService(
   });
 
   const { sqlite } = openSqlite(runtime.paths.dbPath);
-  applyMigrations(sqlite, {
-    migrationsFolder: resolveMigrationsFolder(dirname(fileURLToPath(import.meta.url))),
-  });
+  let releaseLock: (() => void) | undefined;
+  try {
+    releaseLock = acquireDaemonDatabaseLock(runtime.paths.dbPath);
+    applyMigrations(sqlite, {
+      migrationsFolder: resolveMigrationsFolder(dirname(fileURLToPath(import.meta.url))),
+    });
 
-  const herdrSessions = new HerdrSessionStore(sqlite);
-  const herdrWorkspaces = new HerdrWorkspaceStore(sqlite);
-  const agents = new AgentStore(sqlite);
-  const agentEvents = new AgentEventStore(sqlite);
-  const agentHistoryCache = new AgentHistoryCacheStore(sqlite);
-  const agentContextSnapshots = new AgentContextSnapshotStore(sqlite);
-  const agentOrchestratorScopes = new AgentOrchestratorScopeStore(sqlite);
-  const orchestratorProfiles = new OrchestratorProfileStore(sqlite);
-  const history = createAgentHistoryService({ cache: agentHistoryCache });
-  const profileService = new ProfileService({
-    agents,
-    history,
-    profiles: orchestratorProfiles,
-  });
-  const operationStore = new OperationStore(sqlite);
-  const orchestrationTransport = new SessionAwareOrchestrationTransport({
-    sessions: herdrSessions,
-  });
-  const operationDispatch = new OperationDispatchService({
-    operations: operationStore,
-    resolve: (profileId) => resolveDispatchTarget(profileService.resolveSubscriptions(profileId)),
-    transport: orchestrationTransport,
-  });
-  const operationWait = new OperationWaitService({ operations: operationStore });
-  const obligations = new DeliveryObligationStore(sqlite);
-  const profileOwners = new ProfileOwnerStore({ sqlite });
-  const idleWakeService = new ClaudeIdleWakeService({
-    events: agentEvents,
-    obligations,
-    owners: profileOwners,
-    profiles: orchestratorProfiles,
-    wakes: new ClaudeIdleWakeStore(sqlite),
-  });
-  // Upgrade fence (review F3-2): any lease stamp made by the pre-fence,
-  // unfenced inbox.lease dies here, once, before the RPC surface exists —
-  // rows return to pending and are re-delivered, never dropped.
-  obligations.invalidateAllLeases();
-  const deliveryService = new ProfileDeliveryService({
-    agentEvents,
-    agents,
-    obligations,
-    owners: profileOwners,
-    profiles: orchestratorProfiles,
-  });
-  const diagnoseService = new ProfileDiagnoseService({
-    daemonInfo,
-    obligations,
-    owners: profileOwners,
-    profiles: profileService,
-  });
-  const context = new AgentContextService({
-    history,
-    stores: { agentContextSnapshots, agents },
-  });
-  const daemonServices = { context, history };
-  const orchestrator = new AgentOrchestratorService({
-    agentEvents,
-    agents,
-    scopes: agentOrchestratorScopes,
-  });
-  const index = new AgentIndexService({
-    context: daemonServices.context,
-    onAgentsObserved: (agents) => profileService.observeAgents(agents),
-    stores: { agentEvents, agentHistoryCache, agents, herdrSessions, herdrWorkspaces },
-    onAgentGone: (departure) => {
-      idleWakeService.schedule(deliveryService.projectGoneAgent(departure));
-    },
-    onAgentsMoved: (moves) => deliveryService.moveSubscriptions(moves),
-  });
+    const herdrSessions = new HerdrSessionStore(sqlite);
+    const herdrWorkspaces = new HerdrWorkspaceStore(sqlite);
+    const agents = new AgentStore(sqlite);
+    const agentEvents = new AgentEventStore(sqlite);
+    const agentHistoryCache = new AgentHistoryCacheStore(sqlite);
+    const agentContextSnapshots = new AgentContextSnapshotStore(sqlite);
+    const agentOrchestratorScopes = new AgentOrchestratorScopeStore(sqlite);
+    const orchestratorProfiles = new OrchestratorProfileStore(sqlite);
+    const history = createAgentHistoryService({ cache: agentHistoryCache });
+    const profileService = new ProfileService({
+      agents,
+      history,
+      profiles: orchestratorProfiles,
+    });
+    const operationStore = new OperationStore(sqlite);
+    const orchestrationTransport = new SessionAwareOrchestrationTransport({
+      sessions: herdrSessions,
+    });
+    const operationDispatch = new OperationDispatchService({
+      operations: operationStore,
+      resolve: (profileId) => resolveDispatchTarget(profileService.resolveSubscriptions(profileId)),
+      transport: orchestrationTransport,
+    });
+    const operationWait = new OperationWaitService({ operations: operationStore });
+    const obligations = new DeliveryObligationStore(sqlite);
+    const profileOwners = new ProfileOwnerStore({ sqlite });
+    const idleWakeService = new ClaudeIdleWakeService({
+      events: agentEvents,
+      obligations,
+      owners: profileOwners,
+      profiles: orchestratorProfiles,
+      wakes: new ClaudeIdleWakeStore(sqlite),
+    });
+    // Upgrade fence (review F3-2): any lease stamp made by the pre-fence,
+    // unfenced inbox.lease dies here, once, before the RPC surface exists —
+    // rows return to pending and are re-delivered, never dropped.
+    obligations.invalidateAllLeases();
+    const deliveryService = new ProfileDeliveryService({
+      agentEvents,
+      agents,
+      obligations,
+      owners: profileOwners,
+      profiles: orchestratorProfiles,
+    });
+    const diagnoseService = new ProfileDiagnoseService({
+      daemonInfo,
+      obligations,
+      owners: profileOwners,
+      profiles: profileService,
+    });
+    const context = new AgentContextService({
+      history,
+      stores: { agentContextSnapshots, agents },
+    });
+    const daemonServices = { context, history };
+    const orchestrator = new AgentOrchestratorService({
+      agentEvents,
+      agents,
+      scopes: agentOrchestratorScopes,
+    });
+    const index = new AgentIndexService({
+      context: daemonServices.context,
+      onAgentsObserved: (agents) => profileService.observeAgents(agents),
+      stores: { agentEvents, agentHistoryCache, agents, herdrSessions, herdrWorkspaces },
+      onAgentGone: (departure) => {
+        idleWakeService.schedule(deliveryService.projectGoneAgent(departure));
+      },
+      onAgentsMoved: (moves) => deliveryService.moveSubscriptions(moves),
+    });
 
-  let watchManager: HerdrSessionWatchManager | undefined;
-  const server = new ObservabilityRpcServer({
-    context: daemonServices.context,
-    daemonInfo,
-    delivery: deliveryService,
-    profileDiagnose: diagnoseService,
-    profiles: profileService,
-    operationDispatch,
-    operationStore,
-    operationWait,
-    orchestrationTransport,
-    history: daemonServices.history,
-    orchestrator,
-    registerPiSessionRef: (registration) => index.registerPiSessionRef(registration),
-    socketPath: runtime.paths.socketPath,
-    stores: { agentEvents, agents, herdrSessions, herdrWorkspaces },
-    // Read at request time, not boot: daemon.health must answer the
-    // scheduler's CURRENT state. The late assignment is safe — the socket
-    // only listens after watchManager exists (server.start comes last).
-    watchHealth: () => watchManager?.health(),
-  });
-  watchManager = new HerdrSessionWatchManager({
-    agents,
-    herdrSessions,
-    index,
-    onAgentContextChanged: (scope) => server.publishAgentContext(scope),
-    onAgentEvent: (event) => {
-      server.publishAgentEvent(event);
-      const wakeProfiles = deliveryService.projectAgentEvent(event);
-      idleWakeService.schedule(wakeProfiles);
-    },
-    onAgentIndexRefreshed: (refreshed) => server.reconcileAgentLocations(refreshed),
-    onSessionRefreshed: (herdrSessionName, presence) => {
-      for (const profile of profileService.listProfiles()) {
-        profileService.pruneSubscriptions({
-          ageMs: SUBSCRIPTION_PRUNE_AGE_MS,
-          herdrSessionName,
-          ...(presence ? { presence } : {}),
-          profileId: profile.profileId,
-        });
-      }
-    },
-    sessionList: createHerdrSessionListRunner({ env: runtime.environment }),
-  });
+    let watchManager: HerdrSessionWatchManager | undefined;
+    const server = new ObservabilityRpcServer({
+      context: daemonServices.context,
+      daemonInfo,
+      delivery: deliveryService,
+      profileDiagnose: diagnoseService,
+      profiles: profileService,
+      operationDispatch,
+      operationStore,
+      operationWait,
+      orchestrationTransport,
+      history: daemonServices.history,
+      orchestrator,
+      registerPiSessionRef: (registration) => index.registerPiSessionRef(registration),
+      socketPath: runtime.paths.socketPath,
+      stores: { agentEvents, agents, herdrSessions, herdrWorkspaces },
+      // Read at request time, not boot: daemon.health must answer the
+      // scheduler's CURRENT state. The late assignment is safe — the socket
+      // only listens after watchManager exists (server.start comes last).
+      watchHealth: () => watchManager?.health(),
+    });
+    watchManager = new HerdrSessionWatchManager({
+      agents,
+      herdrSessions,
+      index,
+      onAgentContextChanged: (scope) => server.publishAgentContext(scope),
+      onAgentEvent: (event) => {
+        server.publishAgentEvent(event);
+        const wakeProfiles = deliveryService.projectAgentEvent(event);
+        idleWakeService.schedule(wakeProfiles);
+      },
+      onAgentIndexRefreshed: (refreshed) => server.reconcileAgentLocations(refreshed),
+      onSessionRefreshed: (herdrSessionName, presence) => {
+        for (const profile of profileService.listProfiles()) {
+          profileService.pruneSubscriptions({
+            ageMs: SUBSCRIPTION_PRUNE_AGE_MS,
+            herdrSessionName,
+            ...(presence ? { presence } : {}),
+            profileId: profile.profileId,
+          });
+        }
+      },
+      sessionList: createHerdrSessionListRunner({ env: runtime.environment }),
+    });
 
-  await server.start();
-  await watchManager.start();
-  idleWakeService.start();
-  const retention = new DatabaseRetentionService(sqlite);
-  retention.start();
-  console.log(`Shepy daemon listening on ${runtime.paths.socketPath}`);
+    await server.start();
+    await watchManager.start();
+    idleWakeService.start();
+    const retention = new DatabaseRetentionService(sqlite);
+    retention.start();
+    console.log(`Shepy daemon listening on ${runtime.paths.socketPath}`);
 
-  const stop = async () => {
-    await retention.stop();
-    idleWakeService.close();
-    await watchManager.stop();
-    await server.stop();
+    await new Promise<void>((resolve, reject) => {
+      const shutdown = async () => {
+        await retention.stop();
+        idleWakeService.close();
+        await watchManager.stop();
+        await server.stop();
+      };
+      const stop = () => {
+        process.removeListener("SIGINT", stop);
+        process.removeListener("SIGTERM", stop);
+        void shutdown().then(resolve, reject);
+      };
+      process.once("SIGINT", stop);
+      process.once("SIGTERM", stop);
+    });
+  } finally {
     sqlite.close();
-    exit(0);
-  };
-  process.once("SIGINT", stop);
-  process.once("SIGTERM", stop);
+    releaseLock?.();
+  }
 }
 
 export function resolveMigrationsFolder(startDir: string): string {

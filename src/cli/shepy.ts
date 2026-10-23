@@ -44,6 +44,7 @@ export const COMMAND_GROUP_VERBS = {
   daemon: ["restart", "start", "status", "stop"],
   db: ["retain"],
   inbox: ["get", "list", "retire", "retry"],
+  maintenance: ["compact"],
   operation: ["get", "list"],
   profile: [
     "context",
@@ -70,6 +71,7 @@ export const TOP_LEVEL_COMMANDS = [
   "db",
   "dispatch",
   "inbox",
+  "maintenance",
   "operation",
   "profile",
   "wait",
@@ -93,6 +95,8 @@ type HelpTopic =
   | "inbox-list"
   | "inbox-retire"
   | "inbox-retry"
+  | "maintenance"
+  | "maintenance-compact"
   | "operation"
   | "operation-get"
   | "operation-list"
@@ -128,6 +132,7 @@ type AgentScope = {
 export type CliCommand =
   | { action: DaemonAction; command: "daemon" }
   | { command: "db-retain"; dryRun: boolean; vacuum: boolean }
+  | { command: "maintenance-compact" }
   | ({ command: "agent-list"; json: boolean } & AgentScope)
   | ({ command: "agent-get"; json: boolean; target: string } & AgentScope)
   | ({ command: "agent-read"; json: boolean; limit?: number; target: string } & AgentScope)
@@ -215,6 +220,15 @@ export function parseCliArgs(
         return parseDispatchCommand(rest);
       case "inbox":
         return parseInboxCommand(rest);
+      case "maintenance": {
+        const [verb, ...flags] = rest;
+        if (!verb || isHelpFlag(verb)) return { command: "help", topic: "maintenance" };
+        if (verb !== "compact")
+          throw new CliUsageError(`Unknown maintenance command: ${verb}`, "maintenance");
+        if (flags.some(isHelpFlag)) return { command: "help", topic: "maintenance-compact" };
+        rejectExtra(flags, "maintenance-compact");
+        return { command: "maintenance-compact" };
+      }
       case "operation":
         return parseOperationCommand(rest);
       case "profile":
@@ -627,6 +641,7 @@ Commands:
   agent     Inspect indexed coding agents
   daemon    Manage the Shepy daemon
   db        Maintain bounded database history
+  maintenance Compact the database offline
   profile   Manage orchestration profiles
   inbox     Inspect delivery obligations
   dispatch  Send a prompt to a profile's agent
@@ -694,6 +709,23 @@ Options:
   --json                Print JSON
   -h, --help            Show help
 `;
+    case "maintenance":
+      return `Usage:
+  shepy maintenance <command>
+
+Commands:
+  compact   Retain history and reclaim free database pages
+
+Run \`shepy maintenance compact --help\` for details.`;
+    case "maintenance-compact":
+      return `Usage:
+  shepy maintenance compact
+
+Expire expendable history, then VACUUM the existing database selected by SHEPY_HOME.
+Stop the daemon first. A database-specific lifetime lock refuses concurrent daemons
+and compaction commands. Allow temporary free disk space about the database size.
+After upgrading from a version without this lock, stop the old daemon before use.
+Make a SQLite .backup first. This command never starts or contacts a daemon.`;
     case "db":
       return `Maintain bounded database history.
 
@@ -701,7 +733,7 @@ Usage:
   shepy db <command>
 
 Commands:
-  retain      Expire old unreferenced event context and obsolete history caches
+  retain      Delete old unreferenced events and obsolete history caches
 
 Options:
   -h, --help  Show help
@@ -709,7 +741,7 @@ Options:
 Run \`shepy db retain --help\` for maintenance options.
 `;
     case "db-retain":
-      return `Retain the timeline, expire unreferenced context older than 7 days.
+      return `Delete expendable events older than 7 days.
 
 Usage:
   shepy db retain [--dry-run] [--vacuum]
@@ -720,7 +752,7 @@ Options:
   -h, --help  Show help
 
 Uses SHEPY_HOME's existing database directly, without daemon RPC. Prints a JSON summary.
-All obligation references, owned cursors and latest settled outcomes are preserved.
+All obligation references, owned cursors and indexed agents' recovery events are preserved.
 VACUUM is never automatic. Stop the daemon first and run --vacuum in a quiet minute;
 it locks the database and requires temporary free disk space about its current size.
 `;
@@ -1114,11 +1146,16 @@ export async function runCliCommand(command: CliCommand, deps: RunCliDeps): Prom
     deps.output(versionText());
     return;
   }
-  if (command.command === "db-retain") {
+  if (command.command === "db-retain" || command.command === "maintenance-compact") {
+    const compact = command.command === "maintenance-compact";
     const dbPath = deps.dbPath ?? resolveRuntime({ environment: deps.environment }).paths.dbPath;
     deps.output(
       JSON.stringify(
-        await retainDatabase({ dbPath, dryRun: command.dryRun, vacuum: command.vacuum }),
+        await retainDatabase({
+          dbPath,
+          dryRun: compact ? false : command.dryRun,
+          vacuum: compact ? true : command.vacuum,
+        }),
       ),
     );
     return;
@@ -1187,6 +1224,7 @@ async function dispatchRpcCommand(
       command:
         | "daemon"
         | "db-retain"
+        | "maintenance-compact"
         | "help"
         | "version"
         | "claude-hook"

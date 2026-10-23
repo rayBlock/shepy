@@ -14,8 +14,6 @@ import { RetentionStore, runRetention } from "@/db/retention.js";
 import { AgentContextService } from "@/observability/agent-context-service.js";
 import { AgentOrchestratorService } from "@/observability/agent-orchestrator-service.js";
 import type { CompactAgentHistory } from "@/observability/contracts.js";
-import { projectOutcomeContext } from "@/observability/outcome-context.js";
-import { projectInboxOutcome } from "@/observability/profile-delivery-service.js";
 import { cleanupTempDirs, openObservabilityDbHarness } from "./observability-db-harness.js";
 import { RpcTestClient } from "./rpc-test-client.js";
 
@@ -62,7 +60,7 @@ function fixture() {
   if (!agentId) throw new Error("missing fixture agent");
   const append = (
     age: number,
-    type: "agent.done" | "agent.status.changed" = "agent.status.changed",
+    type: "agent.done" | "agent.status.changed" | "agent.gone" = "agent.status.changed",
     workspaceId = "w1",
   ) => {
     const event = db.agentEvents.append({
@@ -82,10 +80,63 @@ function fixture() {
   return { ...db, append, agentId };
 }
 
-test("only old unreferenced snapshots expire; every obligation state, owned cursor and latest settled event are protected", async () => {
+test("retention deletes old unreferenced rows even without context, but keeps indexed recovery and recent history", async () => {
   const db = fixture();
   try {
-    const old = db.append(8 * DAY, "agent.done");
+    const old = db.append(8 * DAY);
+    db.sqlite.prepare("update agent_events set compact_history_json = null where id = ?").run(old);
+    const outcome = db.append(8 * DAY, "agent.done");
+    const recent = db.append(DAY, "agent.done");
+    const pending = db.append(8 * DAY);
+    await runRetention(db.sqlite, { now: NOW, pauseMs: 0 });
+    expect(() => db.agentEvents.get(old)).toThrow("Agent event not found");
+    expect(db.agentEvents.get(outcome).compactHistory).toEqual(history);
+    expect(db.agentEvents.findPendingSettlement(db.agentId)?.id).toBe(pending);
+    expect(db.agentEvents.get(pending).compactHistory).toEqual(history);
+    expect(db.agentEvents.get(recent).compactHistory).toEqual(history);
+    db.agents.replaceForSession({ herdrSessionName: "fixture", agents: [] });
+    expect((await runRetention(db.sqlite, { now: NOW, pauseMs: 0 })).eventRows).toBe(2);
+    expect(() => db.agentEvents.get(outcome)).toThrow("Agent event not found");
+    expect(() => db.agentEvents.get(pending)).toThrow("Agent event not found");
+    expect(db.agentEvents.get(recent).compactHistory).toEqual(history);
+  } finally {
+    db.sqlite.close();
+  }
+});
+
+test("compact CLI reclaims free pages and preserves database integrity", async () => {
+  const db = fixture();
+  try {
+    db.sqlite.exec(
+      "create table compact_fixture (data blob); insert into compact_fixture values (zeroblob(1048576)); delete from compact_fixture",
+    );
+    const pagesBefore = (db.sqlite.prepare("pragma page_count").get() as { page_count: number })
+      .page_count;
+    const path = (db.sqlite.prepare("pragma database_list").get() as { file: string }).file;
+    const output: string[] = [];
+    await runCliCommand(parseCliArgs(["maintenance", "compact"]), {
+      dbPath: path,
+      socketPath: "/unused",
+      connect: async () => {
+        throw new Error("must not contact daemon");
+      },
+      output: (line) => output.push(line),
+    });
+    expect(JSON.parse(output[0] ?? "{}")).toMatchObject({ vacuumed: true });
+    expect(
+      (db.sqlite.prepare("pragma page_count").get() as { page_count: number }).page_count,
+    ).toBeLessThan(pagesBefore);
+    expect(db.sqlite.prepare("pragma integrity_check").get()).toEqual({ integrity_check: "ok" });
+    expect(db.sqlite.prepare("pragma foreign_key_check").all()).toEqual([]);
+  } finally {
+    db.sqlite.close();
+  }
+});
+
+test("old unreferenced events expire; every obligation state, owned cursor and indexed outcome are protected", async () => {
+  const db = fixture();
+  try {
+    const old = db.append(8 * DAY);
     const latest = db.append(8 * DAY, "agent.done");
     const recent = db.append(DAY);
     const boundary = db.append(7 * DAY);
@@ -131,29 +182,26 @@ test("only old unreferenced snapshots expire; every obligation state, owned curs
       terminalId: "seat",
     });
     const unread = db.append(8 * DAY);
-    const otherWorkspace = db.append(8 * DAY, "agent.status.changed", "w2");
+    const otherWorkspace = db.append(8 * DAY, "agent.gone", "w2");
     const beforeObligations = db.sqlite.prepare("select * from delivery_obligations").all();
     const result = await runRetention(db.sqlite, { now: NOW, batchSize: 2, pauseMs: 0 });
     expect(result.eventRows).toBe(2);
     expect(result.estimatedBytesFreed).toBeGreaterThan(0);
     for (const id of [old, otherWorkspace])
-      expect(db.agentEvents.get(id).compactHistory).toBeNull();
+      expect(() => db.agentEvents.get(id)).toThrow("Agent event not found");
     for (const id of [latest, recent, boundary, source, cursor, unread, ...protectedIds])
       expect(db.agentEvents.get(id).compactHistory).toEqual(history);
     expect(db.sqlite.prepare("select * from delivery_obligations").all()).toEqual(
       beforeObligations,
     );
-    // The timeline and payload survive; all event-store readers and context projection accept null.
-    const expired = db.agentEvents.get(old);
-    expect(expired.payload).toEqual({ from: "working", to: "done", agent: "pi" });
-    expect(db.agentEvents.listAfter({})).toHaveLength(13);
-    expect(db.agentEvents.outcomesForAgent(db.agentId)[0]?.compactHistory).toBeNull();
-    expect(db.agentEvents.findPriorSettledEvent(db.agentId, latest)?.compactHistory).toBeNull();
-    expect(projectOutcomeContext(expired)).toMatchObject({ state: "unavailable", tokens: null });
-    expect(projectInboxOutcome(expired)).toMatchObject({
-      excerpt: null,
-      lastAssistantRef: null,
-      context: { state: "unavailable" },
+    // Readers tolerate interior gaps; preserved outcomes retain their original payloads.
+    expect(db.agentEvents.listAfter({})).toHaveLength(11);
+    expect(db.agentEvents.outcomesForAgent(db.agentId)[0]?.id).toBe(latest);
+    expect(db.agentEvents.findPriorSettledEvent(db.agentId, latest)).toBeNull();
+    expect(db.agentEvents.get(latest).payload).toEqual({
+      from: "working",
+      to: "done",
+      agent: "pi",
     });
     const reader = createAgentHistoryService({ discover: async () => null });
     const orchestrator = new AgentOrchestratorService({
@@ -188,10 +236,7 @@ test("only old unreferenced snapshots expire; every obligation state, owned curs
           outcomeContext: { state: string };
         }[];
       };
-      expect(wire.events.find((event) => event.id === old)).toMatchObject({
-        compactHistory: null,
-        outcomeContext: { state: "unavailable" },
-      });
+      expect(wire.events.find((event) => event.id === old)).toBeUndefined();
       expect(wire.events.find((event) => event.id === protectedIds[0])?.compactHistory).toEqual(
         history,
       );
@@ -199,7 +244,7 @@ test("only old unreferenced snapshots expire; every obligation state, owned curs
       client.close();
       await server.stop();
     }
-    // Also cover a legacy delivered row whose snapshot was already null.
+    // Also cover a legacy delivered row whose event is already absent.
     obligations.project({
       profileId: "fixture-seat",
       subscriptionId: subscription.id,
@@ -226,6 +271,7 @@ test("dry-run changes nothing; bounded batches resume without skipping rows or d
   const db = fixture();
   try {
     const ids = Array.from({ length: 5 }, () => db.append(8 * DAY));
+    db.append(DAY, "agent.done");
     for (const formatterVersion of [
       "agent-history-v1",
       "agent-history-v2",
@@ -253,7 +299,9 @@ test("dry-run changes nothing; bounded batches resume without skipping rows or d
     const appendedDuringRun = db.append(8 * DAY, "agent.status.changed", "w2");
     const first = store.batch(initial, { batchSize: 2 });
     expect(first).toMatchObject({ eventRows: 2, scannedRows: 2, complete: false });
-    expect(ids.filter((id) => db.agentEvents.get(id).compactHistory === null)).toHaveLength(2);
+    expect(
+      ids.filter((id) => !db.sqlite.prepare("select id from agent_events where id = ?").get(id)),
+    ).toHaveLength(2);
     // A reference arriving between batches is checked in the write transaction.
     db.agentOrchestratorScopes.claim({
       herdrSessionName: "fixture",
@@ -276,6 +324,7 @@ test("dry-run changes nothing; bounded batches resume without skipping rows or d
     ]);
     // The finite high-water mark did not chase a concurrently appended row.
     expect(db.agentEvents.get(appendedDuringRun).compactHistory).toEqual(history);
+    db.append(DAY, "agent.done");
     expect((await runRetention(db.sqlite, { now: NOW, pauseMs: 0 })).eventRows).toBe(1);
     expect((await runRetention(db.sqlite, { now: NOW, pauseMs: 0 })).eventRows).toBe(0);
   } finally {
@@ -287,7 +336,7 @@ test("an exclusive writer cannot impose the normal five-second timeout on run st
   const db = fixture();
   const path = (db.sqlite.prepare("pragma database_list").get() as { file: string }).file;
   try {
-    db.append(8 * DAY);
+    db.append(8 * DAY, "agent.gone");
     const writer = new DatabaseSync(path);
     writer.exec("begin exclusive");
     try {
@@ -315,7 +364,7 @@ test("CLI parses maintenance flags strictly and dry-run uses the database withou
   expect(() => parseCliArgs(["db", "retain", "--unknown"])).toThrow();
   const db = fixture();
   try {
-    const id = db.append(8 * DAY);
+    const id = db.append(8 * DAY, "agent.gone");
     const output: string[] = [];
     const path = (db.sqlite.prepare("pragma database_list").get() as { file: string }).file;
     await runCliCommand(parseCliArgs(["db", "retain", "--dry-run"]), {
