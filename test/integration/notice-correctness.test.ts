@@ -582,7 +582,13 @@ test("a pending retry leaves the persisted row working and ignores duplicate set
   await pending;
   expect(duringRetry).toBe("working");
   expect(duplicate).toEqual([]);
-  expect(beforeFlush).toEqual([]);
+  // The non-notifiable observation is durable before the delayed final;
+  // duplicates still add neither another observation nor an outcome.
+  expect(beforeFlush).toHaveLength(1);
+  expect(beforeFlush[0]).toMatchObject({
+    type: "agent.status.changed",
+    payload: { from: "working", to: "idle" },
+  });
   expect(f.outcomes()).toHaveLength(1);
   expect(f.outcomes()[0]?.to).toBe("idle");
   expect(f.db.agents.list()[0]?.agentStatus).toBe("idle");

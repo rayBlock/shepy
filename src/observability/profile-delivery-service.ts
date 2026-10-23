@@ -72,6 +72,18 @@ function frozenAgentSource(records: AgentIndexRecord[]): Pick<AgentStore, "list"
   };
 }
 
+function sameOutcomeSession(left: unknown, right: unknown): boolean {
+  const session = (payload: unknown) =>
+    parseAgentSessionRef(
+      typeof payload === "object" && payload !== null && "agentSession" in payload
+        ? payload.agentSession
+        : null,
+    );
+  const a = session(left);
+  const b = session(right);
+  return a && b ? sameAgentSessionRef(a, b) : a === b;
+}
+
 function finalFingerprint(history: AgentEventRecord["compactHistory"]): string | null {
   const session = history?.historyRef;
   const text = history?.lastAssistantMessage?.text;
@@ -274,9 +286,29 @@ export class ProfileDeliveryService {
     // A final may still be waiting for publication when close arrives. Replay
     // durable outcomes first; obligation uniqueness makes this idempotent.
     const outcomes = this.#agentEvents?.outcomesForAgent(event.agentId) ?? [];
+    // A subscription made after settlement still needs that worker's final
+    // departure outcome. Recover only its LAST settled turn, never its whole
+    // pre-subscription history. Existing profile/event uniqueness keeps close
+    // quiet for recipients that already have the final.
+    const departure = projectInboxOutcome(event);
+    const lastSettled = outcomes.findLast((outcome) => {
+      if (!["agent.done", "agent.idle", "agent.blocked"].includes(outcome.type)) return false;
+      const final = projectInboxOutcome(outcome);
+      return (
+        (departure.from === "done" || departure.from === "idle" || departure.from === "blocked") &&
+        (final.to === departure.from ||
+          ((final.to === "done" || final.to === "idle") && departure.from !== "blocked")) &&
+        final.agent === departure.agent &&
+        sameOutcomeSession(outcome.payload, event.payload) &&
+        // A seen/unseen flap is not a new final. Recover its original
+        // notifiable event, not the duplicate that projection will suppress.
+        (outcome.type === "agent.blocked" || !this.#sameSettledOutcomeAsPrior(outcome, final.from))
+      );
+    });
     const profiles = new Set<string>();
     for (const outcome of [...outcomes, event]) {
-      for (const profileId of this.#projectAgentEvent(outcome, source, outcome !== event))
+      const recovering = outcome !== event && outcome !== lastSettled;
+      for (const profileId of this.#projectAgentEvent(outcome, source, recovering))
         profiles.add(profileId);
     }
     for (const subscription of subscriptions) this.#profiles.removeSubscription(subscription);

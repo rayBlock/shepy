@@ -5,7 +5,11 @@ import {
   SCREEN_READ_TIMEOUT_MS,
   screenTailFrom,
 } from "@/agent-history/screen-text.js";
-import { type AgentHistoryService, createAgentHistoryService } from "@/agent-history/service.js";
+import {
+  type AgentHistoryService,
+  createAgentHistoryService,
+  emptyCompactHistory,
+} from "@/agent-history/service.js";
 import type { AgentEventStore } from "@/db/agent-events.js";
 import type { AgentHistoryCacheStore } from "@/db/agent-history-cache.js";
 import type { AgentStore, HerdrAgentLike } from "@/db/agents.js";
@@ -24,6 +28,7 @@ import {
   type AgentSessionRef,
   type AgentStatus,
   type CompactAgentHistory,
+  parseAgentSessionRef,
   parseAgentStatus,
   type ScreenTail,
 } from "@/observability/contracts.js";
@@ -74,6 +79,8 @@ type StatusObservation = {
   reconciledFinal?: boolean;
   /** Where a screen-text read for this observation goes, when it needs one. */
   socketPath?: string;
+  /** Durable observation written before waiting for the transcript to flush. */
+  statusEvent?: AgentEventRecord;
   to: AgentStatus;
 };
 type PendingStatus = StatusObservation & {
@@ -101,6 +108,7 @@ export class AgentIndexService {
     previousAgents: AgentIndexRecord[];
   }) => void;
   readonly #pendingSettlements = new Map<string, PendingStatus>();
+  readonly #settlementsRestored = new Set<string>();
   readonly #coveredSettledFinals = new Map<string, string>();
   readonly #mutationEpochBySession = new Map<string, number>();
   readonly #pendingPiSessionRefs = new Map<string, AgentSessionRef>();
@@ -218,6 +226,7 @@ export class AgentIndexService {
     input: RefreshInput,
   ): Promise<PendingResult<AgentIndexRefreshResult>> {
     const client = this.#clientFactory({ socketPath: input.socketPath });
+    const restoredStatuses: PendingStatus[] = [];
     try {
       const previous = this.#stores.agents.listForHerdrSession(input.herdrSessionName);
       const previousByPane = new Map(previous.map((agent) => [agent.paneId, agent]));
@@ -301,6 +310,10 @@ export class AgentIndexService {
           parseAgentStatus(agent.agent_status),
         ]),
       );
+      for (const agent of previous) {
+        const pending = this.#restorePendingSettlement(agent, input.socketPath);
+        if (pending) restoredStatuses.push(pending);
+      }
       const departureEvents: AgentEventRecord[] = [];
       const flushed = new Map<PendingStatus, AgentEventRecord>();
       const indexedAgents = this.#stores.agents.replaceForSession({
@@ -308,6 +321,7 @@ export class AgentIndexService {
         beforeRemove: (removed, previousAgents) => {
           for (const prior of removed) {
             this.#coveredSettledFinals.delete(prior.id);
+            this.#settlementsRestored.delete(prior.id);
             const pending = this.#pendingSettlements.get(prior.id);
             if (pending && !pending.supersededEvent) {
               const final = this.#appendStatusEvents(
@@ -364,6 +378,7 @@ export class AgentIndexService {
       for (const [pending, event] of flushed) {
         pending.superseded = true;
         pending.supersededEvent = event;
+        this.#pendingSettlements.delete(pending.agent.id);
       }
       const agents = indexedAgents
         .map((agent) => {
@@ -389,7 +404,7 @@ export class AgentIndexService {
       this.#onAgentsObserved(agents);
       const scopes = new Map<string, AgentScope>();
       const events: AgentEventRecord[] = departureEvents;
-      const pendingStatuses: PendingStatus[] = [];
+      const pendingStatuses = restoredStatuses.filter((pending) => !pending.supersededEvent);
       const currentIds = new Set(agents.map((agent) => agent.id));
       for (const prior of previous) {
         if (!currentIds.has(prior.id)) addScope(scopes, scopeOf(prior));
@@ -575,6 +590,7 @@ export class AgentIndexService {
         client.close();
       }
     }
+    const restoredStatus = this.#restorePendingSettlement(previous, input.socketPath);
     this.#onAgentsObserved([agent]);
     const from = recovered ? "unknown" : previous.agentStatus;
     const to = parseAgentStatus(event.agent_status);
@@ -596,6 +612,7 @@ export class AgentIndexService {
     if (refreshed.changed || from !== to) addScope(scopes, scopeOf(current));
     const events = [...(recovered?.events ?? [])];
     const pendingStatuses = [...(recovered?.pendingStatuses ?? [])];
+    if (restoredStatus) pendingStatuses.push(restoredStatus);
     const equivalent = events.some(
       (candidate) =>
         candidate.agentId === current.id &&
@@ -663,7 +680,23 @@ export class AgentIndexService {
 
   #enqueueSessionOperation<T>(sessionName: string, operation: () => Promise<T>): Promise<T> {
     const prior = this.#sessionOperationTail.get(sessionName) ?? Promise.resolve();
-    const result = prior.catch(() => undefined).then(operation);
+    const result = prior
+      .catch(() => undefined)
+      .then(async () => {
+        const existing = new Set(this.#pendingSettlements.values());
+        try {
+          return await operation();
+        } catch (error) {
+          // A rejected observation has no caller left to finish new retries.
+          // Leave their journals recoverable on the next successful observation.
+          for (const pending of this.#pendingSettlements.values()) {
+            if (pending.agent.herdrSessionName !== sessionName || existing.has(pending)) continue;
+            this.#pendingSettlements.delete(pending.agent.id);
+            this.#settlementsRestored.delete(pending.agent.id);
+          }
+          throw error;
+        }
+      });
     const tail = result.then(
       () => undefined,
       () => undefined,
@@ -691,6 +724,51 @@ export class AgentIndexService {
             ?.compactHistory?.lastAssistantMessage?.ref &&
         !historyNeedsRetry(history, previous, Date.now(), null),
     );
+  }
+
+  #restorePendingSettlement(
+    agent: AgentIndexRecord,
+    socketPath: string,
+  ): PendingStatus | undefined {
+    // Only startup recovery needs a durable lookup. Later observations in
+    // this process already have their retry in memory; do not scan history
+    // on every watch tick for a long-running worker.
+    if (this.#settlementsRestored.has(agent.id) || this.#pendingSettlements.has(agent.id))
+      return undefined;
+    if (agent.agentStatus !== "working") {
+      this.#settlementsRestored.add(agent.id);
+      return undefined;
+    }
+    const event = this.#stores.agentEvents.findPendingSettlement(agent.id);
+    this.#settlementsRestored.add(agent.id);
+    if (!event) return undefined;
+    const observed = record(event.payload);
+    // The row id can survive native-session replacement. An old turn must not
+    // finish the replacement, nor a later working turn in the same session.
+    if (
+      observed.agent !== agent.agent ||
+      event.terminalId !== agent.terminalId ||
+      !sameAgentSession(parseAgentSessionRef(observed.agentSession) ?? null, agent.agentSession)
+    )
+      return undefined;
+    const pending: PendingStatus = {
+      agent,
+      compactHistory: event.compactHistory ?? emptyCompactHistory(),
+      evidence: {},
+      from: "working",
+      to: parseAgentStatus(observed.to),
+      socketPath,
+      statusEvent: event,
+      observedAt: event.createdAt.getTime(),
+      previousHistory: event.compactHistory ?? undefined,
+      previousSettledRef:
+        this.#stores.agentEvents.findPriorSettledEvent(agent.id, event.id)?.compactHistory
+          ?.lastAssistantMessage?.ref ?? null,
+      superseded: false,
+      supersededEvent: undefined,
+    };
+    this.#pendingSettlements.set(agent.id, pending);
+    return pending;
   }
 
   #recordStatus(
@@ -726,8 +804,12 @@ export class AgentIndexService {
       completion &&
       historyNeedsRetry(input.compactHistory, previousHistory, observedAt, previousSettledRef)
     ) {
+      // Journal before yielding. A restart must retain the native completion
+      // even though its row and deliverable final still wait for fresh text.
+      const statusEvent = this.#appendStatusChanged(input);
       const next = {
         ...input,
+        statusEvent,
         observedAt,
         previousHistory,
         previousSettledRef,
@@ -821,10 +903,15 @@ export class AgentIndexService {
             events.push(event);
             if (persistStatus && current) addScope(scopes, scopeOf(current));
           }
-        }).finally(() => {
-          if (this.#pendingSettlements.get(pending.agent.id) === pending)
-            this.#pendingSettlements.delete(pending.agent.id);
-        });
+        })
+          .catch((error) => {
+            this.#settlementsRestored.delete(pending.agent.id);
+            throw error;
+          })
+          .finally(() => {
+            if (this.#pendingSettlements.get(pending.agent.id) === pending)
+              this.#pendingSettlements.delete(pending.agent.id);
+          });
       }),
     );
     return {
@@ -897,9 +984,34 @@ export class AgentIndexService {
     const observationId =
       eventIdentity(input.evidence) ??
       `observed:${input.agent.lastSeenAt.getTime()}:${this.#observationSequence++}`;
-    let lastEvent = this.#stores.agentEvents.append({
+    let lastEvent = input.statusEvent ?? this.#appendStatusChanged(input, observationId);
+    const statusType = statusEventType(input.to);
+    if (statusType) {
+      lastEvent = this.#stores.agentEvents.append({
+        agentId: input.agent.id,
+        compactHistory: input.compactHistory,
+        herdrSessionName: input.agent.herdrSessionName,
+        idempotencyKey: input.statusEvent
+          ? `settlement:${input.statusEvent.id}`
+          : idempotencyKey(statusType, input.agent, input.from, input.to, observationId),
+        paneId: input.agent.paneId,
+        payload: payload(input.agent, input.from, input.to),
+        terminalId: input.agent.terminalId,
+        type: statusType,
+        workspaceId: input.agent.workspaceId,
+      });
+    }
+    return lastEvent;
+  }
+
+  #appendStatusChanged(
+    input: StatusObservation,
+    observationId = eventIdentity(input.evidence) ??
+      `observed:${input.agent.lastSeenAt.getTime()}:${this.#observationSequence++}`,
+  ): AgentEventRecord {
+    return this.#stores.agentEvents.append({
       agentId: input.agent.id,
-      compactHistory: input.compactHistory,
+      compactHistory: input.compactHistory ?? null,
       herdrSessionName: input.agent.herdrSessionName,
       idempotencyKey: idempotencyKey(
         "agent.status.changed",
@@ -914,27 +1026,6 @@ export class AgentIndexService {
       type: "agent.status.changed",
       workspaceId: input.agent.workspaceId,
     });
-    const statusType = statusEventType(input.to);
-    if (statusType) {
-      lastEvent = this.#stores.agentEvents.append({
-        agentId: input.agent.id,
-        compactHistory: input.compactHistory,
-        herdrSessionName: input.agent.herdrSessionName,
-        idempotencyKey: idempotencyKey(
-          statusType,
-          input.agent,
-          input.from,
-          input.to,
-          observationId,
-        ),
-        paneId: input.agent.paneId,
-        payload: payload(input.agent, input.from, input.to),
-        terminalId: input.agent.terminalId,
-        type: statusType,
-        workspaceId: input.agent.workspaceId,
-      });
-    }
-    return lastEvent;
   }
 }
 

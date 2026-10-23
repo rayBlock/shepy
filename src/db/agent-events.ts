@@ -147,6 +147,24 @@ export class AgentEventStore {
     return row ? mapAgentEvent(row) : null;
   }
 
+  /** A deferred final first journals its status observation. Until its outcome
+   * is appended, that observation is the latest status record for the agent. */
+  findPendingSettlement(agentId: string): AgentEventRecord | undefined {
+    const row = this.#sqlite
+      .prepare(
+        `select * from agent_events where agent_id = ?
+         and type in ('agent.status.changed', 'agent.done', 'agent.idle', 'agent.blocked')
+         order by id desc limit 1`,
+      )
+      .get(agentId) as AgentEventRow | undefined;
+    if (row?.type !== "agent.status.changed") return undefined;
+    const event = mapAgentEvent(row);
+    const payload = event.payload as { from?: unknown; to?: unknown } | null;
+    return payload?.from === "working" && (payload.to === "done" || payload.to === "idle")
+      ? event
+      : undefined;
+  }
+
   /** Reconcile outcomes appended before a crash but not yet projected. */
   outcomesForAgent(agentId: string): AgentEventRecord[] {
     const rows = this.#sqlite
