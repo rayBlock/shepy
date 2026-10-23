@@ -210,33 +210,42 @@ describe("subscribed worker lifecycle", () => {
     f.sqlite.close();
   });
 
-  test("each profile gets one gone and removal never erases pending done", async () => {
+  test("close recovers pending done for each profile without a second gone notice", async () => {
     const f = fixture();
     await f.refresh();
     f.subscribe();
     f.subscribe("second");
     const agent = f.agents.findByTerminal({ herdrSessionName: "default", terminalId: "term1" });
     if (!agent) throw new Error("missing worker");
-    const done = f.agentEvents.append({
-      agentId: agent.id,
-      herdrSessionName: "default",
-      paneId: agent.paneId,
-      terminalId: agent.terminalId,
-      workspaceId: agent.workspaceId,
-      type: "agent.done",
-      payload: { agent: "pi", name: "builder", from: "working", to: "done" },
-      compactHistory: {
-        ...emptyCompactHistory("pi-jsonl"),
-        lastAssistantMessage: { ref: "final", text: "finished", timestamp: null },
+    const done = f.agents.commitStatusEvent(
+      {
+        agentId: agent.id,
+        agentStatus: "done",
+        herdrSessionName: "default",
+        paneId: agent.paneId,
       },
-    });
-    // Simulate a crash between append and publication. The close must recover
-    // the durable final before deleting its only matching subscription.
+      () =>
+        f.agentEvents.append({
+          agentId: agent.id,
+          herdrSessionName: "default",
+          paneId: agent.paneId,
+          terminalId: agent.terminalId,
+          workspaceId: agent.workspaceId,
+          type: "agent.done",
+          payload: { agent: "pi", name: "builder", from: "working", to: "done" },
+          compactHistory: {
+            ...emptyCompactHistory("pi-jsonl"),
+            lastAssistantMessage: { ref: "final", text: "finished", timestamp: null },
+          },
+        }),
+    );
+    // Simulate a crash between the durable status/outcome commit and publication.
+    // Close must recover the final before deleting its only matching subscription.
     f.restart();
     f.set(snapshot([]));
     await f.refresh();
     for (const profile of ["seat", "second"]) {
-      expect(f.outcomes(profile).map((o) => o?.type)).toEqual(["agent.done", "agent.gone"]);
+      expect(f.outcomes(profile).map((o) => o?.type)).toEqual(["agent.done"]);
       expect(f.outcomes(profile)[0]?.eventId).toBe(done.id);
       expect(f.profiles.listSubscriptions(profile)).toHaveLength(0);
     }
@@ -250,30 +259,39 @@ describe("subscribed worker lifecycle", () => {
     f.subscribe();
     const agent = f.agents.findByTerminal({ herdrSessionName: "default", terminalId: "term1" });
     if (!agent) throw new Error("worker not indexed");
-    f.agentEvents.append({
-      agentId: agent.id,
-      herdrSessionName: "default",
-      paneId: agent.paneId,
-      workspaceId: "w1",
-      terminalId: "term1",
-      type: "agent.done",
-      payload: { agent: "opencode", name: "builder", from: "working", to: "done" },
-      compactHistory: {
-        ...emptyCompactHistory("opencode-sqlite"),
-        lastAssistantMessage: {
-          ref: "history#entry=msg_S2valid",
-          text: "finished",
-          timestamp: null,
-        },
+    f.agents.commitStatusEvent(
+      {
+        agentId: agent.id,
+        agentStatus: "done",
+        herdrSessionName: "default",
+        paneId: agent.paneId,
       },
-    });
+      () =>
+        f.agentEvents.append({
+          agentId: agent.id,
+          herdrSessionName: "default",
+          paneId: agent.paneId,
+          workspaceId: "w1",
+          terminalId: "term1",
+          type: "agent.done",
+          payload: { agent: "opencode", name: "builder", from: "working", to: "done" },
+          compactHistory: {
+            ...emptyCompactHistory("opencode-sqlite"),
+            lastAssistantMessage: {
+              ref: "history#entry=msg_S2valid",
+              text: "finished",
+              timestamp: null,
+            },
+          },
+        }),
+    );
     f.set(snapshot([]));
     await f.refresh();
-    expect(f.outcomes().map((o) => o?.type)).toEqual(["agent.done", "agent.gone"]);
+    expect(f.outcomes().map((o) => o?.type)).toEqual(["agent.done"]);
     f.sqlite.close();
   });
 
-  test("close during the missing-final retry publishes done before gone", async () => {
+  test("close during the missing-final retry publishes only the pending done", async () => {
     const f = fixture();
     await f.refresh();
     f.subscribe();
@@ -286,7 +304,7 @@ describe("subscribed worker lifecycle", () => {
       .getIndex()
       .handleHerdrEvent({ ...input, event: { type: "pane.closed", pane_id: "w1:p1" } });
     await pending;
-    expect(f.outcomes().map((o) => o?.type)).toEqual(["agent.done", "agent.gone"]);
+    expect(f.outcomes().map((o) => o?.type)).toEqual(["agent.done"]);
     expect(f.outcomes()[0]?.excerpt).toBeNull();
     f.sqlite.close();
   });
@@ -720,7 +738,14 @@ describe("watcher lifecycle over the Herdr socket", () => {
     }
   });
 
-  test("three workers: a real status event delivers done, then close delivers gone and keeps the others", async () => {
+  test.each([
+    ["done", false],
+    ["idle", false],
+    ["blocked", false],
+    ["done", true],
+    ["idle", true],
+    ["blocked", true],
+  ] as const)("closing a %s worker is silent; shell remains=%s", async (status, shellRemains) => {
     const f = await socketFixture();
     try {
       await f.manager.start();
@@ -729,7 +754,7 @@ describe("watcher lifecycle over the Herdr socket", () => {
         f.subscribe("seat", { kind: "terminalId", value: terminal });
       f.set(
         snapshot([
-          worker("builder", "w1:p1", "term1", "done"),
+          worker("builder", "w1:p1", "term1", status),
           worker("reviewer", "w1:p2", "term2"),
           worker("third", "w1:p3", "term3"),
         ]),
@@ -737,15 +762,27 @@ describe("watcher lifecycle over the Herdr socket", () => {
       f.broadcast("pane.agent_status_changed", {
         pane_id: "w1:p1",
         workspace_id: "w1",
-        agent_status: "done",
+        agent_status: status,
         agent: "pi",
       });
       await until(() => f.outcomes().length === 1);
-      expect(f.outcomes()[0]?.type).toBe("agent.done");
-      f.set(snapshot([worker("reviewer", "w1:p2", "term2"), worker("third", "w1:p3", "term3")]));
-      f.broadcast("pane.closed", { pane_id: "w1:p1", workspace_id: "w1" });
-      await until(() => f.outcomes().length === 2);
-      expect(f.outcomes().map((o) => o?.type)).toEqual(["agent.done", "agent.gone"]);
+      expect(f.outcomes()[0]?.type).toBe(`agent.${status}`);
+      const remaining = [worker("reviewer", "w1:p2", "term2"), worker("third", "w1:p3", "term3")];
+      f.set(
+        snapshot(
+          remaining,
+          shellRemains ? [...remaining, { ...worker(), agent: null }] : remaining,
+        ),
+      );
+      f.broadcast(shellRemains ? "pane.exited" : "pane.closed", {
+        pane_id: "w1:p1",
+        workspace_id: "w1",
+      });
+      await until(() => f.profiles.listSubscriptions("seat").length === 2);
+      expect(f.outcomes().map((o) => o?.type)).toEqual([`agent.${status}`]);
+      expect(
+        f.agentEvents.listAfter({ limit: 100 }).filter((event) => event.type === "agent.gone"),
+      ).toHaveLength(1);
       expect(f.profiles.listSubscriptions("seat")).toHaveLength(2);
     } finally {
       await f.close();
@@ -756,7 +793,7 @@ describe("watcher lifecycle over the Herdr socket", () => {
     "pane.closed",
     "pane.exited",
     "disconnect",
-  ])("reconciles %s exactly once and leases pending done before gone", async (reason) => {
+  ])("reconciles %s exactly once and leases pending done without gone", async (reason) => {
     const f = await socketFixture();
     try {
       await f.manager.start();
@@ -764,25 +801,33 @@ describe("watcher lifecycle over the Herdr socket", () => {
       f.subscribe();
       const agent = f.agents.findByTerminal({ herdrSessionName: "default", terminalId: "term1" });
       if (!agent) throw new Error("worker not indexed");
-      const done = f.agentEvents.append({
-        agentId: agent.id,
-        herdrSessionName: "default",
-        paneId: agent.paneId,
-        workspaceId: "w1",
-        terminalId: "term1",
-        type: "agent.done",
-        payload: { agent: "pi", name: "builder", from: "working", to: "done" },
-        compactHistory: emptyCompactHistory("pi-jsonl"),
-      });
+      const done = f.agents.commitStatusEvent(
+        {
+          agentId: agent.id,
+          agentStatus: "done",
+          herdrSessionName: "default",
+          paneId: agent.paneId,
+        },
+        () =>
+          f.agentEvents.append({
+            agentId: agent.id,
+            herdrSessionName: "default",
+            paneId: agent.paneId,
+            workspaceId: "w1",
+            terminalId: "term1",
+            type: "agent.done",
+            payload: { agent: "pi", name: "builder", from: "working", to: "done" },
+            compactHistory: emptyCompactHistory("pi-jsonl"),
+          }),
+      );
       f.delivery.projectAgentEvent(done);
       f.set(
         snapshot([], reason === "pane.exited" ? [{ pane_id: "w1:p1", terminal_id: "term1" }] : []),
       );
       if (reason === "disconnect") f.disconnect();
       else f.broadcast(reason, { pane_id: "w1:p1", workspace_id: "w1" });
-      await until(() => f.outcomes().length === 2);
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      expect(f.outcomes().map((o) => o?.type)).toEqual(["agent.done", "agent.gone"]);
+      await until(() => f.profiles.listSubscriptions("seat").length === 0);
+      expect(f.outcomes().map((o) => o?.type)).toEqual(["agent.done"]);
       expect(f.profiles.listSubscriptions("seat")).toHaveLength(0);
       const claim = f.delivery.claim({
         profileId: "seat",
@@ -796,10 +841,7 @@ describe("watcher lifecycle over the Herdr socket", () => {
       });
       if (claim.kind !== "claimed") throw new Error("owner claim failed");
       const leased = f.delivery.inboxLease({ profileId: "seat", leaseToken: claim.leaseToken });
-      expect(leased.obligations.map((row) => row.outcome?.type)).toEqual([
-        "agent.done",
-        "agent.gone",
-      ]);
+      expect(leased.obligations.map((row) => row.outcome?.type)).toEqual(["agent.done"]);
     } finally {
       await f.close();
     }
@@ -859,8 +901,8 @@ describe("watcher lifecycle over the Herdr socket", () => {
       expect(f.outcomes()[0]?.type).toBe("agent.done");
       f.set(snapshot([]));
       f.broadcast("pane.closed", { pane_id: "w1:p9", workspace_id: "w1" });
-      await until(() => f.outcomes().length === 2);
-      expect(f.outcomes().map((row) => row?.type)).toEqual(["agent.done", "agent.gone"]);
+      await until(() => f.profiles.listSubscriptions("seat").length === 0);
+      expect(f.outcomes().map((row) => row?.type)).toEqual(["agent.done"]);
       expect(f.profiles.listSubscriptions("seat")).toHaveLength(0);
     } finally {
       await f.close();

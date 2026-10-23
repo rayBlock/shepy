@@ -324,13 +324,18 @@ export class AgentIndexService {
                 flushed.set(pending, final);
               }
             }
+            // A close can flush a completion before its deferred history read.
+            // Attribute departure to that settled status, not the old working
+            // row, so it cannot create a second owner notification.
+            const departureStatus =
+              pending && flushed.has(pending) ? pending.to : prior.agentStatus;
             const event = this.#stores.agentEvents.append({
               agentId: prior.id,
               compactHistory: this.#context.getAgentSnapshot(prior.id)?.compactHistory ?? null,
               herdrSessionName: prior.herdrSessionName,
               idempotencyKey: `agent.gone:${prior.id}:${prior.firstSeenAt.getTime()}`,
               paneId: prior.paneId,
-              payload: { ...payload(prior, prior.agentStatus, prior.agentStatus), to: "gone" },
+              payload: { ...payload(prior, departureStatus, departureStatus), to: "gone" },
               terminalId: prior.terminalId,
               type: "agent.gone",
               workspaceId: prior.workspaceId,

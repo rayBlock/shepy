@@ -107,18 +107,37 @@ export class ClaudeIdleWakeService {
       })
       .sort((a, b) => (a.agentEventId ?? 0) - (b.agentEventId ?? 0));
     if (!pending.length) return;
-    const names = new Set<string>();
+    const groups = new Map<string, { count: number; names: Set<string> }>();
     for (const row of pending) {
       if (row.agentEventId === null) continue;
-      const payload = this.#options.events.get(row.agentEventId).payload;
+      const event = this.#options.events.get(row.agentEventId);
+      const label =
+        event.type === "agent.done" || event.type === "agent.idle"
+          ? "finished"
+          : event.type === "agent.blocked"
+            ? "blocked"
+            : event.type === "agent.gone"
+              ? "gone without finishing"
+              : event.type === "agent.tool.failed"
+                ? "tool failed"
+                : "updates";
+      const group = groups.get(label) ?? { count: 0, names: new Set<string>() };
+      groups.set(label, group);
+      group.count++;
+      const payload = event.payload;
       if (typeof payload !== "object" || payload === null || !("name" in payload)) continue;
       if (
         typeof payload.name === "string" &&
         /^[a-zA-Z0-9][a-zA-Z0-9_. -]{0,40}$/.test(payload.name)
       )
-        names.add(payload.name);
+        group.names.add(payload.name);
     }
-    const text = `shepy: ${pending.length} finished: ${[...names].join(", ") || "worker updates"}`;
+    const text = `shepy: ${[...groups]
+      .map(
+        ([label, group]) =>
+          `${group.count} ${label}: ${[...group.names].join(", ") || "worker updates"}`,
+      )
+      .join("; ")}`;
     const line = text.length <= 240 ? text : `${text.slice(0, 239)}…`;
     const obligationIds = pending.map((row) => row.id).sort();
     const batchKey = createHash("sha256").update(JSON.stringify(obligationIds)).digest("hex");

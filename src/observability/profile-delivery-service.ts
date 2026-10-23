@@ -41,7 +41,8 @@ import { RpcRefusedError } from "./rpc-refused-error.js";
  * A healthy refresh that loses an indexed worker emits `agent.gone` using
  * the frozen prior identity, not an `unknown` status guess, before removing
  * the subscription. A terminal can close before its first native session;
- * that pending guard must not suppress the terminal's gone notice.
+ * that pending guard must not suppress the terminal's gone notice. A worker
+ * already done, idle or blocked needs no second notice when it leaves.
  */
 export const NOTIFIABLE_EVENT_TYPES: ReadonlySet<AgentEventType> = new Set([
   "agent.blocked",
@@ -273,10 +274,13 @@ export class ProfileDeliveryService {
     // A final may still be waiting for publication when close arrives. Replay
     // durable outcomes first; obligation uniqueness makes this idempotent.
     const outcomes = this.#agentEvents?.outcomesForAgent(event.agentId) ?? [];
-    for (const outcome of outcomes) this.#projectAgentEvent(outcome, source, true);
-    const profiles = this.#projectAgentEvent(event, source);
+    const profiles = new Set<string>();
+    for (const outcome of [...outcomes, event]) {
+      for (const profileId of this.#projectAgentEvent(outcome, source, outcome !== event))
+        profiles.add(profileId);
+    }
     for (const subscription of subscriptions) this.#profiles.removeSubscription(subscription);
-    return profiles;
+    return [...profiles];
   }
 
   /** A terminal survives pane movement. Carry only subscriptions that uniquely
@@ -325,6 +329,19 @@ export class ProfileDeliveryService {
     // Filter at projection, not emission: the event log stays a complete
     // audit record, but only notifiable outcomes become owner obligations.
     if (!NOTIFIABLE_EVENT_TYPES.has(event.type)) return [];
+    // Closing a settled worker is lifecycle bookkeeping, not another outcome.
+    // Use the event-time status, not an old final: a resumed worker that dies
+    // while working must still reach its owner as gone.
+    if (
+      event.type === "agent.gone" &&
+      typeof event.payload === "object" &&
+      event.payload !== null &&
+      "from" in event.payload &&
+      (event.payload.from === "done" ||
+        event.payload.from === "idle" ||
+        event.payload.from === "blocked")
+    )
+      return [];
     // Only the OpenCode reader's source entry is a stable delivery identity:
     // a V1 part id (prt_) or, for the V2 store, the session_message row id (msg_).
     // An absent/malformed entry is UNKNOWN, not a new deliverable outcome.

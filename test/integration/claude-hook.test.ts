@@ -388,6 +388,69 @@ describe("Claude socket wake through the real hook claim", () => {
     }
   });
 
+  test("a mixed socket wake names each worker's actual outcome", async () => {
+    const f = await openHookServer();
+    const socket = await fakeClaudeSocket(f);
+    enableSocketWake(f);
+    await runHook(f, promptPayload(), { environment: socket.environment });
+    projectOutcome(f, "mixed-done", "finished", "builder");
+    const outcomes = [
+      ["agent.idle", "idle-worker", "idle"],
+      ["agent.blocked", "reviewer", "blocked"],
+      ["agent.gone", "unfinished-worker", "gone"],
+      ["agent.tool.failed", "tool-worker", "working"],
+    ] as const;
+    f.agents.replaceForSession({
+      herdrSessionName: "lane-b",
+      agents: [
+        ...f.agents.list().map((agent) => ({
+          agent: agent.agent,
+          agent_status: agent.agentStatus,
+          name: agent.name,
+          pane_id: agent.paneId,
+          terminal_id: agent.terminalId,
+          workspace_id: agent.workspaceId,
+        })),
+        ...outcomes.map(([, name], index) => ({
+          agent: "hermes",
+          agent_status: "working",
+          name,
+          pane_id: `w2:p${index + 2}`,
+          terminal_id: `worker-${index + 2}`,
+          workspace_id: "w2",
+        })),
+      ],
+    });
+    for (const [type, name, to] of outcomes) {
+      const worker = f.agents.list().find((agent) => agent.name === name);
+      if (!worker) throw new Error("fixture: worker missing");
+      f.profiles.addSubscription({
+        profileId: "driffs",
+        herdrSessionName: "lane-b",
+        agentSelectorJson: JSON.stringify({ kind: "terminalId", value: worker.terminalId }),
+        workspaceSelectorJson: JSON.stringify({ herdrSession: "lane-b", workspaceId: "w2" }),
+      });
+      const event = f.agentEvents.append({
+        agentId: worker.id,
+        herdrSessionName: "lane-b",
+        paneId: worker.paneId,
+        terminalId: worker.terminalId,
+        workspaceId: worker.workspaceId,
+        type,
+        payload: { agent: "hermes", from: "working", name, to },
+      });
+      f.delivery.projectAgentEvent(event);
+    }
+    socketWakeService(f).schedule(["driffs"]);
+    await vi.waitFor(() => expect(socket.frames).toHaveLength(2));
+    expect(socket.frames[1]).toMatchObject({
+      message: {
+        content:
+          "shepy: 2 finished: builder, idle-worker; 1 blocked: reviewer; 1 gone without finishing: unfinished-worker; 1 tool failed: tool-worker",
+      },
+    });
+  });
+
   test("a large pending batch is not limited by the CLI's newest-50 readback and its wake stays one bounded line", async () => {
     const f = await openHookServer();
     const socket = await fakeClaudeSocket(f);
