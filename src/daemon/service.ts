@@ -31,6 +31,7 @@ import { ProfileDeliveryService } from "@/observability/profile-delivery-service
 import { ProfileDiagnoseService } from "@/observability/profile-diagnose-service.js";
 import { ProfileService } from "@/observability/profile-service.js";
 import { ClaudeIdleWakeService } from "./claude-idle-wake-service.js";
+import { DatabaseRetentionService } from "./database-retention-service.js";
 import {
   HerdrSessionWatchManager,
   SUBSCRIPTION_PRUNE_AGE_MS,
@@ -178,9 +179,12 @@ export async function runObservabilityDaemonService(
   await server.start();
   await watchManager.start();
   idleWakeService.start();
+  const retention = new DatabaseRetentionService(sqlite);
+  retention.start();
   console.log(`Shepy daemon listening on ${runtime.paths.socketPath}`);
 
   const stop = async () => {
+    await retention.stop();
     idleWakeService.close();
     await watchManager.stop();
     await server.stop();

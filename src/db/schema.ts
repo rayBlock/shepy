@@ -100,6 +100,9 @@ export const agentEvents = sqliteTable(
     workspaceId: text("workspace_id"),
   },
   (table) => [
+    index("agent_events_latest_settled_idx")
+      .on(table.agentId, table.id)
+      .where(sql`${table.type} in ('agent.done', 'agent.idle')`),
     uniqueIndex("agent_events_session_idempotency_idx").on(
       table.herdrSessionName,
       table.idempotencyKey,
@@ -259,6 +262,7 @@ export const deliveryObligations = sqliteTable(
     subscriptionId: integer("subscription_id"),
   },
   (table) => [
+    index("delivery_obligations_agent_event_idx").on(table.agentEventId),
     uniqueIndex("delivery_obligations_profile_event_idx").on(table.profileId, table.agentEventId),
     uniqueIndex("delivery_obligations_profile_demand_idx").on(
       table.profileId,
@@ -300,6 +304,7 @@ export const sourceEntryDeliveries = sqliteTable(
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   },
   (table) => [
+    index("source_entry_deliveries_agent_event_idx").on(table.agentEventId),
     uniqueIndex("source_entry_deliveries_profile_entry_idx").on(
       table.profileId,
       table.sourceEntryId,

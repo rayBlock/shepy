@@ -44,6 +44,48 @@ Shepy agent commands and Pi notifications require the daemon. The daemon watches
 shepy daemon start
 ```
 
+## Database history retention
+
+At daemon startup and once a day, Shepy expires event context snapshots older than
+seven days and deletes history-cache rows from obsolete formatter versions. Event
+rows, ids, payloads and the timeline remain. Every delivery obligation reference
+(including acknowledged and dead-letter rows), OpenCode projection reference,
+owned workspace cursor anchor and unread event, and each agent's latest done or
+idle outcome keeps its context. Profile owners have no separate event cursor.
+Retention never changes obligations, owners or subscriptions.
+
+Runs scan at most 100 rows per transaction, yield between batches, and log rows
+scanned, event snapshots nulled, cache rows deleted, estimated JSON bytes released
+and elapsed time. These byte estimates are not file-size savings. Busy writers
+abort a run promptly; committed batches remain valid and the next run starts a
+fresh scan. Stopping the daemon cancels between batches. Old events without
+context report context unavailable; history-cache misses re-read the transcript.
+
+For a one-shot run against the existing database selected by `SHEPY_HOME`:
+
+```bash
+shepy db retain --dry-run
+shepy db retain
+```
+
+Neither command starts or contacts the daemon. Dry-run opens the database
+read-only, reports eligible rows and changes nothing. Its counts are a preview,
+not a reservation against concurrent writes. After upgrading, restart the daemon
+or run `pnpm db:migrate` to apply retention's lookup indexes first.
+
+Cleared pages are reused by SQLite but do not shrink the file. VACUUM is never
+automatic. If disk space must be returned, stop the daemon and other database
+writers, make a SQLite `.backup`, then run the explicit maintenance command in a
+quiet minute (allow temporary free space about the database's current size):
+
+```bash
+shepy db retain --vacuum
+```
+
+VACUUM locks the database and cannot be combined with `--dry-run`. Restart the
+daemon after maintenance. Retention bounds expendable snapshots, not the whole
+database: the timeline and referenced context still grow.
+
 ## Main commands
 
 - `shepy agent list`: returns the daemon's latest cached status and last user / assistant excerpts for the selected workspace. Check each row's `updatedAt` when freshness matters.
@@ -175,7 +217,7 @@ The daemon subscribes to Herdr's global `pane.agent_detected`, `pane.exited`, `p
 
 When an indexed worker disappears (including an agent exiting into a shell that stays open), each matching profile gets one `agent.gone` outcome attributed to that worker's prior name, pane and terminal. Pending completion outcomes remain deliverable before gone, even after the subscription is removed. A reused name in another terminal does not inherit the removed subscription. If a terminal moves, its uniquely matched subscriptions follow its new pane and workspace, including legacy pane selectors.
 
-After a complete healthy snapshot, the existing watch tick may age-prune an unmatched subscription only when it is a legacy row from before presence-aware cleanup, or when the snapshot proves its selected pane is absent. Terminal selectors use the panes' terminal identities to prove absence; missing terminal metadata proves nothing. Every removal still requires two minutes since the subscription's last update. A new subscription waiting for agent detection does not expire merely because it has not matched: an existing shell or launch-pending pane counts as present, and selectors without a provable pane identity are kept. Stopped, unreachable, malformed or not-yet-refreshed sessions do not trigger automatic cleanup. Invalid and ambiguous selectors remain for inspection. The lifecycle migration marks pre-existing rows legacy; new subscriptions and explicit re-subscriptions clear that flag durably. Legacy stale rows whose worker identity was already deleted prune silently because the daemon cannot honestly attribute gone to them. The explicit `shepy profile prune <profileId> --age 2m` command retains its operator-requested unmatched-row behavior. No additional polling loop or event-log retention is added; gone events and pending obligations remain durable.
+After a complete healthy snapshot, the existing watch tick may age-prune an unmatched subscription only when it is a legacy row from before presence-aware cleanup, or when the snapshot proves its selected pane is absent. Terminal selectors use the panes' terminal identities to prove absence; missing terminal metadata proves nothing. Every removal still requires two minutes since the subscription's last update. A new subscription waiting for agent detection does not expire merely because it has not matched: an existing shell or launch-pending pane counts as present, and selectors without a provable pane identity are kept. Stopped, unreachable, malformed or not-yet-refreshed sessions do not trigger automatic cleanup. Invalid and ambiguous selectors remain for inspection. The lifecycle migration marks pre-existing rows legacy; new subscriptions and explicit re-subscriptions clear that flag durably. Legacy stale rows whose worker identity was already deleted prune silently because the daemon cannot honestly attribute gone to them. The explicit `shepy profile prune <profileId> --age 2m` command retains its operator-requested unmatched-row behavior. No additional subscription polling loop is added; gone event rows and pending obligations remain durable. Event context follows the [database history retention](#database-history-retention) policy.
 
 ### Stable worker subscriptions
 

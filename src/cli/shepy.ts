@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { argv, exit } from "node:process";
 import { fileURLToPath } from "node:url";
 import { CLAUDE_HOOK_STDIN_MAX_CHARS, runClaudeHook } from "@/cli/claude-hook.js";
+import { retainDatabase } from "@/cli/database-retention.js";
 import { callerClaudeSession, claudeReleaseProof } from "@/cli/profile-release.js";
 import { resolveRuntime, runtimePathsFromRecordOrDefault } from "@/config/runtime.js";
 import { ObservabilityRpcClient } from "@/daemon/client.js";
@@ -41,6 +42,7 @@ const CURRENT_HERDR_WORKSPACE_ERROR =
 export const COMMAND_GROUP_VERBS = {
   agent: ["get", "list", "read"],
   daemon: ["restart", "start", "status", "stop"],
+  db: ["retain"],
   inbox: ["get", "list", "retire", "retry"],
   operation: ["get", "list"],
   profile: [
@@ -65,6 +67,7 @@ export const TOP_LEVEL_COMMANDS = [
   "agent",
   "claude-hook",
   "daemon",
+  "db",
   "dispatch",
   "inbox",
   "operation",
@@ -82,6 +85,8 @@ type HelpTopic =
   | "claude-hook"
   | `daemon-${DaemonAction}`
   | "daemon"
+  | "db"
+  | "db-retain"
   | "dispatch"
   | "inbox"
   | "inbox-get"
@@ -122,6 +127,7 @@ type AgentScope = {
 
 export type CliCommand =
   | { action: DaemonAction; command: "daemon" }
+  | { command: "db-retain"; dryRun: boolean; vacuum: boolean }
   | ({ command: "agent-list"; json: boolean } & AgentScope)
   | ({ command: "agent-get"; json: boolean; target: string } & AgentScope)
   | ({ command: "agent-read"; json: boolean; limit?: number; target: string } & AgentScope)
@@ -175,6 +181,7 @@ export type CliCommand =
 type RpcClientLike = Pick<ObservabilityRpcClient, "close" | "request">;
 
 type RunCliDeps = {
+  dbPath?: string;
   environment?: NodeJS.ProcessEnv;
   homeDir?: string;
   connect(socketPath: string): Promise<RpcClientLike>;
@@ -202,6 +209,8 @@ export function parseCliArgs(
         return parseClaudeHookCommand(rest, environment);
       case "daemon":
         return parseDaemonCommand(rest);
+      case "db":
+        return parseDbCommand(rest);
       case "dispatch":
         return parseDispatchCommand(rest);
       case "inbox":
@@ -216,6 +225,21 @@ export function parseCliArgs(
   }
 
   throw new CliUsageError(`Unknown command: ${command}`, "root");
+}
+
+function parseDbCommand(args: string[]): CliCommand {
+  const [verb, ...rest] = args;
+  if (!verb || isHelpFlag(verb)) return { command: "help", topic: "db" };
+  if (!(COMMAND_GROUP_VERBS.db as readonly string[]).includes(verb)) {
+    throw new CliUsageError(`Unknown db command: ${verb}`, "db");
+  }
+  if (rest.some(isHelpFlag)) return { command: "help", topic: "db-retain" };
+  const dryRun = takeFlag(rest, "--dry-run");
+  const vacuum = takeFlag(rest, "--vacuum");
+  rejectExtra(rest, "db-retain");
+  if (dryRun && vacuum)
+    throw new CliUsageError("--dry-run cannot be combined with --vacuum", "db-retain");
+  return { command: "db-retain", dryRun, vacuum };
 }
 
 function parseClaudeHookCommand(args: string[], environment: NodeJS.ProcessEnv): CliCommand {
@@ -602,6 +626,7 @@ Usage:
 Commands:
   agent     Inspect indexed coding agents
   daemon    Manage the Shepy daemon
+  db        Maintain bounded database history
   profile   Manage orchestration profiles
   inbox     Inspect delivery obligations
   dispatch  Send a prompt to a profile's agent
@@ -668,6 +693,36 @@ Options:
   --session <name>      Select a Herdr session
   --json                Print JSON
   -h, --help            Show help
+`;
+    case "db":
+      return `Maintain bounded database history.
+
+Usage:
+  shepy db <command>
+
+Commands:
+  retain      Expire old unreferenced event context and obsolete history caches
+
+Options:
+  -h, --help  Show help
+
+Run \`shepy db retain --help\` for maintenance options.
+`;
+    case "db-retain":
+      return `Retain the timeline, expire unreferenced context older than 7 days.
+
+Usage:
+  shepy db retain [--dry-run] [--vacuum]
+
+Options:
+  --dry-run   Report eligible rows and estimated bytes without changing the database
+  --vacuum    Reclaim free pages after retention (cannot combine with --dry-run)
+  -h, --help  Show help
+
+Uses SHEPY_HOME's existing database directly, without daemon RPC. Prints a JSON summary.
+All obligation references, owned cursors and latest settled outcomes are preserved.
+VACUUM is never automatic. Stop the daemon first and run --vacuum in a quiet minute;
+it locks the database and requires temporary free disk space about its current size.
 `;
     case "daemon":
       return `Manage the Shepy daemon.
@@ -1059,6 +1114,15 @@ export async function runCliCommand(command: CliCommand, deps: RunCliDeps): Prom
     deps.output(versionText());
     return;
   }
+  if (command.command === "db-retain") {
+    const dbPath = deps.dbPath ?? resolveRuntime({ environment: deps.environment }).paths.dbPath;
+    deps.output(
+      JSON.stringify(
+        await retainDatabase({ dbPath, dryRun: command.dryRun, vacuum: command.vacuum }),
+      ),
+    );
+    return;
+  }
   if (command.command === "operation-dispatch") {
     const client = await deps.connect(deps.socketPath);
     try {
@@ -1122,6 +1186,7 @@ async function dispatchRpcCommand(
     {
       command:
         | "daemon"
+        | "db-retain"
         | "help"
         | "version"
         | "claude-hook"
@@ -1437,6 +1502,7 @@ async function main(): Promise<void> {
     return;
   }
   await runCliCommand(command, {
+    dbPath: runtime.paths.dbPath,
     connect: (socketPath) => Promise.resolve(new ObservabilityRpcClient({ socketPath })),
     environment: process.env,
     homeDir: runtime.homeDir,

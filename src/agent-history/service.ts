@@ -14,6 +14,7 @@ import {
   discoverAgentHistory,
   hintMatchesAgentSession,
 } from "./discovery.js";
+import { agentHistoryFormatterVersion } from "./formatter-version.js";
 import { GeminiHistoryReader } from "./gemini-reader.js";
 import { HermesHistoryReader } from "./hermes-reader.js";
 import { OpenCodeHistoryReader } from "./opencode-reader.js";
@@ -25,7 +26,7 @@ import type { AgentHistoryReader } from "./readers.js";
 // Row 15.309 S3: v3 corrects the Codex context projection (task_complete,
 // compaction, zero usage). An idle, unchanged file keeps its fingerprint, so
 // only the version change makes it recompute instead of serving the v2 blob.
-export const agentHistoryFormatterVersion = "agent-history-v3";
+export { agentHistoryFormatterVersion } from "./formatter-version.js";
 
 type CacheLike = Pick<AgentHistoryCacheStore, "getFresh" | "put">;
 type Discovery = (input: AgentHistoryLookupInput) => Promise<AgentHistoryRef | null>;
